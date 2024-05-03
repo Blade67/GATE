@@ -4,12 +4,9 @@ on:
       - main
 
 jobs:
-  build:
-    name: 'Build'
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+  build-linux:
+    name: 'Build on Linux'
+    runs-on: ubuntu-latest
     steps:
       - name: 'Checkout'
         uses: actions/checkout@v4
@@ -23,4 +20,4 @@ jobs:
         run: bun install
 
       - name: Build code
-        run: bun run build
+        run: bun run build:linux
