@@ -1,0 +1,28 @@
+{
+  "name": "gate",
+  "author": "Maxime \"Blade\" G.",
+  "description": "A Godot Engine GDScript preprocessor.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Blade67/GATE"
+  },
+  "version": "0.0.1",
+  "module": "src/index.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "build": "bun run build --compile --minify --sourcemap ./src/index.ts --outfile ./dist/gate",
+    "build:win": "bun build --compile --minify --sourcemap --target=bun-windows-x64-modern ./src/index.ts --outfile ./dist/gate",
+    "build:linux": "bun build --compile --minify --sourcemap --target=bun-linux-x64-baseline ./src/index.ts --outfile ./dist/gate",
+    "build:mac": "bun build --compile --minify --sourcemap --target=bun-darwin-x64 ./src/index.ts --outfile ./dist/gate"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "chalk": "^5.3.0"
+  }
+}

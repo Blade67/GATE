@@ -1,0 +1,8 @@
+signal on_%label%_changed(value%opt_type%)
+
+var %label%%opt_type% = %value% :
+    set (v):
+        %label% = v
+        on_%label%_changed.emit(%label%)
+    get:
+        return %label%
