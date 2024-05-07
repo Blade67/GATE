@@ -1,7 +1,7 @@
 {
   "name": "gate",
   "author": "Maxime \"Blade\" G.",
-  "description": "A Godot Engine GDScript preprocessor.",
+  "description": "A Godot Engine GDScript Superset.",
   "repository": {
     "type": "git",
     "url": "https://github.com/Blade67/GATE"

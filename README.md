@@ -1,12 +1,12 @@
 # GATE
 ###### ⚠ **Warning**! GATE is currently undergoing heavy development and is not yet production-ready! An engine integration will soon follow.
-GATE is a [GDScript](https://docs.godotengine.org/en/stable/tutorials/scripting/gdscript/gdscript_basics.html) preprocessor for the [Godot Engine](https://godotengine.org/) that adds [extra features](#features) while compiling down to native GDScript.
+GATE is a [GDScript](https://docs.godotengine.org/en/stable/tutorials/scripting/gdscript/gdscript_basics.html) superset for the [Godot Engine](https://godotengine.org/) that adds [extra features](#features) while compiling down to native GDScript.
 
 ## Table of Content
 - [Usage](#usage)
 - [Features](#features)
    * [Dynamic Variable Decorator `$$`](#dynamic-variable-decorator-)
-   * ...
+   * [Optional Operator `?.`](#optional-operator)
 - [Upcoming features](#upcoming-features)
 - [Contributint](#contributing)
 
@@ -39,6 +39,15 @@ func count_changed(value: int) -> void:
   text = "Count is %s" % value
 ```
 
+### Optional Operator `?.`
+The `?.` (optional) operator allows you to check for null in a chain of properties.
+##### Example
+```gdscript
+func _ready() -> void:
+    # In this case `text` is either `null` or the
+    # expected value of `myProp`
+    var text = $MyNode?.myObject?.myProp
+```
 
 ## Upcoming features
 -   [ ] Loop ranges `2..15`
@@ -51,7 +60,7 @@ func count_changed(value: int) -> void:
     - `var [parm1, param2] = myFunction()`
 -   [ ] Inline templates
     - <code>var x = \`${player1} killed ${player2}`</code>
--   [ ] Optional chaining `?.`
+-   [x] Optional chaining `?.`
     - `var x = $node.?thing.?deeper1.?deeper2`
 
 ## Contributing

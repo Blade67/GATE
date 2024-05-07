@@ -1,6 +1,6 @@
 import template from "./header.template.txt" with { type: "text" };
 import pck from "../package.json" with { type: "json" };
-import { parseDynamic } from "./gates/gates";
+import { parseDynamic, parseOptional } from "./transformers";
 import { parseArgs } from "util";
 import chalk from "chalk";
 import { Glob } from "bun";
@@ -84,18 +84,19 @@ if (input.endsWith(".gate")) {
     }));
 }
 
-
-let instances: number = 0;
 Promise.all(files).then(async (files) => {
     for (let file of files) {
         let f = file.content.split("\r\n").map(l => l.trimEnd())
 
         for (let i = 0; i < f.length; i++) {
             if (f[i].trimStart().startsWith("$$")) {
-                instances++;
-
-                let dynamic = parseDynamic(f[i].trimStart().slice(2));
+                const dynamic = parseDynamic(f[i].trimStart().slice(2));
                 f[i] = dynamic;
+            }
+            if (f[i].includes("?")) {
+                const optionalOp = parseOptional(f[i])
+                // console.log("Contains \"?\":", optionalOp, f[i]);
+                f[i] = optionalOp;
             }
         }
         file.content = f.join("\r\n");
@@ -119,7 +120,7 @@ Promise.all(files).then(async (files) => {
         );
     }
 
-    console.log(chalk.blue("[GATE]"), `Generated ${instances} dynamic signals.`);
+    console.log(chalk.blue("[GATE]"), `Generated ${chalk.green(files.length)} file${files.length > 1 ? "s" : ""}.`);
 });
 
 
