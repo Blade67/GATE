@@ -11,7 +11,7 @@
   "type": "module",
   "scripts": {
     "dev": "bun run src/index.ts",
-    "build": "bun run build --compile --minify --sourcemap ./src/index.ts --outfile ./dist/gate",
+    "build": "bun build --compile --minify --sourcemap ./src/index.ts --outfile ./dist/gate",
     "build:win": "bun build --compile --minify --sourcemap --target=bun-windows-x64-modern ./src/index.ts --outfile ./dist/gate",
     "build:linux": "bun build --compile --minify --sourcemap --target=bun-linux-x64-baseline ./src/index.ts --outfile ./dist/gate",
     "build:mac": "bun build --compile --minify --sourcemap --target=bun-darwin-x64 ./src/index.ts --outfile ./dist/gate"
