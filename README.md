@@ -8,7 +8,7 @@ GATE is a [GDScript](https://docs.godotengine.org/en/stable/tutorials/scripting/
    * [Dynamic Variable Decorator `$$`](#dynamic-variable-decorator-)
    * [Optional Operator `?.`](#optional-operator)
 - [Upcoming features](#upcoming-features)
-- [Contributint](#contributing)
+- [Contributing](#contributing)
 
 ## Usage
 ```sh
