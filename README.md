@@ -1,5 +1,7 @@
 # GATE
-###### ⚠ **Warning**! GATE is currently undergoing heavy development and is not yet production-ready! An engine integration will soon follow.
+> [!WARNING]
+> GATE is currently undergoing heavy development and is not yet production-ready! An engine integration will soon follow.
+
 GATE is a [GDScript](https://docs.godotengine.org/en/stable/tutorials/scripting/gdscript/gdscript_basics.html) superset for the [Godot Engine](https://godotengine.org/) that adds [extra features](#features) while compiling down to native GDScript.
 
 ## Table of Content
