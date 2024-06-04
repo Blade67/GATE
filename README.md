@@ -11,6 +11,7 @@ GATE is a [GDScript](https://docs.godotengine.org/en/stable/tutorials/scripting/
 - [Contributing](#contributing)
 
 ## Usage
+Download the latest build for your OS from [here](https://github.com/Blade67/GATE/releases) and use it as follows:
 ```sh
 # --input, -i
 #    Path to the input `.gate` file/directory.
@@ -41,6 +42,7 @@ func count_changed(value: int) -> void:
 
 ### Optional Operator `?.`
 The `?.` (optional) operator allows you to check for null in a chain of properties.
+Note: This currently only works with variable!
 ##### Example
 ```gdscript
 func _ready() -> void:

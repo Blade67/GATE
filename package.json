@@ -6,15 +6,16 @@
     "type": "git",
     "url": "https://github.com/Blade67/GATE"
   },
-  "version": "0.0.2",
+  "version": "0.0.3",
   "module": "src/index.ts",
   "type": "module",
   "scripts": {
     "dev": "bun run src/index.ts",
     "build": "bun build --compile --minify --sourcemap ./src/index.ts --outfile ./dist/gate",
-    "build:win": "bun build --compile --minify --sourcemap --target=bun-windows-x64-modern ./src/index.ts --outfile ./dist/gate",
-    "build:linux": "bun build --compile --minify --sourcemap --target=bun-linux-x64-baseline ./src/index.ts --outfile ./dist/gate",
-    "build:mac": "bun build --compile --minify --sourcemap --target=bun-darwin-x64 ./src/index.ts --outfile ./dist/gate"
+    "build:win": "bun build --compile --minify --sourcemap --target=bun-windows-x64-modern ./src/index.ts --outfile ./dist/gate-windows",
+    "build:linux": "bun build --compile --minify --sourcemap --target=bun-linux-x64-baseline ./src/index.ts --outfile ./dist/gate-linux",
+    "build:mac": "bun build --compile --minify --sourcemap --target=bun-darwin-x64 ./src/index.ts --outfile ./dist/gate-macos",
+    "test": "bun run dev -- -i ./input/test.gate -o ./output"
   },
   "devDependencies": {
     "@types/bun": "latest"

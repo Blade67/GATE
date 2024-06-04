@@ -87,24 +87,46 @@ if (input.endsWith(".gate")) {
 Promise.all(files).then(async (files) => {
     for (let file of files) {
         let f = file.content.split("\r\n").map(l => l.trimEnd())
+        let signalStack: Array<String> = [];
+        let lastIndent = "    ";
 
         for (let i = 0; i < f.length; i++) {
             if (f[i].trimStart().startsWith("$$")) {
-                const dynamic = parseDynamic(f[i].trimStart().slice(2));
+                const dyn = f[i].trimStart().slice(2);
+                if (!dyn) continue;
+                const dynamic = parseDynamic(dyn);
+                const signal = dyn.match(/\w+/)?.[0];
+                if (signal) signalStack.push(signal);
                 f[i] = dynamic;
             }
-            if (f[i].includes("?")) {
+            if (f[i].includes("?.")) {
                 const optionalOp = parseOptional(f[i])
                 // console.log("Contains \"?\":", optionalOp, f[i]);
                 f[i] = optionalOp;
             }
+            if (f[i].startsWith("func _ready()") && signalStack.length > 0) {
+                lastIndent = f[i + 1].match(/\s+/)?.[0] ?? "    ";
+
+                if (f[i].includes("pass")) f[i] = f[i].replace("pass", "");
+                if (f[i + 1].includes("pass")) f[i + 1] = "";
+
+                f[i] += `\n${lastIndent}` + signalStack.map(s => `on_${s}_changed.connect(\"_on_${s}_changed\");`).join("\n" + lastIndent);
+
+                signalStack = [];
+            }
         }
+
         file.content = f.join("\r\n");
+
+        if (signalStack.length > 0) {
+            file.content += `\n\nfunc _ready() -> void:\n${lastIndent}` + signalStack.map(s => `on_${s}_changed.connect(\"_on_${s}_changed\");`).join("\n" + lastIndent);
+        }
     }
     return files;
 }).then(files => {
     for (let file of files) {
         file.path = file.path.replace(".gate", ".gd")
+        const fileName = file.path.split("/").pop() ?? "";
 
         if (input && output) {
             file.path = file.path.replace(input, output);
@@ -114,8 +136,9 @@ Promise.all(files).then(async (files) => {
 
         let h = header.replace(/%file_name%/g, file.path.split("/").pop())
 
+        // TODO: Fix this to account for the input/output paths as folders properly
         Bun.write(
-            file.path.replace(".gate", ".gd"),
+            output + "/" + fileName.replace(".gate", ".gd"),
             `${h}\n\n${file.content}`
         );
     }
