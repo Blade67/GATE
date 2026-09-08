@@ -1,4 +1,5 @@
 # GATE
+###### 📣 **2026-09-08** — A major update will be released soon, which shifts the codebase away from JS/TS back to raw GDScript. Expect something in the next couple of days.
 ###### ⚠ **Warning**! GATE is currently undergoing heavy development and is not yet production-ready! An engine integration will soon follow.
 GATE is a [GDScript](https://docs.godotengine.org/en/stable/tutorials/scripting/gdscript/gdscript_basics.html) superset for the [Godot Engine](https://godotengine.org/) that adds [extra features](#features) while compiling down to native GDScript.
 
