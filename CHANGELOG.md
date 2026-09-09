@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.0.1 — 2026-09-10
+
+Fixes one parser bug. No syntax changes, no behaviour changes anywhere else.
+
+### Fixed
+
+A type-first declaration with **no initialiser and a trailing comment** was not
+recognised as a declaration and was copied into the output verbatim, comment and
+all — and `Node2D? target  # who we chase` is not GDScript, so the generated file
+would not load.
+
+```gdscript
+vec2i[] tiles           # Array[Vector2i]      <- was emitted as-is
+Node2D? target          # nullable, and tracked
+priv float speed        # no initialiser
+```
+
+Comments are tokens, and the check that decides whether a line is a type-first
+declaration required the token after the name to be a newline, `=`, `:` or `,`. A
+trailing comment sits exactly where the newline would be. Declarations *with* an
+initialiser were unaffected, because the check matched on `=` before it ever
+reached the comment, and the `{K, V} name` form was unaffected because it returns
+before looking that far.
+
+Every form is pinned in the regression suite, including the two that already
+worked, so a future fix cannot trade one for the other.
+
 ## 1.0.0 — 2026-09-09
 
 First release. GATE is a GDScript superset that compiles to plain GDScript: valid

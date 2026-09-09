@@ -212,7 +212,7 @@ iterate, so it pays off only if you make more than about one pass per rebuild.
 
 ## Verification
 
-GATE is developed against a 20-stage test suite: differential execution against Godot
+GATE is developed against a 22-stage test suite: differential execution against Godot
 itself, a real-world superset corpus, build-pipeline scenarios, sourcemap fidelity,
 byte-exact output comparison and randomised input. That suite is not part of this
 repository; what ships here is the addon.

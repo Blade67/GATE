@@ -158,7 +158,9 @@ func _looks_like_typed_decl() -> bool:
 	if after.type == GateLexer.T.OP and after.value == "{":
 		var inner: GateLexer.Token = _toks[j2 + 2] if j2 + 2 < _toks.size() else null
 		return inner != null and inner.value in ["get", "set"]
+	# A comment is a token, so a trailing one sits where the NEWLINE would be.
 	return after.type == GateLexer.T.NEWLINE \
+		or after.type == GateLexer.T.COMMENT \
 		or (after.type == GateLexer.T.OP and after.value in ["=", ":", ","])
 
 
