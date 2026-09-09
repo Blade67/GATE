@@ -1,0 +1,8 @@
+class_name GateDemoWeapon
+extends RefCounted
+
+pub int damage = 25
+str label = "sword"
+
+func describe() -> str:
+	return f"{label} ({damage} dmg)"

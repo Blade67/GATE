@@ -1,0 +1,8 @@
+# GATE emits LF and normalises CRLF away on the way in, so a checkout that
+# rewrote these to CRLF would leave every committed `.gd` differing from what the
+# compiler produces for it - and the fixed-point stages compare bytes.
+* text=auto eol=lf
+*.png binary
+*.webp binary
+*.ttf binary
+*.import text eol=lf

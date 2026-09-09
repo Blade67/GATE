@@ -1,0 +1,11 @@
+config_version=5
+
+[application]
+
+config/name="GATE"
+run/main_scene=""
+config/features=PackedStringArray("4.7")
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/gate/plugin.cfg")

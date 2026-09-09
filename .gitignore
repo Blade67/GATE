@@ -1,0 +1,5 @@
+.godot/
+
+# Written when GATE compiles a file whose output Godot then refuses to load, so
+# the rejected text can be read. Debris once the cause is fixed.
+*.gd.rejected
