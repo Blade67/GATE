@@ -74,6 +74,8 @@ class Registry extends RefCounted:
 		if not (t is GateAST.TypeRef):
 			return ""
 		var tr: GateAST.TypeRef = t
+		if tr.is_union() or tr.is_tuple() or tr.is_func_type:
+			return tr.describe()
 		var g: PackedStringArray = PackedStringArray()
 		for a in tr.generic_args:
 			g.append(_type_sig(a))

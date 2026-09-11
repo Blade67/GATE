@@ -177,7 +177,16 @@ func _expr(e) -> String:
 			var res2: String = _new_tmp()
 			_hoist("var %s = (%s[%s] if %s != null else null)" % [res2, base2, idx, base2])
 			return res2
-		return "%s[%s]" % [base2, idx]
+		if _is_value_class(_static_type_of(ix.index)):
+			_struct_key_error(ix.index)
+		var pair: PackedStringArray = _ordered([ix.target, ix.index], func(i: int) -> String:
+			if i == 0:
+				return _postfix_base(ix.target)
+			return _expr(ix.index))
+		return "%s[%s]" % [pair[0], pair[1]]
+
+	if e is GateAST.Widen and not (e as GateAST.Widen).guards.is_empty():
+		return _emit_widen(e)
 
 	if e is GateAST.Call:
 		return _emit_call(e)
@@ -395,6 +404,37 @@ func _guarded_operand(op: String, lhs: String, rhs_pending: PackedStringArray, r
 		_hoist("	" + h)
 	_hoist("	%s = %s" % [t, rhs])
 	return t
+
+
+func _emit_widen(w: GateAST.Widen) -> String:
+	var inner = w.args[0]
+	var text: String = _expr(inner)
+	var subject: String = text
+	var wrap: bool = false
+	if not _repeatable(inner, text):
+		var ctx: String = _no_hoist_ctx()
+		if ctx == "":
+			subject = _render_once(inner, text)
+		elif ctx != "const" and ctx != "annotation":
+			subject = "__gate_v"
+			wrap = true
+	var out: String
+	var last: Array = w.guards[w.guards.size() - 1]
+	if String(last[0]) == "null":
+		out = "(%s(%s) if %s != null else null)" % [last[1], subject, subject]
+	elif w.guards.size() == 1:
+		out = "(%s(%s) if %s is %s else %s)" % [last[1], subject, subject, last[0], subject]
+	else:
+		var chain: String = "%s(%s)" % [last[1], subject]
+		var tests: PackedStringArray = PackedStringArray(["%s is %s" % [subject, last[0]]])
+		for i in range(w.guards.size() - 2, -1, -1):
+			var g: Array = w.guards[i]
+			chain = "(%s(%s) if %s is %s else %s)" % [g[1], subject, subject, g[0], chain]
+			tests.insert(0, "%s is %s" % [subject, g[0]])
+		out = "(%s if %s else %s)" % [chain, " or ".join(tests), subject]
+	if wrap:
+		return "(func(__gate_v): return %s).call(%s)" % [out, text]
+	return out
 
 
 func _emit_is(ie: GateAST.IsExpr) -> String:

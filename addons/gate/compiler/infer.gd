@@ -10,10 +10,58 @@ extends "res://addons/gate/compiler/infer_core.gd"
 
 func build(mod: GateAST.Module, registry = null) -> void:
 	fields.clear(); methods.clear(); bases.clear(); module_functions.clear()
+	struct_names.clear(); open_types.clear(); untyped_fields.clear()
+	member_names.clear(); signals.clear(); generic_params.clear(); implements.clear()
+	accessor_fields.clear()
+	_class_index.clear(); _ref_names.clear(); priv_members.clear()
+	_names_built = false
+	_names_mod = mod
+	_names_registry = registry
 	if registry != null:
-		for k in registry.fields: fields[k] = registry.fields[k]
-		for k in registry.methods: methods[k] = registry.methods[k].duplicate()
-		for k in registry.bases: bases[k] = registry.bases[k]
+		var own: Dictionary = {}
+		_declared_classes(mod.members, own)
+		if mod.class_name_decl != "":
+			own[mod.class_name_decl] = true
+		for k in registry.fields:
+			if _from_registry(registry, k, own): fields[k] = registry.fields[k]
+		for k in registry.methods:
+			if _from_registry(registry, k, own):
+				methods[k] = registry.methods[k].duplicate()
+				_ref_names[String(k).substr(String(k).rfind(".") + 1)] = true
+		for k in registry.bases:
+			if _from_registry(registry, k + ".", own): bases[k] = registry.bases[k]
+		var own_all: Dictionary = GateChecker.own_names(mod.members)
+		for k in registry.structs:
+			if not own_all.has(k): struct_names[k] = registry.structs[k]
+		for k in registry.interfaces:
+			if not own.has(k): open_types[k] = true
+		for k in registry.traits:
+			if not own.has(k): open_types[k] = true
+		for k in registry.classes:
+			if not own.has(k): _note_implements(registry.classes[k])
+		for g in registry.generics:
+			generic_params[g] = (registry.generics[g] as GateAST.ClassDecl).generic_params
+		var scripts: Dictionary = registry.script_class_decls if "script_class_decls" in registry else {}
+		var tables: Array = [registry.classes, registry.structs, registry.namespaces, registry.generics,
+			scripts]
+		for ti in tables.size():
+			var table: Dictionary = tables[ti]
+			for cname in table:
+				if ti == 4 and own.has(cname):
+					continue   # this file's own class_name
+				_class_index[cname] = true
+				if not own.has(cname):
+					var rcd: GateAST.ClassDecl = table[cname]
+					_index_signals(rcd.members, String(cname))
+					_note_implements(rcd)
+					for rm in rcd.members:
+						if (rm is GateAST.FuncDecl or rm is GateAST.VarDecl) and rm.visibility == "priv" \
+								and not String(rm.name).begins_with("_"):
+							priv_members["%s.%s" % [cname, rm.name]] = true
+		for iname in registry.interfaces:
+			var icd: GateAST.ClassDecl = registry.interfaces[iname]
+			if not own.has(iname):
+				_note_implements(icd)
 	_index(mod.members, MODULE_CLASS)
 	if mod.extends_type != null:
 		bases[MODULE_CLASS] = mod.extends_type.name
@@ -25,7 +73,33 @@ func build(mod: GateAST.Module, registry = null) -> void:
 			if not module_functions.has(fd.name):
 				module_functions[fd.name] = []
 			module_functions[fd.name].append(fd)
-	_build_effects()
+	_accessor_names.clear()
+	for ak in accessor_fields:
+		_accessor_names[String(ak).substr(String(ak).rfind(".") + 1)] = true
+	_method_names.clear()
+	for mk in methods:
+		_method_names[String(mk).substr(String(mk).rfind(".") + 1)] = true
+	_fx_built = false
+
+
+## The last part of every key in accessor_fields and methods. A lookup of a name
+## missing here finds nothing whatever the receiver, so its type need not be worked out.
+var _accessor_names: Dictionary = {}
+var _method_names: Dictionary = {}
+
+
+static func _declared_classes(members: Array, out: Dictionary) -> void:
+	for m in members:
+		if m is GateAST.ClassDecl:
+			out[(m as GateAST.ClassDecl).name] = true
+			_declared_classes((m as GateAST.ClassDecl).members, out)
+
+
+## Whether a registry entry applies here. A class this file declares wins.
+static func _from_registry(registry, key: String, own: Dictionary) -> bool:
+	var cls: String = key.substr(0, key.rfind("."))
+	return not own.has(cls) and (registry.top_level.has(cls)
+		or ("script_class_decls" in registry and registry.script_class_decls.has(cls)))
 
 
 class Effects extends RefCounted:

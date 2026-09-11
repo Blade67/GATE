@@ -14,9 +14,16 @@ var classes: Dictionary = {}      ## name -> ClassDecl
 
 const ENGINE_PREFIX := "_"
 
+var _registry: Variant = null
+var _enum_names: Dictionary = {}
+
 
 func check(mod: GateAST.Module, diags: GateDiagnostics, registry = null) -> void:
 	diagnostics = diags
+	_registry = registry
+	_path = mod.path
+	_parsed = {}
+	super_calls = {}
 	interfaces.clear(); traits.clear(); structs.clear(); classes.clear()
 
 	_collect(mod.members)
@@ -47,22 +54,227 @@ func _check_type_names(members: Array, known: Dictionary) -> void:
 			_check_type_names(cd.members, inner)
 		elif m is GateAST.VarDecl:
 			var vd: GateAST.VarDecl = m
-			if vd.type != null and vd.type.strict:
-				_verify_type_name(vd.type, known)
+			_check_one_type(vd.type, known)
+			_check_type_names_in_expr(vd.value, known)
+		elif m is GateAST.SignalDecl:
+			for sp in (m as GateAST.SignalDecl).params:
+				_check_one_type((sp as GateAST.Param).type, known, _registry != null)
 		elif m is GateAST.FuncDecl:
 			var fd: GateAST.FuncDecl = m
 			for p in fd.params:
 				var pp: GateAST.Param = p
-				if pp.type != null and pp.type.strict:
-					_verify_type_name(pp.type, known)
-			if fd.return_type != null and fd.return_type.strict:
-				_verify_type_name(fd.return_type, known)
+				_check_one_type(pp.type, known)
+				_check_type_names_in_expr(pp.default, known)
+			_check_one_type(fd.return_type, known)
 			_check_type_names(fd.body, known)
+		elif m is GateAST.AnnotatedStmt:
+			_check_type_names([(m as GateAST.AnnotatedStmt).stmt], known)
+		elif m is GateAST.IfStmt:
+			var ifs: GateAST.IfStmt = m
+			_check_type_names_in_expr(ifs.cond, known)
+			_check_type_names(ifs.then_body, known)
+			for pair in ifs.elifs:
+				_check_type_names_in_expr(pair[0], known)
+				_check_type_names(pair[1], known)
+			_check_type_names(ifs.else_body, known)
+		elif m is GateAST.ForStmt:
+			var fo: GateAST.ForStmt = m
+			_check_one_type(fo.var_type, known)
+			_check_type_names_in_expr(fo.iterable, known)
+			_check_type_names(fo.body, known)
+		elif m is GateAST.WhileStmt:
+			_check_type_names_in_expr((m as GateAST.WhileStmt).cond, known)
+			_check_type_names((m as GateAST.WhileStmt).body, known)
+		elif m is GateAST.MatchStmt:
+			var ms: GateAST.MatchStmt = m
+			_check_type_names_in_expr(ms.subject, known)
+			for br in ms.branches:
+				for pat in br[0]:
+					if pat is GateAST.TypePattern:
+						_check_one_type((pat as GateAST.TypePattern).type, known)
+				_check_type_names_in_expr(br[1], known)
+				_check_type_names(br[2], known)
+		elif m is GateAST.ReturnStmt:
+			_check_type_names_in_expr((m as GateAST.ReturnStmt).value, known)
+		elif m is GateAST.ExprStmt:
+			_check_type_names_in_expr((m as GateAST.ExprStmt).expr, known)
+		elif m is GateAST.AssignStmt:
+			_check_type_names_in_expr((m as GateAST.AssignStmt).value, known)
+		elif m is GateAST.MultiAssign:
+			for v in (m as GateAST.MultiAssign).values:
+				_check_type_names_in_expr(v, known)
+
+
+func _check_type_names_in_expr(e, known: Dictionary) -> void:
+	if e == null:
+		return
+	if e is GateAST.Lambda:
+		var lam: GateAST.Lambda = e
+		for p in lam.params:
+			_check_one_type((p as GateAST.Param).type, known)
+		_check_one_type(lam.return_type, known)
+		_check_type_names(lam.body, known)
+		_check_type_names_in_expr(lam.expr_body, known)
+	elif e is GateAST.Call:
+		_check_type_names_in_expr((e as GateAST.Call).callee, known)
+		for a in (e as GateAST.Call).args:
+			_check_type_names_in_expr(a, known)
+	elif e is GateAST.Binary:
+		_check_type_names_in_expr((e as GateAST.Binary).left, known)
+		_check_type_names_in_expr((e as GateAST.Binary).right, known)
+	elif e is GateAST.Unary:
+		_check_type_names_in_expr((e as GateAST.Unary).operand, known)
+	elif e is GateAST.Ternary:
+		_check_type_names_in_expr((e as GateAST.Ternary).cond, known)
+		_check_type_names_in_expr((e as GateAST.Ternary).if_true, known)
+		_check_type_names_in_expr((e as GateAST.Ternary).if_false, known)
+	elif e is GateAST.NullCoalesce:
+		_check_type_names_in_expr((e as GateAST.NullCoalesce).left, known)
+		_check_type_names_in_expr((e as GateAST.NullCoalesce).right, known)
+	elif e is GateAST.ArrayLit:
+		for el in (e as GateAST.ArrayLit).elements:
+			_check_type_names_in_expr(el, known)
+	elif e is GateAST.DictLit:
+		for v in (e as GateAST.DictLit).values:
+			_check_type_names_in_expr(v, known)
+
+
+func _check_one_type(t: GateAST.TypeRef, known: Dictionary, always: bool = false) -> void:
+	if t == null:
+		return
+	if always or _checkable(t):
+		_verify_type_name(t, known)
+	_check_type_depth(t)
+
+
+func _check_type_depth(t: GateAST.TypeRef) -> void:
+	if t == null:
+		return
+	for g in t.generic_args:
+		_check_type_depth(g)
+	for sub in [t.dict_key, t.dict_value, t.set_elem, t.callable_return]:
+		_check_type_depth(sub)
+	for u in t.union_members:
+		_check_type_depth(u)
+	for te in t.tuple_elems:
+		_check_type_depth(te)
+	var levels: int = array_levels(t)
+	if levels < 3:
+		return
+	diagnostics.error("'%s' is %d levels of array, and GDScript nests typed arrays only one level deep"
+			% [t.describe(), levels], t.line, t.col,
+		"an array of arrays of arrays cannot be written in GDScript (proposal #12224). "
+		+ "Hold the inner arrays in a struct or a class, or keep the type untyped")
+
+
+static func array_levels(t: GateAST.TypeRef) -> int:
+	if t == null or t.is_dict() or t.is_set() or t.is_union() or t.is_tuple():
+		return 0
+	var n: int = t.array_depth
+	if GateTypes.canonical(t.name) == "Array" and t.generic_args.size() == 1:
+		n += 1 + array_levels(t.generic_args[0])
+	return n
+
+
+func _checkable(t: GateAST.TypeRef) -> bool:
+	return t != null and (t.strict or is_gate_only_type(t) or _has_angle_args(t)
+		or (not _cycle_names.is_empty() and _cycle_names.has(t.name)))
+
+
+var _cycle_names: Dictionary = {}
+
+
+static func _has_angle_args(t: GateAST.TypeRef) -> bool:
+	if t == null:
+		return false
+	var base: String = GateTypes.canonical(t.name)
+	if not t.generic_args.is_empty() and base != "Array" and base != "Dictionary":
+		return true
+	for g in t.generic_args:
+		if _has_angle_args(g):
+			return true
+	return false
+
+
+func _verify_type_arguments(t: GateAST.TypeRef, known: Dictionary) -> void:
+	if t.generic_args.is_empty() or known.has(t.name):
+		return
+	var base: String = GateTypes.canonical(t.name)
+	if base == "PackedScene":
+		if t.generic_args.size() != 1:
+			diagnostics.error("PackedScene takes one type argument, but %d given"
+					% t.generic_args.size(), t.line, t.col,
+				"the scene's root node type, as in `PackedScene<Enemy>`")
+			return
+		var arg: GateAST.TypeRef = t.generic_args[0]
+		var node: int = _is_node_type(arg, known)
+		if node == 0:
+			diagnostics.error("PackedScene<%s>: %s is not a Node type" % [arg.describe(),
+					arg.describe()], arg.line, arg.col,
+				"a scene's root is a Node, so instantiate() never returns anything else")
+		return
+	var template: GateAST.ClassDecl = null
+	if classes.has(t.name) and classes[t.name] is GateAST.ClassDecl:
+		template = classes[t.name]
+	elif _registry != null and _registry.generics.has(t.name):
+		template = _registry.generics[t.name]
+	if template == null or base == "Array" or base == "Dictionary":
+		return
+	var want: int = template.generic_params.size()
+	if want == 0:
+		diagnostics.error("'%s' is not generic, so it takes no type arguments" % t.name,
+			t.line, t.col)
+	elif t.generic_args.size() != want:
+		diagnostics.error("'%s' takes %d type argument(s), but %d given"
+				% [t.name, want, t.generic_args.size()], t.line, t.col,
+			"it is declared `%s<%s>`" % [t.name, ", ".join(PackedStringArray(template.generic_params))])
+
+
+func _is_node_type(t: GateAST.TypeRef, known: Dictionary) -> int:
+	if t.nullable or t.array_depth > 0 or t.is_dict() or t.is_set() or t.is_union() \
+			or t.is_tuple() or t.is_func_type:
+		return 0
+	if known.has(t.name) or t.name.contains("."):
+		return -1
+	var seen: Dictionary = {}
+	var c: String = GateTypes.canonical(t.name)
+	while c != "" and not seen.has(c):
+		seen[c] = true
+		if c == "Node" or (ClassDB.class_exists(c) and ClassDB.is_parent_class(c, "Node")):
+			return 1
+		if ClassDB.class_exists(c) or GateTypes.BUILTIN.has(c) or structs.has(c) \
+				or GateTypeCompat.PACKED_ARRAYS.has(c) or _enum_names.has(c):
+			return 0
+		if classes.has(c):
+			var cd: GateAST.ClassDecl = classes[c]
+			c = cd.extends_type.name if cd.extends_type != null else "RefCounted"
+			continue
+		return -1
+	return -1
+
+
+static func is_gate_only_type(t: GateAST.TypeRef) -> bool:
+	if t == null:
+		return false
+	if t.is_union() or t.is_tuple() or t.is_func_type:
+		return true
+	for g in t.generic_args:
+		if is_gate_only_type(g):
+			return true
+	return is_gate_only_type(t.dict_key) or is_gate_only_type(t.dict_value)
 
 
 func _verify_type_name(t: GateAST.TypeRef, known: Dictionary) -> void:
 	if t == null or t.is_path_literal:
 		return
+	for um in t.union_members:
+		_verify_type_name(um, known)
+	for te in t.tuple_elems:
+		_verify_type_name(te, known)
+	for cp in t.callable_params:
+		_verify_type_name(cp, known)
+	if t.is_func_type and t.callable_return != null and t.callable_return.name != "void":
+		_verify_type_name(t.callable_return, known)
 	for g in t.generic_args:
 		_verify_type_name(g, known)
 	if t.dict_key != null:

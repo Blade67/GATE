@@ -15,6 +15,14 @@ func parse(tokens: Array, source: String, diags: GateDiagnostics) -> GateAST.Mod
 	_lines = source.split("\n")
 	_panic = false
 	_saw_nullable = false
+	_saw_alias = false
+	_saw_gate_type = false
+	_alias_names = {}
+	_names_scanned = false
+	_generic_names = {}
+	_templates_scanned = false
+	_templates = {}
+	_seed_aliases()
 
 	var mod: GateAST.Module = GateAST.Module.new()
 	_skip_newlines()
@@ -33,6 +41,8 @@ func parse(tokens: Array, source: String, diags: GateDiagnostics) -> GateAST.Mod
 		_skip_newlines()
 	mod.generic_uses = _generic_uses
 	mod.uses_nullable = _saw_nullable
+	mod.has_aliases = _saw_alias
+	mod.uses_gate_types = _saw_gate_type
 	return mod
 
 const FILE_ANNOTATIONS := ["tool", "icon", "static_unload", "abstract"]
@@ -194,6 +204,13 @@ func _parse_member() -> GateAST.Stmt:
 			vd2.visibility = visibility
 			vd2.is_static = is_static
 		return vd2
+
+	if _check_op("<") or _check_op("<<") or (_check(GateLexer.T.IDENT)
+			and (_peek(1).is_op("<") or _peek(1).is_op("<<"))):
+		_err("this declaration's type does not parse",
+			"check the brackets: `<a | b>`, `<a, b>`, `Box<T>`, and `>>` closes two")
+		_skip_to_statement_end()
+		return null
 
 	_skip_to_statement_end()
 	var raw: GateAST.RawStmt = _raw_from(start_line, maxi(_cur().line, start_line))
@@ -357,11 +374,20 @@ func _parse_var_decl(strict_end := false) -> GateAST.VarDecl:
 	if _check_op("["):
 		return null if not _rewind_to(kw) else null
 
+	if vd.is_const and (_looks_like_typed_decl() or _looks_like_paren_type_decl()):
+		vd.type = _parse_type()
+		vd.type.strict = true
 	if not (_check(GateLexer.T.IDENT) or _check(GateLexer.T.KEYWORD)):
 		_err("expected a variable name after '%s'" % kw.value)
 		_skip_to_statement_end()
 		return null
 	vd.name = _advance().value
+	if vd.type != null:
+		if _match_op("="):
+			vd.value = _parse_expr()
+		else:
+			_err("a constant needs a value", "write `const %s %s = ...`" % [vd.type.describe(), vd.name])
+		return vd
 
 	if _match_op(":="):
 		vd.inferred = true

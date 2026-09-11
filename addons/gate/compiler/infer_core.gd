@@ -9,12 +9,139 @@ var static_fields: Dictionary = {}
 var methods: Dictionary = {}
 var bases: Dictionary = {}
 var module_functions: Dictionary = {}
+var struct_names: Dictionary = {}
+var untyped_fields: Dictionary = {}
+var open_types: Dictionary = {}
+var implements: Dictionary = {}
+var accessor_fields: Dictionary = {}
+
+var _accessor_re: RegEx = RegEx.create_from_string("(^|[\\s,:])(set|get)\\s*[(=:]")
+
+
+func accessor_kinds(vd: GateAST.VarDecl) -> Dictionary:
+	var out: Dictionary = {}
+	for a in vd.annotations:
+		if (a as GateAST.Annotation).name == "observable":
+			out["set"] = true
+	var text: String = vd.setter + "\n" + vd.inline_accessors
+	if text.strip_edges() != "":
+		for line in text.split("\n"):
+			for rm in _accessor_re.search_all(String(line).strip_edges()):
+				out[rm.get_string(2)] = true
+	if out.is_empty():
+		return out
+	return {"get": out.has("get"), "set": out.has("set")}
+
+
+func _note_implements(cd: GateAST.ClassDecl) -> void:
+	var names: Array = []
+	for n in cd.interface_names + cd.implements + cd.traits:
+		if not names.has(n):
+			names.append(n)
+	if not names.is_empty():
+		implements[cd.name] = names
+
+
+func implements_type(cls: String, iface: String) -> bool:
+	return cls != iface and implements_interface(cls, iface)
+var member_names: Dictionary = {}
+var signals: Dictionary = {}          ## "Class.name" -> SignalDecl
+var generic_params: Dictionary = {}   ## generic template name -> its parameter names
 
 const MODULE_CLASS := "@module"
 
 
-func _index(members: Array, owner: String) -> void:
+func _index_member_names(members: Array, owner: String) -> void:
 	for m in members:
+		if m is GateAST.FuncDecl:
+			member_names["%s.%s" % [owner, (m as GateAST.FuncDecl).name]] = true
+		elif m is GateAST.VarDecl:
+			member_names["%s.%s" % [owner, (m as GateAST.VarDecl).name]] = true
+		elif m is GateAST.SignalDecl:
+			member_names["%s.%s" % [owner, (m as GateAST.SignalDecl).name]] = true
+			signals["%s.%s" % [owner, (m as GateAST.SignalDecl).name]] = m
+		elif m is GateAST.EnumDecl:
+			var ed: GateAST.EnumDecl = m
+			if ed.name != "":
+				member_names["%s.%s" % [owner, ed.name]] = true
+			else:
+				for k in ed.keys:
+					member_names["%s.%s" % [owner, k]] = true
+		elif m is GateAST.ClassDecl:
+			var cd: GateAST.ClassDecl = m
+			member_names["%s.%s" % [owner, cd.name]] = true
+			_index_member_names(cd.members, cd.name)
+
+
+func has_member(cls: String, name: String) -> int:
+	_ensure_member_names()
+	var seen: Dictionary = {}
+	var c: String = cls
+	while c != "" and not seen.has(c):
+		seen[c] = true
+		if c != MODULE_CLASS and ClassDB.class_exists(c):
+			if ClassDB.class_has_method(c, name) or ClassDB.class_has_signal(c, name) \
+					or ClassDB.class_has_integer_constant(c, name):
+				return 1
+			if name == "free":
+				return 0 if (c == "RefCounted" or ClassDB.is_parent_class(c, "RefCounted")) else 1
+			for p in ClassDB.class_get_property_list(c):
+				if String(p["name"]) == name:
+					return 1
+			return 0
+		if member_names.has("%s.%s" % [c, name]):
+			return 1
+		if not has_class(c):
+			return -1
+		c = String(bases.get(c, "RefCounted"))
+	return -1
+
+
+func emitted_member(cls: String, name: String) -> String:
+	_ensure_member_names()
+	var seen: Dictionary = {}
+	var c: String = cls
+	while c != "" and not seen.has(c):
+		seen[c] = true
+		if c != MODULE_CLASS and ClassDB.class_exists(c):
+			return name
+		if struct_names.has(c) and (struct_names[c] as GateAST.ClassDecl).lowering == "vector":
+			var fields: Array = []
+			for f in GateChecker.struct_fields(struct_names[c]):
+				fields.append((f as GateAST.VarDecl).name)
+			var at: int = fields.find(name)
+			return name if at < 0 else String(GateTypes.VECTOR_COMPONENTS[at])
+		var fns: Array = methods.get("%s.%s" % [c, name], [])
+		if fns.size() > 1:
+			var mangled: Array = []
+			for fd in fns:
+				var m: String = (fd as GateAST.FuncDecl).mangled_name
+				mangled.append(m if m != "" else name)
+			mangled.sort()
+			return ",".join(PackedStringArray(mangled))
+		if fns.size() == 1:
+			var one: String = (fns[0] as GateAST.FuncDecl).mangled_name
+			if one != "":
+				return one
+		if priv_members.has("%s.%s" % [c, name]):
+			return "_" + name
+		if member_names.has("%s.%s" % [c, name]):
+			return name
+		if not _class_index.has(c):
+			return ""
+		c = String(bases.get(c, "RefCounted"))
+	return ""
+
+
+var priv_members: Dictionary = {}     ## "Class.name" -> true for a `priv` member
+
+
+func _index(members: Array, owner: String) -> void:
+	_class_index[owner] = true
+	for m in members:
+		if (m is GateAST.FuncDecl or m is GateAST.VarDecl) and m.visibility == "priv" \
+				and not String(m.name).begins_with("_"):
+			priv_members["%s.%s" % [owner, m.name]] = true
 		if m is GateAST.FuncDecl:
 			var key: String = "%s.%s" % [owner, (m as GateAST.FuncDecl).name]
 			if not methods.has(key):
@@ -110,6 +237,19 @@ const PACKED_ELEM := {
 }
 
 
+static func maybe_null(t: GateAST.TypeRef, base_may_be_null: bool) -> GateAST.TypeRef:
+	if not base_may_be_null or (t != null and t.nullable):
+		return t
+	if t == null:
+		var any: GateAST.TypeRef = GateAST.TypeRef.new()
+		any.name = "Variant"
+		any.nullable = true
+		return any
+	var c: GateAST.TypeRef = GateChecker.copy_type(t)
+	c.nullable = true
+	return c
+
+
 func element_type(t: GateAST.TypeRef) -> GateAST.TypeRef:
 	if t == null:
 		return null
@@ -141,6 +281,87 @@ func has_class(cls: String) -> bool:
 		if String(k).begins_with(cls + "."):
 			return true
 	return false
+
+
+func _method_ref(n: String, locals: Dictionary) -> GateAST.FuncDecl:
+	var self_t: Variant = locals.get("self", null)
+	var cands: Array = []
+	if self_t is GateAST.TypeRef:
+		var cls: String = (self_t as GateAST.TypeRef).name
+		cands = method_candidates(cls, n)
+		if cands.is_empty() and (cls != MODULE_CLASS or _declares(cls, n)):
+			return null
+	if cands.is_empty():
+		cands = module_functions.get(n, [])
+	return cands[0] if cands.size() == 1 else null
+
+
+func _declares(cls: String, n: String) -> bool:
+	_ensure_member_names()
+	var seen: Dictionary = {}
+	var c: String = cls
+	while c != "" and not seen.has(c):
+		seen[c] = true
+		if member_names.has("%s.%s" % [c, n]):
+			return true
+		c = String(bases.get(c, ""))
+	return false
+
+
+func tuple_element(t: GateAST.TypeRef, index) -> GateAST.TypeRef:
+	var i: int = -1
+	if index is GateAST.Literal and (index as GateAST.Literal).kind == "number" \
+			and (index as GateAST.Literal).raw.is_valid_int():
+		i = int((index as GateAST.Literal).raw)
+	elif index is GateAST.Unary and (index as GateAST.Unary).op == "-" \
+			and (index as GateAST.Unary).operand is GateAST.Literal \
+			and ((index as GateAST.Unary).operand as GateAST.Literal).raw.is_valid_int():
+		i = t.tuple_elems.size() - int(((index as GateAST.Unary).operand as GateAST.Literal).raw)
+	if i < 0 or i >= t.tuple_elems.size():
+		return null
+	return t.tuple_elems[i]
+
+
+func implements_interface(cls: String, iface: String) -> bool:
+	var seen: Dictionary = {}
+	var queue: Array = [cls]
+	while not queue.is_empty():
+		var c: String = queue.pop_front()
+		if c == "" or seen.has(c):
+			continue
+		seen[c] = true
+		if c == iface:
+			return true
+		queue.append_array(implements.get(c, []))
+		queue.append(String(bases.get(c, "")))
+	return false
+
+
+func has_class(cls: String) -> bool:
+	return bases.has(cls) or _class_index.has(cls)
+
+
+var _class_index: Dictionary = {}
+var _ref_names: Dictionary = {}
+
+var _names_built: bool = false
+var _names_mod: GateAST.Module = null
+var _names_registry: Variant = null
+
+
+func _ensure_member_names() -> void:
+	if _names_built:
+		return
+	_names_built = true
+	if _names_registry != null:
+		var scripts: Dictionary = _names_registry.script_class_decls \
+			if "script_class_decls" in _names_registry else {}
+		for table in [_names_registry.classes, _names_registry.structs,
+				_names_registry.namespaces, _names_registry.generics, scripts]:
+			for cname in table:
+				_index_member_names((table[cname] as GateAST.ClassDecl).members, String(cname))
+	if _names_mod != null:
+		_index_member_names(_names_mod.members, MODULE_CLASS)
 
 
 func type_of(e, locals: Dictionary) -> GateAST.TypeRef:
@@ -183,7 +404,11 @@ func type_of(e, locals: Dictionary) -> GateAST.TypeRef:
 
 	if e is GateAST.Index:
 		var ix: GateAST.Index = e
-		return element_type(type_of(ix.target, locals))
+		var target_t: GateAST.TypeRef = type_of(ix.target, locals)
+		var ix_null: bool = ix.safe and target_t != null and target_t.nullable
+		if target_t != null and target_t.is_tuple() and target_t.array_depth == 0:
+			return maybe_null(tuple_element(target_t, ix.index), ix_null)
+		return maybe_null(element_type(target_t), ix_null)
 
 	if e is GateAST.Lambda:
 		var lam: GateAST.Lambda = e

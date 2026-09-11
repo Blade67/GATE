@@ -533,6 +533,7 @@ func _parse_primary() -> GateAST.Expr:
 	if t.type == GateLexer.T.IDENT:
 		if _check_generic_instantiation():
 			_advance()
+			_split_generic_span(_i)
 			var gtype: GateAST.TypeRef = GateAST.TypeRef.new()
 			gtype.at(t.line, t.col)
 			gtype.name = t.value

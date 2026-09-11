@@ -18,6 +18,11 @@ loads, and behaves identically. Recompiling GATE's own output gives back the sam
    * [Structs](#structs)
    * [Interfaces, traits and namespaces](#interfaces-traits-and-namespaces)
    * [Generics](#generics)
+   * [Unions, tuples and typed callables](#unions-tuples-and-typed-callables)
+   * [Type aliases and typed scenes](#type-aliases-and-typed-scenes)
+   * [Narrowing and match patterns](#narrowing-and-match-patterns)
+   * [Swizzling and object initialisers](#swizzling-and-object-initialisers)
+   * [Editor annotations](#editor-annotations)
    * [Expressions](#expressions)
 - [Performance](#performance)
 - [Known limitations](#known-limitations)
@@ -86,6 +91,11 @@ int[] scores            # PackedInt32Array
 {str, int} counts       # Dictionary[String, int]
 int[][] grid            # Array[PackedInt32Array] - GDScript rejects nested typed collections
 ```
+
+The short names are spellings, not new types. `str` **is** `String`, `vec2` is `Vector2`,
+`f64` is `float`: same value, same methods, same thing every Godot API takes and returns,
+with no wrapper and no conversion. Write `String` instead if you prefer - both compile to
+the same line.
 
 ### Null safety
 
@@ -159,6 +169,100 @@ class Pool<T> extends Node:
 		return _items.pop_back() if _items.size() > 0 else null
 
 var bullets = Pool<Bullet>.new()
+```
+
+### Unions, tuples and typed callables
+
+All three compile to plain GDScript types and are checked at compile time. A union holds
+one of its members, a tuple is an array of fixed length with a type per slot, and a typed
+callable says what it takes and returns.
+
+##### Example
+```gdscript
+<int | str> id = 7                          # var id: Variant = 7
+<int, str> entry = [7, "hp"]                # var entry: Array = [7, "hp"]
+func(int) -> bool keep = func(x): return x > 0
+
+func update() -> void:
+	id = 1.5                                # error: float is not int or String
+	entry[1] = 3                            # error: slot 1 is a String
+	keep.call("7")                          # error: expects int
+```
+
+### Type aliases and typed scenes
+
+`type` names a type once; nothing is emitted for it. `PackedScene<T>` makes
+`instantiate()` return a `T`.
+
+##### Example
+```gdscript
+type Hp = int
+type Loot = <Item | Gold>
+
+Hp health = 100                             # var health: int = 100
+PackedScene<Enemy> scene = preload("res://enemy.tscn")
+Enemy e = scene.instantiate()               # typed, no cast
+```
+
+Signals you declared with types are checked too: `hit.emit("x")` on `signal hit(amount: int)`
+is a warning. Only a warning, because Godot accepts it.
+
+### Narrowing and match patterns
+
+After `if x is T:`, or an early exit that proves it, `x` is a `T`. A `match` arm can test a
+type and bind it in one go, and it composes with `when`.
+
+##### Example
+```gdscript
+func area(s: Shape) -> float:
+	match s:
+		Circle c:
+			return PI * c.r * c.r
+		Rect r when r.w == r.h:
+			return r.w * r.w
+		Rect r:
+			return r.w * r.h
+	return 0.0
+
+func hit(n: Node) -> void:
+	if n is not Enemy:
+		return
+	n.take_damage(1)                        # n is an Enemy here
+```
+
+`Foo f = x as Foo` is an error unless `x is Foo` was proved first, since a failed `as` is
+null. Plain GDScript's `(x as Foo).bar()` is left alone.
+
+### Swizzling and object initialisers
+
+`.xy`, `.xz`, `.zyx` and the rest work on any statically typed vector, reading and
+writing. An object can be built and filled in one expression.
+
+##### Example
+```gdscript
+vec3 p = Vector3(1, 2, 3)
+vec2 flat = p.xz                            # Vector2(p.x, p.z)
+p.xy = Vector2(5, 6)
+
+var e = scene.instantiate({ position: spawn, hp: 40 + wave * 10, target: player })
+var l = Label.new({ text: "Ready", modulate: Color.RED })
+var d = Damage({ amount: 3, source: "fire" })
+```
+
+### Editor annotations
+
+`@required` asserts in `_ready` that an exported node was assigned, in debug builds.
+`@export_if` shows a property in the inspector only while a condition holds; it needs
+`@tool`, and GATE will not add that for you.
+
+##### Example
+```gdscript
+@tool
+extends Node
+
+@export @required Node2D target
+@export bool use_timer = false
+@export_if(use_timer) float delay = 1.0
 ```
 
 ### Expressions

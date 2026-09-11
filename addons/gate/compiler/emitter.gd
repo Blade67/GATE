@@ -25,6 +25,7 @@ func emit(mod: GateAST.Module, diags: GateDiagnostics, path: String) -> Dictiona
 	_preload_targets.clear()
 	_pending_line_src = []
 	_generic_renames.clear()
+	_enum_names.clear()
 	_in_namespace = false
 	_warned_narrow = false
 
@@ -821,6 +822,15 @@ func _emit_multi_assign(m: GateAST.MultiAssign) -> void:
 		_flush_pending(m.line)
 		var tmp: String = _new_tmp()
 		_line("var %s = %s" % [tmp, src], m.line)
+		var st_t: GateAST.TypeRef = (m.values[0] as GateAST.Expr).flow_type \
+			if m.values[0] is GateAST.Expr else null
+		var elems: Array = st_t.tuple_elems if st_t != null and st_t.is_tuple() else []
+		var etrs: Array = []
+		for i in m.targets.size():
+			var et: GateAST.TypeRef = _elem_tref_of(m.values[0], i)
+			if et == null and i < elems.size():
+				et = elems[i]
+			etrs.append(et)
 		for i in m.targets.size():
 			var name: String = (m.targets[i] as GateAST.Ident).name
 			_line("var %s = %s[%d]" % [name, tmp, i], m.line)

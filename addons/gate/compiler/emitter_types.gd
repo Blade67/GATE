@@ -113,6 +113,9 @@ func _index_local_names(members: Array) -> void:
 			_index_local_names(cd.members)
 		elif m is GateAST.VarDecl:
 			_bound_names[(m as GateAST.VarDecl).name] = true
+			if (m as GateAST.VarDecl).is_const and (m as GateAST.VarDecl).value != null:
+				_const_exprs[(m as GateAST.VarDecl).name] = (m as GateAST.VarDecl).value
+			_index_expr_names((m as GateAST.VarDecl).value)
 		elif m is GateAST.FuncDecl:
 			var fd: GateAST.FuncDecl = m
 			_bound_names[fd.name] = true
@@ -444,6 +447,19 @@ func _map_dict_value(t: GateAST.TypeRef) -> String:
 
 
 func _default_for(t: GateAST.TypeRef, packed_hint: bool) -> String:
+	var shaped: GateAST.TypeRef = _param_shape(t)
+	if shaped != null:
+		t = shaped
+	if t != null and not t.nullable and t.array_depth == 0 and (_enum_names.has(t.name)
+			or _enum_names.has(t.name.get_slice(".", t.name.get_slice_count(".") - 1))):
+		return "0"   # `Meta.Kind` is an enum of this file too
+	if t != null and not t.nullable and t.array_depth == 0 and t.is_union():
+		return _default_for(t.union_members[0], false)
+	if t != null and not t.nullable and t.array_depth == 0 and t.is_tuple():
+		var elems: PackedStringArray = PackedStringArray()
+		for te in t.tuple_elems:
+			elems.append(_default_for(te, false))
+		return "[%s]" % ", ".join(elems)
 	var mapped: String = _map_type(t, packed_hint)
 	if mapped.begins_with("Packed") and mapped.ends_with("Array"):
 		return mapped + "()"
@@ -542,6 +558,13 @@ func _static_type_of(e) -> String:
 		return a if a != "" and a == _static_type_of(tt.if_false) else ""
 	if e is GateAST.Index:
 		var ix: GateAST.Index = e
+		if ix.target is GateAST.Ident:
+			var slot: Variant = GateChecker.fold_int(ix.index, _const_exprs)
+			var tup: GateAST.TypeRef = _tuple_tref(_declared_tref(ix.target)) if slot != null else null
+			if tup != null:
+				var at: int = int(slot) if int(slot) >= 0 else tup.tuple_elems.size() + int(slot)
+				var et: GateAST.TypeRef = _elem_tref_of(ix.target, at)
+				return et.name if et != null and et.array_depth == 0 and not et.is_union() else ""
 		if ix.target is GateAST.Ident:
 			var an: String = (ix.target as GateAST.Ident).name
 			if _var_dict_values.has(an):

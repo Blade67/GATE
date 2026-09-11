@@ -169,6 +169,13 @@ static func default_value(t: GateAST.TypeRef) -> String:
 		return ""
 	if t.nullable:
 		return "null"
+	if t.is_union() and t.array_depth == 0:
+		return default_value(t.union_members[0])
+	if t.is_tuple() and t.array_depth == 0:
+		var elems: PackedStringArray = PackedStringArray()
+		for te in t.tuple_elems:
+			elems.append(default_value(te))
+		return "[%s]" % ", ".join(elems)
 	if t.is_dict() or t.is_set():
 		return "{}"
 	if t.array_depth > 0:

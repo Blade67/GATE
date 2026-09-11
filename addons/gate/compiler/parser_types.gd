@@ -31,6 +31,15 @@ func _parse_type() -> GateAST.TypeRef:
 		else:
 			t.set_elem = first
 		_expect_op("}", "to close the type")
+	elif _check_op("<") or _check_op("<<"):
+		_parse_type_list(t)
+	elif _check_kw("func") and _peek(1).is_op("("):
+		_parse_func_type(t)
+		return t
+	elif _check_op("(") and _peek(1).is_kw("func"):
+		_advance()
+		t = _parse_type()
+		_expect_op(")", "to close the parenthesised type")
 	else:
 		if not (_check(GateLexer.T.IDENT) or _check(GateLexer.T.KEYWORD)):
 			_err("expected a type name, found '%s'" % _cur().value)
@@ -40,8 +49,13 @@ func _parse_type() -> GateAST.TypeRef:
 		while _check_op(".") and _peek(1).type == GateLexer.T.IDENT:
 			_advance()
 			t.name += "." + _advance().value
-		if _check_op("<") and not _never_generic(t.name) and _closes_generic_args():
+		if (_check_op("<") or _check_op("<<")) and not _never_generic(t.name) \
+				and _closes_generic_args():
+			_split_generic_span(_i)
 			_advance()
+			if _check_op(">"):
+				_err("expected a type argument inside `<>`",
+					"write the type, as in `%s<Enemy>`, or drop the brackets" % t.name)
 			while not _at_end() and not _check_op(">"):
 				t.generic_args.append(_parse_type())
 				if not _match_op(","):
@@ -79,8 +93,217 @@ func _parse_type() -> GateAST.TypeRef:
 	return t
 
 
+func _parse_type_list(t: GateAST.TypeRef) -> void:
+	_saw_gate_type = true
+	_split_generic_span(_i)
+	_advance()  # '<'
+	var members: Array = []
+	var sep: String = ""
+	var mixed: bool = false
+	while not _at_end() and not _check_op(">"):
+		var before: int = _i
+		members.append(_parse_type())
+		if _check_op("|") or _check_op(","):
+			if sep != "" and _cur().value != sep and not mixed:
+				mixed = true
+				_err("a type list is either a union (|) or a tuple (,), not both",
+					"write `<a | b>` for a value that is one of several types, or `<a, b>` "
+					+ "for a fixed-length array whose elements have these types")
+			sep = _cur().value
+			_advance()
+			if _check_op(">"):
+				_err("expected a type after '%s'" % sep, "remove the trailing '%s'" % sep)
+		elif _i == before:
+			break
+		else:
+			break
+	if members.is_empty():
+		_err("expected a type inside `<>`")
+	_expect_op(">", "to close the type list")
+	if sep == "|":
+		t.name = "Variant"
+		t.union_members = members
+	else:
+		t.name = "Array"
+		t.tuple_elems = members
+
+
+func _parse_func_type(t: GateAST.TypeRef) -> void:
+	_saw_gate_type = true
+	_advance()  # func
+	_advance()  # (
+	t.name = "Callable"
+	t.is_func_type = true
+	_skip_newlines()
+	while not _at_end() and not _check_op(")"):
+		var before: int = _i
+		t.shaped().callable_params.append(_parse_type())
+		_skip_newlines()
+		if not _match_op(","):
+			break
+		_skip_newlines()
+		if _i == before:
+			break
+	_expect_op(")", "to close the parameter types")
+	if _match_op("->"):
+		t.callable_return = _parse_type()
+	else:
+		var v: GateAST.TypeRef = GateAST.TypeRef.new()
+		v.at(t.line, t.col)
+		v.name = "void"
+		t.callable_return = v
+
+
+func _looks_like_func_type_decl() -> bool:
+	if not (_check_kw("func") and _peek(1).is_op("(")):
+		return false
+	var j: int = _skip_type_span(_i)
+	if j < 0 or j >= _toks.size() or _toks[j].is_op(":"):
+		return false
+	return _decl_name_follows(j)
+
+
+func _looks_like_paren_type_decl() -> bool:
+	if not (_check_op("(") and _peek(1).is_kw("func")):
+		return false
+	var j: int = _skip_type_span(_i)
+	return j >= 0 and j < _toks.size() and _decl_name_follows(j)
+
+
+func _skip_type_span(j: int) -> int:
+	if j >= _toks.size():
+		return -1
+	var t: GateLexer.Token = _toks[j]
+	if t.is_op("(") and j + 1 < _toks.size() and _toks[j + 1].is_kw("func"):
+		var inner: int = _skip_type_span(j + 1)
+		if inner < 0 or inner >= _toks.size() or not _toks[inner].is_op(")"):
+			return -1
+		return _skip_type_suffixes(inner + 1)
+	if t.is_kw("func"):
+		if j + 1 >= _toks.size() or not _toks[j + 1].is_op("("):
+			return -1
+		var depth: int = 0
+		var k: int = j + 1
+		while k < _toks.size():
+			var b: GateLexer.Token = _toks[k]
+			if b.type == GateLexer.T.NEWLINE or b.type == GateLexer.T.EOF:
+				return -1
+			if b.is_op("("): depth += 1
+			elif b.is_op(")"):
+				depth -= 1
+				if depth == 0:
+					break
+			k += 1
+		if k >= _toks.size():
+			return -1
+		k += 1
+		if k < _toks.size() and _toks[k].is_op("->"):
+			return _skip_type_span(k + 1)
+		return k
+	var i: int = j
+	if t.is_op("<") or t.is_op("<<"):
+		var close: int = _generic_span_end(j, false)
+		if close < 0:
+			return -1
+		i = close + 1
+	elif t.is_op("{"):
+		var d: int = 0
+		while i < _toks.size():
+			var c: GateLexer.Token = _toks[i]
+			if c.type == GateLexer.T.NEWLINE:
+				return -1
+			if c.is_op("{"): d += 1
+			elif c.is_op("}"):
+				d -= 1
+				if d == 0:
+					break
+			i += 1
+		i += 1
+	elif t.type == GateLexer.T.IDENT or t.is_kw("void"):
+		i += 1
+		while i + 1 < _toks.size() and _toks[i].is_op(".") and _toks[i + 1].type == GateLexer.T.IDENT:
+			i += 2
+		if i < _toks.size() and (_toks[i].is_op("<") or _toks[i].is_op("<<")):
+			var gclose: int = _generic_span_end(i, true)
+			if gclose >= 0:
+				i = gclose + 1
+	else:
+		return -1
+	return _skip_type_suffixes(i)
+
+
+func _skip_type_suffixes(i: int) -> int:
+	while i < _toks.size():
+		var s: GateLexer.Token = _toks[i]
+		if s.is_op("?") or s.is_op("??"):
+			i += 1
+		elif (s.is_op("[") or s.is_op("?[")) and i + 1 < _toks.size() and _toks[i + 1].is_op("]"):
+			i += 2
+		else:
+			break
+	return i
+
+
+func _at_type_alias() -> bool:
+	if not (_cur().type == GateLexer.T.IDENT and _cur().value == "type"
+			and _peek(1).type == GateLexer.T.IDENT):
+		return false
+	if _peek(2).is_op("="):
+		return true
+	if _peek(2).is_op("<"):
+		var close: int = _generic_span_end(_i + 2, true)
+		return close >= 0 and close + 1 < _toks.size() and _toks[close + 1].is_op("=")
+	return false
+
+
+func _parse_type_alias() -> GateAST.TypeAliasDecl:
+	var kw: GateLexer.Token = _advance()  # type
+	var ad: GateAST.TypeAliasDecl = GateAST.TypeAliasDecl.new()
+	ad.at(kw.line, kw.col)
+	ad.name = _advance().value
+	if _check_op("<"):
+		_err("a type alias cannot take type parameters",
+			"write the type out where it is used, or declare a generic class")
+		_skip_to_statement_end()
+		return null
+	_advance()  # =
+	ad.target = _parse_type()
+	_alias_names[ad.name] = true
+	if not _at_stmt_end() and not _check_op(";"):
+		_err("unexpected '%s' after the aliased type" % _cur().value)
+		_skip_to_statement_end()
+	return ad
+
+
+var _tested_type: int = 0
+
+
+func _parse_tested_type(kw: String) -> GateAST.TypeRef:
+	_tested_type += 1
+	var tr: GateAST.TypeRef = _parse_type()
+	_tested_type -= 1
+	# `x is Box<float>` names the class, so it has to exist even if nothing builds one.
+	if not tr.generic_args.is_empty():
+		_generic_uses.append(tr)
+	return tr
+
+
 func _looks_like_typed_decl() -> bool:
 	var t: GateLexer.Token = _cur()
+	if t.type == GateLexer.T.OP and (t.value == "<" or t.value == "<<"):
+		var close: int = _generic_span_end(_i, false)
+		if close < 0:
+			return false
+		var j: int = close + 1
+		while j < _toks.size():
+			var s: GateLexer.Token = _toks[j]
+			if s.is_op("?"):
+				j += 1
+			elif (s.is_op("[") or s.is_op("?[")) and j + 1 < _toks.size() and _toks[j + 1].is_op("]"):
+				j += 2
+			else:
+				break
+		return _decl_name_follows(j)
 	if t.is_op("{"):
 		var j: int = _i
 		var depth: int = 0
@@ -128,29 +351,36 @@ func _looks_like_typed_decl() -> bool:
 		if tk2.type == GateLexer.T.OP and tk2.value == "?":
 			j2 += 1
 			continue
-		if tk2.type == GateLexer.T.OP and tk2.value == "<":
+		if (tk2.is_op(".") and j2 + 1 < _toks.size() and _toks[j2 + 1].type == GateLexer.T.IDENT
+				and _is_type_looking(t.value) and _is_type_looking(_toks[j2 + 1].value)
+				and t.value[0] == t.value[0].to_upper()):
+			j2 += 2
+			continue
+		if tk2.type == GateLexer.T.OP and (tk2.value == "<" or tk2.value == "<<"):
 			if not _is_type_looking(t.value):
 				return false
-			var depth2: int = 0
-			while j2 < _toks.size():
-				var g: GateLexer.Token = _toks[j2]
-				if g.type == GateLexer.T.OP and g.value == "<": depth2 += 1
-				elif g.type == GateLexer.T.OP and g.value == ">":
-					depth2 -= 1
-					if depth2 == 0:
-						j2 += 1
-						break
-				elif g.type == GateLexer.T.NEWLINE:
-					return false
-				j2 += 1
+			if tk2.value == "<<" and not (_is_generic_name(t.value) or BUILTIN_GENERICS.has(t.value)):
+				return false
+			var close: int = _generic_span_end(j2, tk2.value == "<<")
+			if close < 0:
+				return false
+			j2 = close + 1
 			continue
 		break
 	if j2 >= _toks.size():
 		return false
-	var name_tok: GateLexer.Token = _toks[j2]
-	if not _is_name_token(name_tok):
+	if not _is_name_token(_toks[j2]):
 		return false
 	if j2 == _i + 1 and not _is_type_looking(t.value):
+		return false
+	return _decl_name_follows(j2)
+
+
+func _decl_name_follows(j2: int) -> bool:
+	if j2 >= _toks.size():
+		return false
+	var name_tok: GateLexer.Token = _toks[j2]
+	if not _is_name_token(name_tok):
 		return false
 	var after: GateLexer.Token = _toks[j2 + 1] if j2 + 1 < _toks.size() else null
 	if after == null:
@@ -198,36 +428,65 @@ func _check_generic_instantiation() -> bool:
 		j += 1
 	return false
 
-const TYPE_ARG_OPS := [".", ",", "<", ">", "[", "]", "?", "?["]
+
+const BUILTIN_GENERICS := {"Array": true, "Dictionary": true, "PackedScene": true}
+
+
+func _generic_span_end(from: int, strict: bool) -> int:
+	var depth: int = 0
+	var i: int = from
+	while i < _toks.size():
+		var t: GateLexer.Token = _toks[i]
+		if t.type == GateLexer.T.NEWLINE or t.type == GateLexer.T.EOF:
+			return -1
+		if t.type == GateLexer.T.OP:
+			if t.value == "<":
+				depth += 1
+			elif t.value == "<<":
+				depth += 2
+			elif t.value == ">" or t.value == ">>":
+				depth -= 1 if t.value == ">" else 2
+				if depth == 0:
+					return i
+				if depth < 0:
+					return -1
+			elif strict and not TYPE_ARG_OPS.has(t.value):
+				return -1
+		elif strict and depth >= 1 and t.type != GateLexer.T.IDENT and not t.is_kw("void") \
+				and not t.is_kw("func"):
+			return -1
+		i += 1
+	return -1
+
+
+func _split_generic_span(from: int) -> void:
+	var end: int = _generic_span_end(from, false)
+	if end < 0:
+		return
+	var i: int = from
+	while i <= end:
+		var t: GateLexer.Token = _toks[i]
+		if t.type == GateLexer.T.OP and (t.value == ">>" or t.value == "<<"):
+			var half: String = t.value.substr(0, 1)
+			_toks[i] = GateLexer.Token.new(GateLexer.T.OP, half, t.line, t.col)
+			_toks.insert(i + 1, GateLexer.Token.new(GateLexer.T.OP, half, t.line, t.col + 1))
+			_shift_spans(i + 1)
+			end += 1
+			i += 1
+		i += 1
+
+const TYPE_ARG_OPS := [".", ",", "<", ">", "<<", ">>", "[", "]", "?", "?[", "|", "(", ")", "->", "{", "}"]
 
 ## A builtin scalar takes no type arguments, ever. Without this, `[v as int < i,
 ## j > i]` is read as `int<i, j>`.
 func _never_generic(name: String) -> bool:
-	if GateTypes.SHORTHAND.has(name):
+	if GateTypes.is_shorthand(name):
 		return true
 	return GateTypes.BUILTIN.has(name) and name != "Array" and name != "Dictionary"
 
 
 func _closes_generic_args() -> bool:
-	var depth: int = 0
-	var i: int = _i
-	while i < _toks.size():
-		var t: GateLexer.Token = _toks[i]
-		if t.type == GateLexer.T.NEWLINE or t.type == GateLexer.T.EOF:
-			return false
-		if t.type == GateLexer.T.OP:
-			if t.value == "<":
-				depth += 1
-			elif t.value == ">":
-				depth -= 1
-				if depth == 0:
-					return true
-			elif not TYPE_ARG_OPS.has(t.value):
-				return false
-		elif depth >= 1 and t.type != GateLexer.T.IDENT and not t.is_kw("void"):
-			return false
-		i += 1
-	return false
+	return _generic_span_end(_i, true) >= 0
 
 
 static func mangle_generic(t: GateAST.TypeRef) -> String:
@@ -236,9 +495,57 @@ static func mangle_generic(t: GateAST.TypeRef) -> String:
 		var one: String = String(g.name).replace(".", "_")
 		if not g.generic_args.is_empty():
 			one = mangle_generic(g)
+		elif g.is_union() or g.is_tuple() or g.is_func_type or g.is_dict() or g.is_set():
+			one = _mangle_shape(g)
 		for _d in g.array_depth:
 			one += "_arr"
 		if g.nullable:
 			one += "_opt"
 		parts.append(one)
 	return "__%s_%s" % [t.name, "_".join(parts)]
+
+
+static func _mangle_shape(g: GateAST.TypeRef) -> String:
+	if g.is_dict():
+		return "D_%s_%s" % [_mangle_part(g.dict_key), _mangle_part(g.dict_value)]
+	if g.is_set():
+		return "S_%s" % _mangle_part(g.set_elem)
+	var head: String = "U" if g.is_union() else ("T" if g.is_tuple() else "F")
+	var ps: PackedStringArray = PackedStringArray()
+	if g.is_union():
+		ps = union_parts(g)
+	else:
+		for k in (g.tuple_elems if g.is_tuple() else g.callable_params):
+			ps.append(_mangle_part(k))
+	var s: String = head + "_" + "_".join(ps)
+	if g.is_func_type:
+		s += "__" + _mangle_part(g.callable_return)
+	return s
+
+
+static func union_parts(g: GateAST.TypeRef) -> PackedStringArray:
+	var ps: PackedStringArray = PackedStringArray()
+	for m in g.union_members:
+		var mt: GateAST.TypeRef = m
+		var parts: PackedStringArray = union_parts(mt) if mt.is_union() and mt.array_depth == 0 \
+			and not mt.nullable else PackedStringArray([_mangle_part(mt)])
+		for p in parts:
+			if not ps.has(p):
+				ps.append(p)
+	ps.sort()
+	return ps
+
+
+static func _mangle_part(k: GateAST.TypeRef) -> String:
+	if k == null:
+		return "Variant"
+	var one: String = GateTypes.canonical(k.name).replace(".", "_")
+	if not k.generic_args.is_empty():
+		one = mangle_generic(k)
+	elif k.is_union() or k.is_tuple() or k.is_func_type or k.is_dict() or k.is_set():
+		one = _mangle_shape(k)
+	for _d in k.array_depth:
+		one += "_arr"
+	if k.nullable:
+		one += "_opt"
+	return one

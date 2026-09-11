@@ -14,6 +14,16 @@ class ASTNode extends RefCounted:
 		return self
 
 
+class TypeShape extends RefCounted:
+	var union_members: Array = []      ## `<int | str>` -> [int, str]
+	var tuple_elems: Array = []        ## `<int, str>` -> [int, str]
+	var is_func_type: bool = false
+	var sig_known: bool = false
+	var callable_params: Array = []    ## Array[TypeRef]; null for an untyped parameter
+	var callable_optional: int = 0     ## trailing parameters that have defaults
+	var callable_rest: bool = false
+
+
 class TypeRef extends ASTNode:
 	var name: String = ""              ## canonical or shorthand base name
 	var array_depth: int = 0           ## `int[][]` -> 2
@@ -26,19 +36,88 @@ class TypeRef extends ASTNode:
 	var elem_nullable: bool = false
 	var generic_args: Array = []       ## Array[TypeRef]
 	var callable_return: TypeRef = null
+	var shape: TypeShape = null        ## null for every plain type
+
+	func shaped() -> TypeShape:
+		if shape == null:
+			shape = TypeShape.new()
+		return shape
+
+	var union_members:
+		get:
+			return shape.union_members if shape != null else []
+		set(value):
+			if shape != null or not value.is_empty():
+				shaped().union_members = value
+	var tuple_elems:
+		get:
+			return shape.tuple_elems if shape != null else []
+		set(value):
+			if shape != null or not value.is_empty():
+				shaped().tuple_elems = value
+	var callable_params:
+		get:
+			return shape.callable_params if shape != null else []
+		set(value):
+			if shape != null or not value.is_empty():
+				shaped().callable_params = value
+	var is_func_type:
+		get:
+			return shape != null and shape.is_func_type
+		set(value):
+			if shape != null or value:
+				shaped().is_func_type = value
+	var sig_known:
+		get:
+			return shape != null and shape.sig_known
+		set(value):
+			if shape != null or value:
+				shaped().sig_known = value
+	var callable_optional:
+		get:
+			return shape.callable_optional if shape != null else 0
+		set(value):
+			if shape != null or value != 0:
+				shaped().callable_optional = value
+	var callable_rest:
+		get:
+			return shape != null and shape.callable_rest
+		set(value):
+			if shape != null or value:
+				shaped().callable_rest = value
 
 	func is_dict() -> bool: return dict_key != null
 	func is_set() -> bool: return set_elem != null
 	func is_array() -> bool: return array_depth > 0
+	func is_union() -> bool: return shape != null and not shape.union_members.is_empty()
+	func is_tuple() -> bool: return shape != null and not shape.tuple_elems.is_empty()
 
 	func describe() -> String:
 		if is_dict(): return "{%s, %s}" % [dict_key.describe(), dict_value.describe()]
 		if is_set(): return "{%s}" % set_elem.describe()
+		if is_union() or is_tuple():
+			var members: PackedStringArray = PackedStringArray()
+			for m in (union_members if is_union() else tuple_elems):
+				members.append(m.describe())
+			var list: String = "<%s>" % (" | " if is_union() else ", ").join(members)
+			if elem_nullable: list += "?"
+			return list + "[]".repeat(array_depth) + ("?" if nullable else "")
+		if is_func_type or sig_known:
+			var ps: PackedStringArray = PackedStringArray()
+			for p in callable_params:
+				ps.append(p.describe() if p != null else "Variant")
+			return "func(%s) -> %s" % [", ".join(ps),
+				callable_return.describe() if callable_return != null else "Variant"]
 		var s: String = name
 		if not generic_args.is_empty():
 			var parts: PackedStringArray = PackedStringArray()
 			for g in generic_args: parts.append(g.describe())
-			s += "<" + ", ".join(parts) + ">"
+			if name == "Array" and parts.size() == 1:
+				s = parts[0] + "[]"
+			elif name == "Dictionary" and parts.size() == 2:
+				s = "{%s, %s}" % [parts[0], parts[1]]
+			else:
+				s += "<" + ", ".join(parts) + ">"
 		if elem_nullable: s += "?"
 		s += "[]".repeat(array_depth)
 		if nullable: s += "?"
@@ -94,6 +173,7 @@ class Member extends Expr:
 	var target: Expr = null
 	var name: String = ""
 	var safe: bool = false             ## `?.`
+	var member_class: String = ""      ## on a union or a join: the class whose name every type prints
 
 
 class Index extends Expr:
@@ -105,6 +185,10 @@ class Index extends Expr:
 class Call extends Expr:
 	var callee: Expr = null
 	var args: Array = []               ## Array[Expr]
+
+
+class Widen extends Call:
+	var guards: Array = []
 
 
 class ArrayLit extends Expr:
@@ -313,3 +397,5 @@ class Module extends ASTNode:
 	var header_annotations: Array = []
 	var uses_nullable: bool = false
 	var generic_uses: Array = []       ## Array[TypeRef]
+	var has_aliases: bool = false      ## any `type X = ...`, at any depth
+	var uses_gate_types: bool = false  ## any union, tuple or `func(...)` type

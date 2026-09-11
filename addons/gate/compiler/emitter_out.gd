@@ -115,6 +115,8 @@ var _instantiations: Dictionary = {}    ## mangled name -> [ClassDecl, {param: a
 
 var _subst: Dictionary = {}
 var _subst_depth: Dictionary = {}
+var _enum_names: Dictionary = {}
+var _subst_types: Dictionary = {}
 
 var _pending_generic: Dictionary = {}
 
