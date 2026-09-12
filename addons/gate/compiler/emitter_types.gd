@@ -574,6 +574,8 @@ func _static_type_of(e) -> String:
 		return ""
 	if e is GateAST.Call:
 		var c: GateAST.Call = e
+		if _is_scene_preload(c):
+			return "PackedScene"
 		if c.callee is GateAST.Ident:
 			var cn: String = (c.callee as GateAST.Ident).name
 			if not _struct_of(cn).is_empty():

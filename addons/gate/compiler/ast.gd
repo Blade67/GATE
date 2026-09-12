@@ -5,6 +5,43 @@ extends RefCounted
 ## AST node definitions. Every node carries a line and column.
 
 
+static var _walk_names: Dictionary = {}
+
+
+static func walk_names(o: Object) -> PackedStringArray:
+	var sc: Variant = o.get_script()
+	if sc != null and _walk_names.has(sc):
+		return _walk_names[sc]
+	var out: PackedStringArray = PackedStringArray()
+	for prop in o.get_property_list():
+		var pn: String = prop["name"]
+		if not (pn in ["script", "Built-in script", "RefCounted", "Object"]):
+			out.append(pn)
+	if sc != null:
+		_walk_names[sc] = out
+	return out
+
+
+static var _child_names: Dictionary = {}
+
+
+static func child_names(o: Object) -> PackedStringArray:
+	var sc: Variant = o.get_script()
+	if sc != null and _child_names.has(sc):
+		return _child_names[sc]
+	var out: PackedStringArray = PackedStringArray()
+	for prop in o.get_property_list():
+		var pn: String = prop["name"]
+		var ty: int = int(prop.get("type", TYPE_NIL))
+		if (int(prop.get("usage", 0)) & PROPERTY_USAGE_SCRIPT_VARIABLE) == 0:
+			continue
+		if ty == TYPE_OBJECT or ty == TYPE_ARRAY or ty == TYPE_NIL:
+			out.append(pn)
+	if sc != null:
+		_child_names[sc] = out
+	return out
+
+
 class ASTNode extends RefCounted:
 	var line: int = 0
 	var col: int = 0

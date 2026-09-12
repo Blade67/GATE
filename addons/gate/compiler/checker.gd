@@ -1436,6 +1436,7 @@ func _verify_type_name(t: GateAST.TypeRef, known: Dictionary) -> void:
 		_verify_type_name(t.dict_value, known)
 	if t.set_elem != null:
 		_verify_type_name(t.set_elem, known)
+	_verify_type_arguments(t, known)
 	var n: String = t.name
 	if n == "" or n.contains("."):
 		return   # qualified names resolve at load time
