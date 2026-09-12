@@ -143,7 +143,7 @@ func _parse_type_test() -> GateAST.Expr:
 			_advance()
 			ise.negated = true
 		ise.operand = operand
-		ise.type = _parse_type()
+		ise.type = _parse_tested_type("is")
 		operand = ise
 	return operand
 
@@ -287,7 +287,7 @@ func _parse_cast() -> GateAST.Expr:
 		var c: GateAST.CastExpr = GateAST.CastExpr.new()
 		c.at(t.line, t.col)
 		c.operand = e
-		c.type = _parse_type()
+		c.type = _parse_tested_type("as")
 		e = c
 		e = _parse_cast_tail(e)
 	return e
@@ -326,7 +326,7 @@ func _parse_cast_tail(e: GateAST.Expr) -> GateAST.Expr:
 				_advance()
 				ise.negated = true
 			ise.operand = e
-			ise.type = _parse_type()
+			ise.type = _parse_tested_type("is")
 			e = ise
 			continue
 		e = _parse_binary_tail(e, 1)

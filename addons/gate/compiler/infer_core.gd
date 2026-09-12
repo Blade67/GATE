@@ -159,6 +159,11 @@ func _index(members: Array, owner: String) -> void:
 					static_fields["%s.%s" % [owner, vd.name]] = vd.type
 		elif m is GateAST.ClassDecl:
 			var cd: GateAST.ClassDecl = m
+			_note_implements(cd)
+			if cd.form == "struct":
+				struct_names[cd.name] = cd
+			elif cd.form == "interface" or cd.form == "trait":
+				open_types[cd.name] = true
 			if cd.extends_type != null:
 				bases[cd.name] = cd.extends_type.name
 			_index(cd.members, cd.name)
@@ -181,6 +186,17 @@ func field_type(cls: String, field: String) -> GateAST.TypeRef:
 	return t if t is GateAST.TypeRef else null
 
 const CALLABLE_INVOKERS := ["call", "callv", "rpc", "rpc_id", "emit"]
+
+const FLOAT_CONSTANTS := {"INF": true, "NAN": true}
+
+const SIGNED := {"int": true, "float": true, "Vector2": true, "Vector2i": true,
+	"Vector3": true, "Vector3i": true, "Vector4": true, "Vector4i": true}
+
+const CONSTRUCTED := {"int": true, "float": true, "bool": true, "String": true,
+	"StringName": true, "NodePath": true, "Vector2": true, "Vector2i": true, "Vector3": true,
+	"Vector3i": true, "Vector4": true, "Vector4i": true, "Color": true, "Rect2": true,
+	"Rect2i": true, "Transform2D": true, "Transform3D": true, "Basis": true, "Quaternion": true,
+	"AABB": true, "Plane": true, "Projection": true, "RID": true, "Callable": true}
 
 const SYNC_HIGHER_ORDER := {
 	"map": true, "filter": true, "reduce": true, "any": true, "all": true,
@@ -436,7 +452,7 @@ func type_of(e, locals: Dictionary) -> GateAST.TypeRef:
 
 	if e is GateAST.Literal:
 		var lit: GateAST.Literal = e
-		return _prim(lit.kind)
+		return _prim(lit.kind, lit.raw)
 
 	if e is GateAST.ObjectInit:
 		return (e as GateAST.ObjectInit).type
@@ -445,16 +461,34 @@ func type_of(e, locals: Dictionary) -> GateAST.TypeRef:
 		return (e as GateAST.CastExpr).type
 
 	if e is GateAST.FString:
-		return _named("String")
+		return _shared("String")
 
 	if e is GateAST.ArrayLit:
-		return _named("Array")
+		return _shared("Array")
 
 	if e is GateAST.DictLit:
-		return _named("Dictionary")
+		return _shared("Dictionary")
 
 	if e is GateAST.NullCoalesce:
-		return type_of((e as GateAST.NullCoalesce).right, locals)
+		var nc: GateAST.NullCoalesce = e
+		var nlt: GateAST.TypeRef = type_of(nc.left, locals)
+		if nlt == null:
+			return null   # an untyped left may hold anything
+		return coalesce_type(nlt, type_of(nc.right, locals))
+
+	if e is GateAST.Binary:
+		if COMPARISONS.has((e as GateAST.Binary).op):
+			return _shared("bool")   # binary_type answers these without the operands
+		var spine: Array = []
+		var cur = e
+		while cur is GateAST.Binary:
+			spine.append(cur)   # top down: read back to front for left to right
+			cur = (cur as GateAST.Binary).left
+		var acc: GateAST.TypeRef = type_of(cur, locals)
+		for i in range(spine.size() - 1, -1, -1):
+			var b: GateAST.Binary = spine[i]
+			acc = binary_type(b.op, acc, null if COMPARISONS.has(b.op) else type_of(b.right, locals))
+		return acc
 
 	if e is GateAST.AwaitExpr:
 		return null
@@ -522,10 +556,110 @@ func type_of(e, locals: Dictionary) -> GateAST.TypeRef:
 			var fd2: GateAST.FuncDecl = _pick(module_functions.get(fname, []), c.args.size())
 			if fd2 != null:
 				return fd2.return_type
+			if struct_names.has(fname) and not locals.has(fname) and not module_functions.has(fname):
+				return _named(fname)
+			if not locals.has(fname) and not module_functions.has(fname):
+				var gr: GateAST.TypeRef = _global_return(fname, c.args, locals)
+				if gr != null:
+					return gr
+			if (CONSTRUCTED.has(fname) or GateTypes.is_shorthand(fname)) \
+					and CONSTRUCTED.has(GateTypes.canonical(fname)) \
+					and not locals.has(fname) and not module_functions.has(fname):
+				return _shared(fname)
 			return null
 		return null
 
 	return null
+
+
+const CONSTANT_TYPES := {
+	"Vector2": "AXIS_", "Vector2i": "AXIS_", "Vector3": "AXIS_", "Vector3i": "AXIS_",
+	"Vector4": "AXIS_", "Vector4i": "AXIS_", "Color": "", "Transform2D": "", "Transform3D": "",
+	"Basis": "", "Quaternion": "", "Plane": "", "Projection": "PLANE_",
+}
+
+
+static func builtin_constant_type(type_name: String, cname: String) -> String:
+	if GateTypes.shadowed.has(type_name) or cname == "" or cname != cname.to_upper():
+		return ""
+	var n: String = GateTypes.canonical(type_name)
+	if not CONSTANT_TYPES.has(n):
+		return ""
+	var enum_prefix: String = CONSTANT_TYPES[n]
+	if enum_prefix != "" and cname.begins_with(enum_prefix):
+		return "int"
+	return n
+
+
+const COMPARISONS := {"==": true, "!=": true, "<": true, ">": true, "<=": true, ">=": true,
+	"and": true, "or": true, "&&": true, "||": true, "in": true, "not in": true}
+const GLOBAL_RETURNS := {"len": "int", "floori": "int", "ceili": "int", "roundi": "int",
+	"absi": "int", "signi": "int", "clampi": "int", "maxi": "int", "mini": "int", "snappedi": "int",
+	"floorf": "float", "ceilf": "float", "roundf": "float", "absf": "float", "signf": "float",
+	"clampf": "float", "maxf": "float", "minf": "float", "snappedf": "float", "sqrt": "float",
+	"pow": "float", "fmod": "float", "sin": "float", "cos": "float", "tan": "float",
+	"lerpf": "float", "deg_to_rad": "float", "rad_to_deg": "float", "randf": "float",
+	"randi": "int", "hash": "int", "is_equal_approx": "bool", "is_zero_approx": "bool"}
+const NUMERIC_JOIN := {"max": true, "min": true, "abs": true, "sign": true, "clamp": true,
+	"snapped": true, "wrap": true}
+
+
+func binary_type(op: String, lt: GateAST.TypeRef, rt: GateAST.TypeRef) -> GateAST.TypeRef:
+	if COMPARISONS.has(op):
+		return _shared("bool")
+	var ln: String = _plain_name(lt)
+	var rn: String = _plain_name(rt)
+	if op == "%" and ln == "String":
+		return _shared("String")
+	if ln == "" or rn == "":
+		return null
+	if op == "+" and (ln == "String" or ln == "StringName") and (rn == "String" or rn == "StringName"):
+		return _shared("String")
+	var numeric: bool = (ln == "int" or ln == "float") and (rn == "int" or rn == "float")
+	if not numeric:
+		return null
+	if ln == "int" and rn == "int":
+		return _shared("int")
+	if op in ["+", "-", "*", "/", "**"]:
+		return _shared("float")
+	return null
+
+
+func _plain_name(t: GateAST.TypeRef) -> String:
+	if t == null or t.array_depth > 0 or t.nullable or t.is_union() or t.is_tuple() or t.is_dict():
+		return ""
+	return GateTypes.canonical(t.name)
+
+
+func coalesce_type(lt: GateAST.TypeRef, rt: GateAST.TypeRef) -> GateAST.TypeRef:
+	if lt == null or not lt.is_union() or lt.array_depth > 0:
+		return rt
+	var u: GateAST.TypeRef = GateChecker.copy_type(lt)
+	u.nullable = false
+	if rt == null or rt.name == "null":
+		return u
+	for m in GateTypeCompat.flat_members(lt):
+		if GateTypeCompat.assignable(rt, m, self, false) == GateTypeCompat.YES:
+			return u
+	var r: GateAST.TypeRef = GateChecker.copy_type(rt)
+	r.nullable = false
+	u.shaped().union_members.append(r)
+	return u
+
+
+func _global_return(fname: String, args: Array, locals: Dictionary) -> GateAST.TypeRef:
+	if GLOBAL_RETURNS.has(fname):
+		return _shared(GLOBAL_RETURNS[fname])
+	if not NUMERIC_JOIN.has(fname) or args.is_empty():
+		return null
+	var all_int: bool = true
+	for a in args:
+		var n: String = _plain_name(type_of(a, locals))
+		if n == "float":
+			all_int = false
+		elif n != "int":
+			return null
+	return _shared("int" if all_int else "float")
 
 
 func _pick(cands: Array, arity: int) -> GateAST.FuncDecl:
@@ -542,12 +676,22 @@ func _pick(cands: Array, arity: int) -> GateAST.FuncDecl:
 	return null
 
 
-func _prim(kind: String) -> GateAST.TypeRef:
+func _prim(kind: String, raw: String = "") -> GateAST.TypeRef:
 	match kind:
-		"number": return _named("int")
-		"string": return _named("String")
-		"bool": return _named("bool")
+		"number": return _shared("float" if _is_float_literal(raw) else "int")
+		"string":
+			if raw.begins_with("&"): return _shared("StringName")
+			if raw.begins_with("^"): return _shared("NodePath")
+			return _shared("String")
+		"bool": return _shared("bool")
 	return null
+
+
+static func _is_float_literal(raw: String) -> bool:
+	var r: String = raw.lstrip("+-").to_lower()
+	if r.begins_with("0x") or r.begins_with("0b"):
+		return false
+	return r.contains(".") or r.contains("e")
 
 
 func _named(n: String) -> GateAST.TypeRef:

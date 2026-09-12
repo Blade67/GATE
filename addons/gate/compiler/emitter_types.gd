@@ -534,7 +534,42 @@ func _index_declared_funcs(members: Array) -> void:
 			_index_declared_funcs((m as GateAST.ClassDecl).members)
 
 
+func _flow_name(e) -> String:
+	if not (e is GateAST.Expr) or (e as GateAST.Expr).flow_type == null:
+		return ""
+	var t: GateAST.TypeRef = (e as GateAST.Expr).flow_type
+	if (t.array_depth != 0 or t.is_dict() or t.is_set() or t.is_union() or t.is_tuple()
+			or t.is_func_type):
+		return ""
+	if not t.generic_args.is_empty():
+		if _generics.has(t.name):
+			return _generic_name(_substituted(t))
+		return t.name if GateTypes.canonical(t.name) == "PackedScene" else ""
+	return t.name
+
+
+func _left_spine_types(b: GateAST.Binary) -> Dictionary:
+	var spine: Array = []
+	var cur: GateAST.Binary = b
+	while true:
+		spine.append(cur)
+		if not (cur.left is GateAST.Binary):
+			break
+		cur = cur.left
+	var out: Dictionary = {}
+	var t: String = _static_type_of((spine[spine.size() - 1] as GateAST.Binary).left)
+	for i in range(spine.size() - 1, -1, -1):
+		var node: GateAST.Binary = spine[i]
+		out[node] = t
+		var fn: String = _flow_name(node)
+		t = fn if fn != "" else ("" if t == "" else _struct_op_type(t, node.op))
+	return out
+
+
 func _static_type_of(e) -> String:
+	var fn: String = "" if (e is GateAST.NullCoalesce or e is GateAST.Ternary) else _flow_name(e)
+	if fn != "":
+		return fn
 	if e is GateAST.Ident:
 		var inm: String = (e as GateAST.Ident).name
 		if _var_depths.get(inm, 0) > 0:

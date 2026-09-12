@@ -81,6 +81,8 @@ func _parse_type() -> GateAST.TypeRef:
 			_advance()
 			t.nullable = true
 			_saw_nullable = true
+		elif _check_op("??") and _tested_type > 0:
+			break   # `x as Foo ?? d`: after a cast's type, `??` is the operator
 		elif _check_op("??"):
 			_err("a type can only be marked nullable once",
 				"write `%s?`; `??` is the null-coalescing operator, not part of a type."

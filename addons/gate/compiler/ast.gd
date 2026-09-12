@@ -162,7 +162,8 @@ class TypeRef extends ASTNode:
 
 
 class Expr extends ASTNode:
-	pass
+	var flow_type: TypeRef = null
+	var narrowed_vector: String = ""   ## an untyped value `is` narrowed to a vector type, for swizzles
 
 
 class Literal extends Expr:
@@ -276,6 +277,11 @@ class ObjectInit extends Expr:
 
 class RawExpr extends Expr:
 	var text: String = ""
+
+
+class TypePattern extends RawExpr:
+	var bind_name: String = ""
+	var type: TypeRef = null
 
 
 class Stmt extends ASTNode:

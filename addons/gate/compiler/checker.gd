@@ -1900,3 +1900,948 @@ func _process_overloads(members: Array) -> void:
 				mangled = "_" + mangled
 			taken[mangled] = true
 			fd2.mangled_name = mangled
+
+
+var _tp_generics: Dictionary = {}
+var _tp_fields: Dictionary = {}
+var _tp_funcs: Dictionary = {}          ## name -> declared return type, in the class being walked
+var _tp_enums: Dictionary = {}
+
+
+func _tp_collect_enums(members: Array) -> void:
+	for m in members:
+		if m is GateAST.EnumDecl and (m as GateAST.EnumDecl).name != "":
+			_tp_enums[(m as GateAST.EnumDecl).name] = true
+		elif m is GateAST.ClassDecl:
+			_tp_collect_enums((m as GateAST.ClassDecl).members)
+
+
+func _tp_members(members: Array, generics: Dictionary) -> void:
+	var saved_g: Dictionary = _tp_generics
+	var saved_f: Dictionary = _tp_fields
+	var saved_fn: Dictionary = _tp_funcs
+	_tp_generics = generics
+	_tp_fields = {}
+	_tp_funcs = {}
+	for m in members:
+		if m is GateAST.VarDecl and (m as GateAST.VarDecl).type != null:
+			_tp_fields[(m as GateAST.VarDecl).name] = (m as GateAST.VarDecl).type
+		elif m is GateAST.FuncDecl:
+			var rfd: GateAST.FuncDecl = m
+			_tp_funcs[rfd.name] = null if _tp_funcs.has(rfd.name) else rfd.return_type
+	for m in members:
+		if m is GateAST.ClassDecl:
+			var cd: GateAST.ClassDecl = m
+			var inner: Dictionary = generics.duplicate()
+			for gp in cd.generic_params:
+				inner[String(gp)] = true
+			_tp_members(cd.members, inner)
+		elif m is GateAST.FuncDecl:
+			_tp_func((m as GateAST.FuncDecl).params, (m as GateAST.FuncDecl).body, [])
+		elif m is GateAST.VarDecl:
+			_tp_expr((m as GateAST.VarDecl).value, [])
+	_tp_generics = saved_g
+	_tp_fields = saved_f
+	_tp_funcs = saved_fn
+
+
+func _tp_instances(mod: GateAST.Module) -> void:
+	for inst in generic_instances(mod, _registry):
+		if inst[0] == null:
+			var at: GateAST.TypeRef = inst[2]
+			diagnostics.warn("more than %d generic instantiations: the rest are emitted, but "
+					% GENERIC_RECHECK_LIMIT + "their bodies are not checked again", at.line, at.col,
+				"every instantiation is still built; GATE only stops re-reading the template's "
+				+ "body for each one")
+			continue
+		var found: GateDiagnostics = GateDiagnostics.new()
+		var saved: GateDiagnostics = diagnostics
+		diagnostics = found
+		_tp_members([inst[4]], {})
+		diagnostics = saved
+		report_instance(diagnostics, found, inst)
+
+
+func _tp_func(params: Array, body: Array, outer: Array) -> void:
+	var scope: Dictionary = {}
+	for p in params:
+		var pp: GateAST.Param = p
+		scope[pp.name] = pp.type
+	var scopes: Array = outer.duplicate()
+	scopes.append(scope)
+	_tp_block(body, scopes)
+
+
+func _tp_block(body: Array, outer: Array) -> void:
+	var scopes: Array = outer.duplicate()
+	scopes.append({})
+	for s in body:
+		_tp_stmt(s, scopes)
+
+
+func _tp_stmt(s, scopes: Array) -> void:
+	var here: Dictionary = scopes[scopes.size() - 1]
+	if s is GateAST.AnnotatedStmt:
+		_tp_stmt((s as GateAST.AnnotatedStmt).stmt, scopes)
+	elif s is GateAST.VarDecl:
+		var vd: GateAST.VarDecl = s
+		_tp_expr(vd.value, scopes)
+		here[vd.name] = vd.type if vd.type != null else (_tp_value_type(vd.value) if vd.inferred else null)
+	elif s is GateAST.AssignStmt:
+		_tp_expr((s as GateAST.AssignStmt).target, scopes)
+		_tp_expr((s as GateAST.AssignStmt).value, scopes)
+	elif s is GateAST.MultiAssign:
+		var ma: GateAST.MultiAssign = s
+		for v in ma.values:
+			_tp_expr(v, scopes)
+		if ma.declares:
+			for t in ma.targets:
+				if t is GateAST.Ident:
+					here[(t as GateAST.Ident).name] = null
+	elif s is GateAST.ExprStmt:
+		_tp_expr((s as GateAST.ExprStmt).expr, scopes)
+	elif s is GateAST.ReturnStmt:
+		_tp_expr((s as GateAST.ReturnStmt).value, scopes)
+	elif s is GateAST.IfStmt:
+		var i: GateAST.IfStmt = s
+		_tp_expr(i.cond, scopes)
+		_tp_block(i.then_body, scopes)
+		for pair in i.elifs:
+			_tp_expr(pair[0], scopes)
+			_tp_block(pair[1], scopes)
+		_tp_block(i.else_body, scopes)
+	elif s is GateAST.ForStmt:
+		var fo: GateAST.ForStmt = s
+		_tp_expr(fo.iterable, scopes)
+		var loop: Array = scopes.duplicate()
+		var vars: Dictionary = {}
+		for vn in fo.var_names:
+			vars[String(vn)] = fo.var_type
+		if fo.var_type == null and fo.var_names.size() == 1:
+			var it: GateAST.TypeRef = _tp_path_type(fo.iterable, scopes)
+			if it != null and it.array_depth > 0:
+				var et: GateAST.TypeRef = copy_type(it)
+				et.array_depth -= 1
+				et.nullable = it.elem_nullable
+				et.elem_nullable = false
+				vars[String(fo.var_names[0])] = et
+		loop.append(vars)
+		_tp_block(fo.body, loop)
+	elif s is GateAST.WhileStmt:
+		_tp_expr((s as GateAST.WhileStmt).cond, scopes)
+		_tp_block((s as GateAST.WhileStmt).body, scopes)
+	elif s is GateAST.MatchStmt:
+		_tp_match(s, scopes)
+	elif s is GateAST.FuncDecl:
+		_tp_func((s as GateAST.FuncDecl).params, (s as GateAST.FuncDecl).body, scopes)
+
+
+func _tp_match(mt: GateAST.MatchStmt, scopes: Array) -> void:
+	_tp_expr(mt.subject, scopes)
+	var subject_t: GateAST.TypeRef = _tp_path_type(mt.subject, scopes)
+	if subject_t != null:
+		pass
+	elif mt.subject is GateAST.Call and (mt.subject as GateAST.Call).callee is GateAST.Ident:
+		var fname: String = ((mt.subject as GateAST.Call).callee as GateAST.Ident).name
+		if not _tp_declared(fname, scopes):
+			subject_t = _tp_funcs.get(fname, null)
+	for br in mt.branches:
+		var arm: Array = scopes.duplicate()
+		var binds: Dictionary = {}
+		for p in br[0]:
+			if p is GateAST.TypePattern:
+				var tp: GateAST.TypePattern = p
+				_tp_check(tp, subject_t, scopes)
+				binds[tp.bind_name] = null
+				_tp_pattern_types[tp.type] = true
+			elif p is GateAST.RawExpr:
+				for bn in GateInfer._var_binds((p as GateAST.RawExpr).text):
+					binds[bn] = null
+		arm.append(binds)
+		_tp_expr(br[1], arm)
+		_tp_block(br[2], arm)
+
+
+func _tp_expr(e, scopes: Array) -> void:
+	if e == null:
+		return
+	if e is GateAST.Lambda:
+		var lam: GateAST.Lambda = e
+		var sc: Dictionary = {}
+		for p in lam.params:
+			sc[(p as GateAST.Param).name] = (p as GateAST.Param).type
+		var inner: Array = scopes.duplicate()
+		inner.append(sc)
+		_tp_block(lam.body, inner)
+		_tp_expr(lam.expr_body, inner)
+	elif e is GateAST.Call:
+		_tp_expr((e as GateAST.Call).callee, scopes)
+		for a in (e as GateAST.Call).args:
+			_tp_expr(a, scopes)
+	elif e is GateAST.Binary:
+		var cur = e
+		while cur is GateAST.Binary:
+			_tp_expr((cur as GateAST.Binary).right, scopes)
+			cur = (cur as GateAST.Binary).left
+		_tp_expr(cur, scopes)
+	elif e is GateAST.Unary:
+		_tp_expr((e as GateAST.Unary).operand, scopes)
+	elif e is GateAST.Ternary:
+		_tp_expr((e as GateAST.Ternary).cond, scopes)
+		_tp_expr((e as GateAST.Ternary).if_true, scopes)
+		_tp_expr((e as GateAST.Ternary).if_false, scopes)
+	elif e is GateAST.NullCoalesce:
+		_tp_expr((e as GateAST.NullCoalesce).left, scopes)
+		_tp_expr((e as GateAST.NullCoalesce).right, scopes)
+	elif e is GateAST.Member:
+		_tp_expr((e as GateAST.Member).target, scopes)
+	elif e is GateAST.Index:
+		_tp_expr((e as GateAST.Index).target, scopes)
+		_tp_expr((e as GateAST.Index).index, scopes)
+	elif e is GateAST.ArrayLit:
+		for el in (e as GateAST.ArrayLit).elements:
+			_tp_expr(el, scopes)
+	elif e is GateAST.DictLit:
+		for k in (e as GateAST.DictLit).keys:
+			_tp_expr(k, scopes)
+		for v in (e as GateAST.DictLit).values:
+			_tp_expr(v, scopes)
+	elif e is GateAST.ObjectInit:
+		for v2 in (e as GateAST.ObjectInit).values:
+			_tp_expr(v2, scopes)
+	elif e is GateAST.FString:
+		for part in (e as GateAST.FString).parts:
+			if not (part is String):
+				_tp_expr(part, scopes)
+	elif e is GateAST.AwaitExpr:
+		_tp_expr((e as GateAST.AwaitExpr).operand, scopes)
+	elif e is GateAST.CastExpr:
+		_tp_tested((e as GateAST.CastExpr).type, "as")
+		_tp_expr((e as GateAST.CastExpr).operand, scopes)
+	elif e is GateAST.IsExpr:
+		var ie: GateAST.IsExpr = e
+		_tp_tested(ie.type, "is", _tp_path_type(ie.operand, scopes))
+		_tp_expr(ie.operand, scopes)
+
+
+var _tp_pattern_types: Dictionary = {}
+
+
+func _tp_tested(t: GateAST.TypeRef, kw: String, operand_t: GateAST.TypeRef = null) -> void:
+	if t == null or _tp_pattern_types.has(t):
+		return
+	if not_single_type(t):
+		diagnostics.error("`%s` needs a single type, not %s" % [kw, t.describe()], t.line, t.col,
+			"test each member instead, as in `x is int or x is String`")
+		return
+	if _packed_scene_of(t):
+		diagnostics.error("`%s` can only test PackedScene; the scene's root type is not known "
+				% kw + "until it is instantiated", t.line, t.col,
+			"test `PackedScene`, and check what `instantiate()` returns")
+		return
+	if kw == "is" and _vector_runtime(t) != "" and not _tp_shape_sound(t, operand_t):
+		var shown: String = _vector_runtime_shown(t)
+		diagnostics.error(
+			"%s is stored as %s, so `is` cannot tell it from any other %s"
+				% [_struct_shown(t), _article(shown), shown],
+			t.line, t.col, "compare its fields instead, or give the struct a method so it "
+				+ "lowers to a class")
+
+
+static func not_single_type(t: GateAST.TypeRef) -> bool:
+	return t != null and (t.is_union() or t.is_tuple() or t.is_func_type)
+
+
+func _tp_declared(name: String, scopes: Array) -> bool:
+	for sc in scopes:
+		if (sc as Dictionary).has(name):
+			return true
+	return false
+
+
+func _tp_path_type(e, scopes: Array, depth: int = 0) -> GateAST.TypeRef:
+	if e == null or depth > 24:
+		return null
+	if e is GateAST.Ident:
+		return _tp_lookup((e as GateAST.Ident).name, scopes)
+	if e is GateAST.Member and not (e as GateAST.Member).safe:
+		var m: GateAST.Member = e
+		if m.target is GateAST.SelfExpr:
+			return _tp_fields.get(m.name, null)
+		var bt: GateAST.TypeRef = _tp_path_type(m.target, scopes, depth + 1)
+		if bt == null or bt.array_depth > 0 or bt.is_dict() or bt.is_union() or bt.is_tuple():
+			return null
+		return _tp_class_field(bt.name, m.name)
+	if e is GateAST.Index and not (e as GateAST.Index).safe:
+		var at: GateAST.TypeRef = _tp_path_type((e as GateAST.Index).target, scopes, depth + 1)
+		if at == null or at.array_depth == 0:
+			return null
+		var el: GateAST.TypeRef = copy_type(at)
+		el.array_depth -= 1
+		el.nullable = at.elem_nullable
+		el.elem_nullable = false
+		return el
+	return null
+
+
+func _tp_class_field(cls: String, field: String) -> GateAST.TypeRef:
+	var seen: Dictionary = {}
+	var c: String = cls
+	while c != "" and not seen.has(c) and classes.has(c):
+		seen[c] = true
+		var cd: GateAST.ClassDecl = classes[c]
+		for m in cd.members:
+			if m is GateAST.VarDecl and (m as GateAST.VarDecl).name == field:
+				return (m as GateAST.VarDecl).type
+		c = cd.extends_type.name if cd.extends_type != null else ""
+	return null
+
+
+func _tp_lookup(name: String, scopes: Array) -> GateAST.TypeRef:
+	for i in range(scopes.size() - 1, -1, -1):
+		if (scopes[i] as Dictionary).has(name):
+			return scopes[i][name]
+	return _tp_fields.get(name, null)
+
+
+func _tp_value_type(v) -> GateAST.TypeRef:
+	var t: GateAST.TypeRef = GateAST.TypeRef.new()
+	if v is GateAST.Call and (v as GateAST.Call).callee is GateAST.Member:
+		var cm: GateAST.Member = (v as GateAST.Call).callee
+		if cm.name == "new" and cm.target is GateAST.Ident:
+			t.name = (cm.target as GateAST.Ident).name
+			return t
+	if v is GateAST.Literal:
+		var l: GateAST.Literal = v
+		match l.kind:
+			"string":
+				t.name = "String"
+			"bool":
+				t.name = "bool"
+			"number":
+				t.name = "float" if (l.raw.contains(".") or l.raw.contains("e")) \
+					and not l.raw.begins_with("0x") and not l.raw.begins_with("0b") else "int"
+			_:
+				return null
+		return t
+	return null
+
+
+func _tp_check(tp: GateAST.TypePattern, subject_t: GateAST.TypeRef, scopes: Array) -> void:
+	var n: String = tp.type.name
+	var cn: String = GateTypes.canonical(n)
+	if _tp_declared(tp.bind_name, scopes):
+		diagnostics.error(
+			"'%s' is already declared here, so a type pattern cannot bind it" % tp.bind_name,
+			tp.line, tp.col,
+			"GDScript does not let a pattern reuse a name in scope; pick a new one, as in `%s %s2:`"
+				% [tp.type.describe(), tp.bind_name])
+	if not_single_type(tp.type):
+		diagnostics.error("a type pattern needs a single type, not %s" % tp.type.describe(),
+			tp.line, tp.col,
+			"give each member its own arm, or bind with `var %s` and test the members in a "
+				% tp.bind_name + "`when` guard")
+		return
+	if cn == "Variant" and tp.type.array_depth == 0:
+		diagnostics.error("a type pattern of `%s` matches every value, null included" % n,
+			tp.line, tp.col, "write `var %s:` to bind whatever the value is" % tp.bind_name)
+		return
+	if _packed_scene_of(tp.type):
+		diagnostics.error("a type pattern can only test PackedScene; the scene's root type is "
+				+ "not known until it is instantiated", tp.line, tp.col,
+			"write `PackedScene %s:`, and check what `instantiate()` returns" % tp.bind_name)
+		return
+	if tp.type.array_depth == 0 and _tp_enums.has(n):
+		return
+	var before: int = diagnostics.error_count()
+	_verify_type_name(tp.type, _tp_generics)
+	if diagnostics.error_count() > before:
+		return
+	var vkey: String = _vector_runtime(tp.type)
+	if vkey != "" and not _tp_shape_sound(tp.type, subject_t):
+		var shown: String = _vector_runtime_shown(tp.type)
+		diagnostics.error(
+			"%s is stored as %s, so a type pattern cannot tell it from any other %s"
+				% [_struct_shown(tp.type), _article(shown), shown],
+			tp.line, tp.col,
+			"match its fields instead (`var %s when %s is %s and ...`), or give the struct a "
+				% [tp.bind_name, tp.bind_name, shown]
+			+ "method so it lowers to a class")
+		return
+	if subject_t != null and not _tp_compatible(subject_t, tp.type):
+		diagnostics.error(
+			"the subject is declared '%s', so it can never be a '%s'"
+				% [subject_t.describe(), tp.type.describe()],
+			tp.line, tp.col,
+			"Godot rejects the `is` test this pattern lowers to; remove the arm, or widen "
+				+ "the subject's type")
+
+
+static func _packed_scene_of(t: GateAST.TypeRef) -> bool:
+	return t != null and t.array_depth == 0 and GateTypes.canonical(t.name) == "PackedScene" \
+		and not t.generic_args.is_empty()
+
+
+func struct_decl(name: String) -> GateAST.ClassDecl:
+	if structs.has(name):
+		return structs[name]
+	if not name.contains("."):
+		return null
+	var last: String = name.get_slice(".", name.get_slice_count(".") - 1)
+	return structs[last] if structs.has(last) else null
+
+
+func _const_struct_named(vd: GateAST.VarDecl) -> String:
+	if vd.type != null and vd.type.array_depth == 0 and struct_decl(vd.type.name) != null:
+		return vd.type.name
+	var found: Array = []
+	_struct_builds_in(vd.value, found)
+	if not found.is_empty():
+		return String(found[0])
+	if vd.type != null and vd.type.array_depth == 0:
+		return vd.type.name
+	return ""
+
+
+func _struct_builds_in(e, found: Array) -> void:
+	if e == null or not found.is_empty() or not (e is Object) or (e as Object).get_script() == null:
+		return
+	if e is GateAST.Call and (e as GateAST.Call).callee is GateAST.Ident:
+		var cn: String = ((e as GateAST.Call).callee as GateAST.Ident).name
+		if struct_decl(cn) != null:
+			found.append(cn)
+			return
+	elif e is GateAST.Call and (e as GateAST.Call).callee is GateAST.Member:
+		var qn: String = (e as GateAST.Call).callee.name
+		if struct_decl(qn) != null:
+			found.append(qn)
+			return
+	elif e is GateAST.ObjectInit:
+		found.append((e as GateAST.ObjectInit).type.name)
+		return
+	for prop in (e as Object).get_property_list():
+		var pn: String = prop["name"]
+		if pn in ["script", "Built-in script", "RefCounted", "Object", "flow_type"]:
+			continue
+		var v = (e as Object).get(pn)
+		if v is Array:
+			for y in v:
+				_struct_builds_in(y, found)
+		elif v is Object:
+			_struct_builds_in(v, found)
+
+
+func _vector_runtime(t: GateAST.TypeRef) -> String:
+	if t == null or t.is_dict() or t.is_union() or t.is_tuple():
+		return ""
+	var sd: GateAST.ClassDecl = struct_decl(t.name)
+	if sd == null or sd.lowering != "vector":
+		return ""
+	return "%s|%d" % [sd.vector_type, t.array_depth]
+
+
+static func _article(noun: String) -> String:
+	return ("an " if noun.begins_with("A") else "a ") + noun
+
+
+func _struct_shown(t: GateAST.TypeRef) -> String:
+	return "struct '%s'" % t.name if t.array_depth == 0 else "'%s'" % t.describe()
+
+
+func _vector_runtime_shown(t: GateAST.TypeRef) -> String:
+	var vt: String = struct_decl(t.name).vector_type
+	return vt if t.array_depth == 0 else "Array[%s]" % vt + "[]".repeat(t.array_depth - 1)
+
+
+func _runtime_key(t: GateAST.TypeRef) -> String:
+	var vk: String = _vector_runtime(t)
+	if vk != "":
+		return vk
+	return "%s|%d" % [GateTypes.canonical(t.name), t.array_depth]
+
+
+func _tp_shape_sound(t: GateAST.TypeRef, subject_t: GateAST.TypeRef) -> bool:
+	if subject_t == null or subject_t.is_dict():
+		return false
+	var key: String = _vector_runtime(t)
+	var members: Array = subject_t.union_members if subject_t.is_union() else [subject_t]
+	if subject_t.is_union() and subject_t.array_depth > 0:
+		return false   # an array of a union holds any mix
+	var found: bool = false
+	for m in members:
+		if m == null:
+			return false
+		var mt: GateAST.TypeRef = m
+		if mt.is_dict():
+			continue
+		if mt.name == t.name and mt.array_depth == t.array_depth:
+			found = true
+			continue
+		var cmn: String = GateTypes.canonical(mt.name)
+		if cmn in ["", "Variant"]:
+			return false
+		if t.array_depth > 0 and mt.array_depth == 0 and cmn == "Array" and mt.generic_args.is_empty():
+			return false   # an untyped Array could be any array
+		if _runtime_key(mt) == key:
+			return false
+	return found
+
+
+func _tp_compatible(a: GateAST.TypeRef, b: GateAST.TypeRef) -> bool:
+	if a.array_depth > 0 or b.array_depth > 0 or a.is_dict() or b.is_dict() \
+		or not a.generic_args.is_empty() or not b.generic_args.is_empty():
+		return true
+	var an: String = GateTypes.canonical(a.name)
+	var bn: String = GateTypes.canonical(b.name)
+	if an == bn or an in ["", "Variant"] or bn in ["", "Variant"]:
+		return true
+	if interfaces.has(an) or interfaces.has(bn) or traits.has(an) or traits.has(bn):
+		return true
+	var a_builtin: bool = GateTypes.BUILTIN.has(an)
+	var b_builtin: bool = GateTypes.BUILTIN.has(bn)
+	if a_builtin and b_builtin:
+		return false   # `int` is never a `float`: Godot rejects that too
+	if a_builtin or b_builtin:
+		return not _tp_is_object(bn if a_builtin else an)
+	var up_a: Array = _tp_chain(an)
+	var up_b: Array = _tp_chain(bn)
+	if up_a.has(bn) or up_b.has(an):
+		return true
+	return not (up_a.has("Object") and up_b.has("Object"))
+
+
+func _tp_is_object(n: String) -> bool:
+	return _tp_chain(n).has("Object")
+
+
+func _tp_chain(n: String) -> Array:
+	var out: Array = []
+	var c: String = n
+	while c != "" and not out.has(c):
+		out.append(c)
+		var nxt: String = ""
+		if classes.has(c):
+			var cd: GateAST.ClassDecl = classes[c]
+			nxt = cd.extends_type.name if cd.extends_type != null else "RefCounted"
+		elif structs.has(c):
+			nxt = "RefCounted"
+		elif ClassDB.class_exists(c):
+			nxt = ClassDB.get_parent_class(c)
+		else:
+			for gc in ProjectSettings.get_global_class_list():
+				if String(gc["class"]) == c:
+					nxt = String(gc["base"])
+					break
+		c = nxt
+	return out
+
+
+enum NodeKind { NOT_NODE, IS_NODE, UNKNOWN }
+
+enum Inherits { NO, YES, UNKNOWN }
+
+const INJECTING_ANNOTATIONS: Array = ["required", "export_if"]
+
+const CONSTANT_GLOBALS: Array = ["PI", "TAU", "INF", "NAN"]
+
+var super_calls: Dictionary = {}
+
+var _path: String = ""
+var _parsed: Dictionary = {}
+
+
+func _annotation(annotations: Array, name: String) -> GateAST.Annotation:
+	for a in annotations:
+		if (a as GateAST.Annotation).name == name:
+			return a
+	return null
+
+
+func _check_member_annotations(owner: Object, members: Array, base: GateAST.TypeRef,
+		is_tool: bool, where: String = "", outer: Dictionary = {}) -> void:
+	var props: Dictionary = {}
+	var consts: Dictionary = outer.duplicate()
+	for m in members:
+		if m is GateAST.VarDecl:
+			var v: GateAST.VarDecl = m
+			if v.is_const:
+				consts[v.name] = true
+			else:
+				props[v.name] = v
+		elif m is GateAST.EnumDecl:
+			var ed: GateAST.EnumDecl = m
+			consts[ed.name] = true
+			for k in ed.keys:
+				consts[String(k)] = true
+		elif m is GateAST.ClassDecl:
+			consts[(m as GateAST.ClassDecl).name] = true
+	for m in members:
+		if m is GateAST.ClassDecl:
+			var cd: GateAST.ClassDecl = m
+			_misplaced(cd.annotations)
+			if cd.form == "trait":
+				continue   # its members are checked where they are inlined
+			_check_member_annotations(cd, cd.members, cd.extends_type, is_tool,
+				"" if cd.form == "class" else cd.form, consts)
+		elif m is GateAST.VarDecl:
+			_check_required_var(m, base, where)
+			_check_export_if_var(m, is_tool, where, props, consts, members)
+			_check_export_struct(m)
+		elif m is GateAST.FuncDecl:
+			_misplaced((m as GateAST.FuncDecl).annotations)
+			_misplaced_in_body((m as GateAST.FuncDecl).body)
+		elif m is GateAST.SignalDecl:
+			_misplaced((m as GateAST.SignalDecl).annotations)
+		elif m is GateAST.EnumDecl:
+			_misplaced((m as GateAST.EnumDecl).annotations)
+	if where == "":
+		_check_synthesised(owner, members, base)
+
+
+func _check_export_struct(vd: GateAST.VarDecl) -> void:
+	if vd.type == null:
+		return
+	var cd: GateAST.ClassDecl = struct_decl(vd.type.name)
+	if cd == null:
+		return
+	var exported: bool = false
+	for a in vd.annotations:
+		if String((a as GateAST.Annotation).name).begins_with("export"):
+			exported = true
+	if not exported or cd.lowering == "vector":
+		return
+	diagnostics.error("'%s' is %s, a struct lowered to a class, and export needs a built-in or "
+			% [vd.name, vd.type.describe()] + "Resource type", vd.line, vd.col,
+		"a struct is exported only when it lowers to a Vector: 2 to 4 fields of one numeric type")
+
+
+func _check_synthesised(owner: Object, members: Array, base: GateAST.TypeRef) -> void:
+	var asks: Dictionary = {}   ## function name -> the first annotation that needs it
+	for m in members:
+		if not (m is GateAST.VarDecl):
+			continue
+		var vd: GateAST.VarDecl = m
+		var req: GateAST.Annotation = _annotation(vd.annotations, "required")
+		if req != null and not asks.has("_ready") and _node_kind(base) == NodeKind.IS_NODE:
+			asks["_ready"] = req
+		var ei: GateAST.Annotation = _annotation(vd.annotations, "export_if")
+		if ei != null and not asks.has("_validate_property"):
+			asks["_validate_property"] = ei
+	for fname in asks:
+		var a: GateAST.Annotation = asks[fname]
+		var own: GateAST.FuncDecl = GateInject.find_func(members, fname)
+		if own != null:
+			if own.is_static:
+				diagnostics.error("@%s needs an instance %s, and this class's is static"
+					% [a.name, fname], a.line, a.col,
+					"GATE puts its code at the top of %s, and a static function cannot read "
+					% fname + "the properties it checks. Godot never calls a static one anyway.")
+			continue
+		match _inherited_defines(base, fname):
+			Inherits.YES:
+				if not super_calls.has(owner):
+					super_calls[owner] = {}
+				super_calls[owner][fname] = true
+			Inherits.UNKNOWN:
+				diagnostics.error("@%s needs this class to declare %s" % [a.name, fname],
+					a.line, a.col,
+					"GATE writes %s here, and it cannot read '%s' to tell whether that " % [
+						fname, base.name if base != null else "?"]
+					+ "already declares one - a new one would replace it. Declare %s in this " % fname
+					+ "class, calling super() if the base has one, and GATE adds to it.")
+
+
+func _check_required_var(vd: GateAST.VarDecl, base: GateAST.TypeRef, where: String) -> void:
+	var req: GateAST.Annotation = _annotation(vd.annotations, "required")
+	if req == null:
+		return
+	if where != "":
+		diagnostics.error("@required is not available in a %s" % where, req.line, req.col,
+			"it checks a node's exported property when the node is ready, and a %s is "
+			% where + "never a node.")
+		return
+	if vd.is_const or vd.is_static:
+		_misplaced(vd.annotations)
+		return
+	if not GateInject.has_export(vd.annotations):
+		diagnostics.error("@required needs @export on the same declaration", req.line, req.col,
+			"it checks that the inspector set '%s', and only an exported property " % vd.name
+			+ "appears there. Write `@export @required`.")
+	if not _is_object_type(vd.type):
+		diagnostics.error("@required only applies to an object type; '%s' is %s"
+			% [vd.name, vd.type.describe() if vd.type != null else "untyped"], req.line, req.col,
+			"an int, a vector or an array always holds a value, so there is nothing to "
+			+ "check. Use it on a node or resource type.")
+	match _node_kind(base):
+		NodeKind.NOT_NODE:
+			diagnostics.error("@required needs a script that extends Node", req.line, req.col,
+				"the check is an assert at the top of _ready, which only a node receives; "
+				+ "this extends %s." % (base.name if base != null else "RefCounted"))
+		NodeKind.UNKNOWN:
+			diagnostics.error("@required needs a script that extends Node", req.line, req.col,
+				"GATE cannot tell whether '%s' extends Node, and the check is an assert in "
+				% base.name + "_ready, which only a node receives. Extend a node class "
+				+ "GATE can see: an engine class, or a class declared in a .gate file.")
+
+
+func _check_export_if_var(vd: GateAST.VarDecl, is_tool: bool, where: String,
+		props: Dictionary, consts: Dictionary, members: Array) -> void:
+	var ei: GateAST.Annotation = _annotation(vd.annotations, "export_if")
+	if ei == null:
+		return
+	if where != "":
+		diagnostics.error("@export_if is not available in a %s" % where, ei.line, ei.col,
+			"it hides an inspector property, and a %s has no inspector." % where)
+		return
+	if vd.is_const or vd.is_static:
+		_misplaced(vd.annotations)
+		return
+	if not is_tool:
+		diagnostics.error("@export_if needs @tool: the inspector only runs code for tool scripts",
+			ei.line, ei.col,
+			"add @tool at the top of the file. GATE never adds it for you: a tool script "
+			+ "also runs its _ready and _process inside the editor.")
+	if ei.args.size() != 1:
+		diagnostics.error("@export_if takes one condition: `@export_if(<condition>)`",
+			ei.line, ei.col)
+		return
+	for n in GateInject.condition_reads(ei.args[0]):
+		var name: String = String(n)
+		if props.has(name):
+			_check_condition_property(props[name], ei, members)
+		elif not (consts.has(name) or CONSTANT_GLOBALS.has(name) or _is_type_name(name)):
+			diagnostics.error("@export_if reads '%s', which is not a property of this class"
+				% name, ei.line, ei.col,
+				"a condition may read this class's exported properties, and constants.")
+	var hidden: String = _unwatched(ei.args[0], consts)
+	if hidden != "":
+		diagnostics.warn("@export_if's condition depends on `%s`, which no setter here reports"
+			% hidden, ei.line, ei.col,
+			"the inspector re-reads the condition when a property it reads is set. What a "
+			+ "call returns, or a field of another object, can change without that, and "
+			+ "the inspector keeps showing the old answer until something else refreshes it.")
+
+
+func _unwatched(e, consts: Dictionary) -> String:
+	if e is GateAST.Call:
+		var c: GateAST.Call = e
+		if c.callee is GateAST.Ident:
+			return "%s()" % (c.callee as GateAST.Ident).name
+		if c.callee is GateAST.Member:
+			return "%s()" % (c.callee as GateAST.Member).name
+		return "a call"
+	if e is GateAST.Member:
+		var m: GateAST.Member = e
+		if m.target is GateAST.SelfExpr:
+			return ""
+		if m.target is GateAST.Ident:
+			var t: String = (m.target as GateAST.Ident).name
+			if consts.has(t) or _is_type_name(t) or CONSTANT_GLOBALS.has(t):
+				return ""   # `Shape.BALL`: a constant
+			return "%s.%s" % [t, m.name]
+		return ".%s" % m.name
+	if e is GateAST.ASTNode:
+		for p in (e as Object).get_property_list():
+			if not (int(p["usage"]) & PROPERTY_USAGE_SCRIPT_VARIABLE):
+				continue
+			var v = (e as Object).get(p["name"])
+			var found: String = ""
+			if v is GateAST.Expr:
+				found = _unwatched(v, consts)
+			elif v is Array:
+				for x in v:
+					if found == "" and x is GateAST.Expr:
+						found = _unwatched(x, consts)
+			if found != "":
+				return found
+	return ""
+
+
+func _check_condition_property(dep: GateAST.VarDecl, ei: GateAST.Annotation, members: Array) -> void:
+	if not GateInject.has_export(dep.annotations):
+		diagnostics.error("@export_if reads '%s', which is not exported" % dep.name,
+			ei.line, ei.col,
+			"the inspector re-reads the condition when an exported property changes; "
+			+ "nothing else can change it there. Export '%s', or use a constant." % dep.name)
+		return
+	var setter_fn: String = GateInject.inline_setter(dep)
+	var lines: PackedStringArray = dep.setter.split("\n")
+	var has_block_set: bool = false
+	for i in GateInject.accessor_lines(dep.setter):
+		var t: String = lines[i].strip_edges()
+		if t.begins_with("set(") or t.begins_with("set ("):
+			has_block_set = true
+	if (dep.setter != "" and not has_block_set) or (dep.inline_accessors != "" and setter_fn == ""):
+		diagnostics.error("@export_if reads '%s', which has a getter and no setter" % dep.name,
+			ei.line, ei.col,
+			"GATE adds notify_property_list_changed() to the setter of every property a "
+			+ "condition reads, so the inspector re-reads it. Give '%s' a setter." % dep.name)
+	elif setter_fn != "" and GateInject.find_func(members, setter_fn) == null:
+		diagnostics.error("@export_if reads '%s', whose setter '%s' is not declared in this class"
+			% [dep.name, setter_fn], ei.line, ei.col,
+			"GATE adds notify_property_list_changed() to that setter, so it must be a "
+			+ "function of this class.")
+
+
+func _is_type_name(n: String) -> bool:
+	if GateTypes.is_shorthand(n) or GateTypes.BUILTIN.has(GateTypes.canonical(n)):
+		return true
+	if classes.has(n) or structs.has(n) or interfaces.has(n) or ClassDB.class_exists(n):
+		return true
+	if _registry != null and _registry.script_class_names.has(n):
+		return true
+	for c in ProjectSettings.get_global_class_list():
+		if String(c["class"]) == n:
+			return true
+	return false
+
+
+func _misplaced(annotations: Array) -> void:
+	for name in INJECTING_ANNOTATIONS:
+		var a: GateAST.Annotation = _annotation(annotations, name)
+		if a != null:
+			diagnostics.error("@%s only applies to a member variable" % name, a.line, a.col,
+				"it works through the inspector, which only shows a class's own properties.")
+
+
+func _misplaced_in_body(body: Array) -> void:
+	for s in body:
+		if s is GateAST.AnnotatedStmt:
+			_misplaced((s as GateAST.AnnotatedStmt).annotations)
+			_misplaced_in_body([(s as GateAST.AnnotatedStmt).stmt])
+		elif s is GateAST.VarDecl:
+			_misplaced((s as GateAST.VarDecl).annotations)
+		elif s is GateAST.IfStmt:
+			var st: GateAST.IfStmt = s
+			_misplaced_in_body(st.then_body)
+			for pair in st.elifs:
+				_misplaced_in_body(pair[1])
+			_misplaced_in_body(st.else_body)
+		elif s is GateAST.ForStmt:
+			_misplaced_in_body((s as GateAST.ForStmt).body)
+		elif s is GateAST.WhileStmt:
+			_misplaced_in_body((s as GateAST.WhileStmt).body)
+		elif s is GateAST.MatchStmt:
+			for br in (s as GateAST.MatchStmt).branches:
+				_misplaced_in_body(br[2])
+
+
+func _is_object_type(t: GateAST.TypeRef) -> bool:
+	if t == null or t.is_array() or t.is_dict() or t.is_set():
+		return false
+	var n: String = GateTypes.canonical(t.name)
+	if n == "":
+		return false
+	if n.contains("."):
+		return true
+	if structs.has(n):
+		return (structs[n] as GateAST.ClassDecl).lowering == "class"
+	if classes.has(n) or interfaces.has(n) or traits.has(n):
+		return true
+	if ClassDB.class_exists(n):
+		return true
+	if _registry != null and _registry.script_class_names.has(n):
+		return true
+	for c in ProjectSettings.get_global_class_list():
+		if String(c["class"]) == n:
+			return true
+	return false
+
+
+func _node_kind(base: GateAST.TypeRef) -> NodeKind:
+	var ext: String = _ext_name(base)
+	var from: String = _path
+	var seen: Dictionary = {}
+	while not seen.has(ext + "|" + from):
+		seen[ext + "|" + from] = true
+		var link: Dictionary = _chain_link(ext, from)
+		if link.is_empty():
+			return NodeKind.UNKNOWN
+		if link.has("native"):
+			return (NodeKind.IS_NODE if ClassDB.is_parent_class(String(link["native"]), "Node")
+				else NodeKind.NOT_NODE)
+		ext = link["extends"]
+		from = link["from"]
+	return NodeKind.UNKNOWN
+
+
+func _inherited_defines(base: GateAST.TypeRef, fname: String) -> Inherits:
+	var ext: String = _ext_name(base)
+	var from: String = _path
+	var seen: Dictionary = {}
+	while not seen.has(ext + "|" + from):
+		seen[ext + "|" + from] = true
+		var link: Dictionary = _chain_link(ext, from)
+		if link.is_empty():
+			return Inherits.UNKNOWN
+		if link.has("native"):
+			return Inherits.NO
+		if (link["defines"] as Array).has(fname):
+			return Inherits.YES
+		ext = link["extends"]
+		from = link["from"]
+	return Inherits.UNKNOWN
+
+
+static func split_extends_path(ext: String) -> Array:
+	var close: int = ext.find(ext[0], 1)
+	if close < 0:
+		return [ext.substr(1), ""]
+	return [ext.substr(1, close - 1), ext.substr(close + 2) if close + 1 < ext.length() else ""]
+
+
+static func _ext_name(t: GateAST.TypeRef) -> String:
+	return t.name if t != null else ""
+
+
+func _chain_link(ext: String, from_path: String) -> Dictionary:
+	if ext == "":
+		return {"native": "RefCounted"}
+	if ext.begins_with("\"") or ext.begins_with("'"):
+		var split: Array = split_extends_path(ext)
+		if split[1] != "":
+			return {}   # an inner class of a script: not followed
+		var p: String = split[0]
+		if not p.begins_with("res://"):
+			p = from_path.get_base_dir().path_join(p).simplify_path()
+		return _script_link(p)
+	if ClassDB.class_exists(ext):
+		return {"native": ext}
+	var inner: String = ext.get_slice(".", ext.get_slice_count(".") - 1)
+	if classes.has(inner):
+		var cd: GateAST.ClassDecl = classes[inner]
+		return {"extends": _ext_name(cd.extends_type), "from": from_path,
+			"defines": _func_names(cd.members)}
+	if _registry != null and _registry.script_class_names.has(ext):
+		return _script_link(String(_registry.script_class_names[ext]))
+	for c in ProjectSettings.get_global_class_list():
+		if String(c["class"]) == ext:
+			return _script_link(String(c["path"]))
+	return {}
+
+
+func _script_link(path: String) -> Dictionary:
+	var gate: String = path if path.get_extension() == "gate" else path.get_basename() + ".gate"
+	if _registry != null and _registry.script_modules.has(gate):
+		var info: Dictionary = _registry.script_modules[gate]
+		return {"extends": info["extends"], "from": gate, "defines": info["defines"]}
+	var src_path: String = gate if FileAccess.file_exists(gate) else path
+	if not _parsed.has(src_path):
+		_parsed[src_path] = null
+		if FileAccess.file_exists(src_path) and GateProject.is_utf8(src_path):
+			var src: String = FileAccess.get_file_as_string(src_path)
+			var d: GateDiagnostics = GateDiagnostics.new()
+			_parsed[src_path] = GateParser.new().parse(GateLexer.new().tokenize(src, d), src, d)
+	var mod: GateAST.Module = _parsed[src_path]
+	if mod == null:
+		return {}
+	return {"extends": _ext_name(mod.extends_type), "from": src_path,
+		"defines": _func_names(mod.members)}
+
+
+static func _func_names(members: Array) -> Array:
+	var out: Array = GateInject.will_define(members)
+	for m in members:
+		if m is GateAST.FuncDecl:
+			out.append((m as GateAST.FuncDecl).name)
+	return out

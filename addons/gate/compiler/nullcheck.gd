@@ -207,23 +207,59 @@ func _fields_of(cls: String) -> Dictionary:
 	return out
 
 
-func _declare_local(name: String, t) -> void:
+func _declare_local(name: String, t, inferred: bool = false) -> void:
 	_local_names[name] = true
+	_inferred.erase(JOINED + name)
 	if t != null:
 		_locals[name] = t
 	else:
 		_locals.erase(name)
 	_env.erase(name)
+	_narrowed.erase(name)
+	if inferred:
+		_fixed.erase(name)
+		if t != null:
+			_inferred[name] = t
+		else:
+			_inferred.erase(name)
+	else:
+		_inferred.erase(name)
+		if t != null:
+			_fixed[name] = true
+		else:
+			_fixed.erase(name)
+
+
+func _retype_local(name: String, t: GateAST.TypeRef) -> void:
+	_inferred.erase(JOINED + name)
+	if t != null:
+		_inferred[name] = t
+		_locals[name] = t
+	else:
+		_inferred.erase(name)
+		_locals.erase(name)
+
+
+func _follows_assignments(name: String) -> bool:
+	return _local_names.has(name) and not _fixed.has(name)
 
 
 func _check_func(fd: GateAST.FuncDecl, cls: String) -> void:
 	var saved_destructured: Dictionary = _destructured
 	_destructured = {}
 	var saved_env: Dictionary = _env
+	var saved_narrowed: Dictionary = _narrowed
+	var saved_fresh: Dictionary = _fresh
+	var saved_inferred: Dictionary = _inferred
+	var saved_fixed: Dictionary = _fixed
 	var saved_locals: Dictionary = _locals
 	var saved_names: Dictionary = _local_names
 	var saved_ret: GateAST.TypeRef = _ret
 	_env = {}
+	_narrowed = {}
+	_fresh = _scan_fresh(fd.body, null)
+	_inferred = {}
+	_fixed = {}
 	_locals = {}
 	_local_names = {}
 	_asserted = {}
@@ -254,6 +290,10 @@ func _check_func(fd: GateAST.FuncDecl, cls: String) -> void:
 	_walk_block(fd.body)
 
 	_env = saved_env
+	_narrowed = saved_narrowed
+	_fresh = saved_fresh
+	_inferred = saved_inferred
+	_fixed = saved_fixed
 	_locals = saved_locals
 	_local_names = saved_names
 	_ret = saved_ret
@@ -309,12 +349,21 @@ func _walk_stmt(s) -> bool:
 		elif vd.type != null:
 			_declare_local(vd.name, vd.type)
 		else:
-			_declare_local(vd.name, infer.type_of(vd.value, _locals))
+			var static_t: GateAST.TypeRef = _static_type_of(vd.value)
+			var narrow_t: GateAST.TypeRef = _type_of(vd.value)
+			if narrow_t != null and not _same_type(narrow_t, static_t):
+				carried = narrow_t
+			_declare_local(vd.name, static_t, not vd.inferred)
+			_note_joined(vd.name, vd.value)
 		_kill_path(vd.name)
 		_kill_index_var(vd.name)
+		if carried != null:
+			_narrowed[vd.name] = carried
 		if vd.type != null and vd.type.nullable:
 			_env[vd.name] = _state_of(vd.value)
-		elif vd.type == null and vd.value != null and _locals.has(vd.name) and (_locals[vd.name] as GateAST.TypeRef).nullable:
+		elif vd.type == null and vd.value != null and (
+				(_locals.has(vd.name) and (_locals[vd.name] as GateAST.TypeRef).nullable)
+				or (carried != null and carried.nullable)):
 			_env[vd.name] = _state_of(vd.value)
 		return false
 
@@ -326,13 +375,19 @@ func _walk_stmt(s) -> bool:
 		_check_expr(a.target)
 		if a.op != "=":
 			_check_value_operand(a.target, a.op, a.line, a.col)
-		if a.op == "=" and a.target is GateAST.Ident:
-			var tn: String = (a.target as GateAST.Ident).name
-			if _local_names.has(tn) and _locals.has(tn):
-				var newt: GateAST.TypeRef = infer.type_of(a.value, _locals)
-				var oldt: GateAST.TypeRef = _locals[tn]
-				if newt != null and oldt != null and newt.name != "" and newt.name != oldt.name:
-					_locals.erase(tn)
+			if _gate_types:
+				_check_union_operator(a.op.trim_suffix("="), a.target, a.value, a.line, a.col)
+		var retype: bool = a.target is GateAST.Ident \
+			and _follows_assignments((a.target as GateAST.Ident).name)
+		var new_t: GateAST.TypeRef = null
+		if retype and a.op == "=":
+			new_t = _static_type_of(a.value)
+		elif retype:
+			var bin: GateAST.Binary = GateAST.Binary.new()
+			bin.op = a.op.trim_suffix("=")
+			bin.left = a.target
+			bin.right = a.value
+			new_t = _static_type_of(bin)
 		var path: String = _path_of(a.target)
 		var target_t: GateAST.TypeRef = _type_of(a.target) \
 			if _gate_types and a.op == "=" and not retype else null
@@ -388,9 +443,9 @@ func _walk_stmt(s) -> bool:
 	if s is GateAST.SimpleStmt:
 		var kw: String = (s as GateAST.SimpleStmt).keyword
 		if kw == "break" and not _break_envs.is_empty():
-			_break_envs[-1].append(_env.duplicate())
+			_break_envs[-1].append(_state_copy())
 		elif kw == "continue" and not _continue_envs.is_empty():
-			_continue_envs[-1].append(_env.duplicate())
+			_continue_envs[-1].append(_state_copy())
 		return kw in ["break", "continue"]
 
 	if s is GateAST.IfStmt:
@@ -423,11 +478,14 @@ func _walk_stmt(s) -> bool:
 			value_types.append(_static_type_of(ma.values[j]) if paired else null)
 		for i in ma.targets.size():
 			var t = ma.targets[i]
-			if t is GateAST.Ident:
-				_local_names[(t as GateAST.Ident).name] = true
+			if t is GateAST.Ident and ma.declares:
+				_declare_local((t as GateAST.Ident).name, value_types[i], true)
 			_check_expr(t)
 			var p: String = _path_of(t)
 			_kill_target(t)
+			if t is GateAST.Ident and not ma.declares \
+				and _follows_assignments((t as GateAST.Ident).name):
+				_retype_local((t as GateAST.Ident).name, value_types[i])
 			if p != "" and _tracked(t):
 				_env[p] = _state_of(ma.values[i]) if paired else S.MAYBE
 		return false
@@ -563,66 +621,73 @@ func _walk_destructure(ma: GateAST.MultiAssign) -> void:
 
 func _walk_if(st: GateAST.IfStmt) -> bool:
 	_check_expr(st.cond)
-	var before: Dictionary = _env.duplicate()
+	var before: Array = _state_copy()
 
-	_env = _narrow(before, st.cond, true)
+	_set_state(_narrow_state(before, st.cond, true))
 	var then_exits: bool = _walk_block(st.then_body)
 	var branch_states: Array = []
 	if not then_exits:
-		branch_states.append(_env.duplicate())
+		branch_states.append(_state_copy())
 
-	var else_env: Dictionary = _narrow(before, st.cond, false)
+	var else_state: Array = _narrow_state(before, st.cond, false)
 	var all_exit: bool = then_exits
 
 	for pair in st.elifs:
-		_env = else_env.duplicate()
+		_set_state(_copy_state(else_state))
 		_check_expr(pair[0])
 		_env = _narrow(else_env, pair[0], true)
 		var e_exits: bool = _walk_block(pair[1])
 		if not e_exits:
-			branch_states.append(_env.duplicate())
+			branch_states.append(_state_copy())
 		all_exit = all_exit and e_exits
 		else_env = _narrow(else_env, pair[0], false)
 
 	if not st.else_body.is_empty():
-		_env = else_env.duplicate()
+		_set_state(_copy_state(else_state))
 		var else_exits: bool = _walk_block(st.else_body)
 		if not else_exits:
-			branch_states.append(_env.duplicate())
+			branch_states.append(_state_copy())
 		all_exit = all_exit and else_exits
 	else:
-		branch_states.append(else_env)
+		branch_states.append(else_state)
 		all_exit = false
 
 	if branch_states.is_empty():
-		_env = before
+		_set_state(before)
 		return all_exit
-	var joined: Dictionary = branch_states[0]
+	var joined: Array = branch_states[0]
 	for i in range(1, branch_states.size()):
-		joined = _join(joined, branch_states[i])
-	_env = joined
+		joined = _join_state(joined, branch_states[i])
+	_set_state(joined)
 	return all_exit
 
 const MAX_LOOP_PASSES := 6
 const MAX_LOOP_PASSES_CAP := 24
 
 
-func _loop_fixpoint(entry: Dictionary, cond, body: Array) -> Dictionary:
-	var cur: Dictionary = entry.duplicate()
+## The loop-head state that holds on every pass. If it does not settle in time,
+## every narrowing is dropped.
+func _loop_fixpoint(entry: Array, cond, body: Array) -> Array:
+	var cur: Array = _copy_state(entry)
 	_quiet += 1
 	_continue_envs.append([])
-	var limit: int = mini(maxi(MAX_LOOP_PASSES, entry.size() + 1), MAX_LOOP_PASSES_CAP)
+	var limit: int = mini(maxi(MAX_LOOP_PASSES, (entry[0] as Dictionary).size() + 1),
+		MAX_LOOP_PASSES_CAP)
 	var settled: bool = false
 	var moving: Dictionary = {}
+	var moving_t: Dictionary = {}
+	var moving_i: Dictionary = {}
 	for _pass in limit:
 		_env = _narrow(cur, cond, true) if cond != null else cur.duplicate()
 		_walk_block(body)
-		var nxt: Dictionary = _join(cur, _env)
+		var nxt: Array = _join_state(cur, _state_copy())
 		for ce in _continue_envs[-1]:
-			nxt = _join(nxt, ce)
+			nxt = _join_state(nxt, ce)
 		_continue_envs[-1] = []
-		moving = _env_diff(nxt, cur)
-		if moving.is_empty():
+		moving = _env_diff(nxt[0], cur[0])
+		moving_t = _types_diff(nxt[1], cur[1])
+		moving_i = _types_diff(nxt[2], cur[2])
+		if moving.is_empty() and moving_t.is_empty() and moving_i.is_empty():
 			settled = true
 			break
 		cur = nxt
@@ -630,7 +695,11 @@ func _loop_fixpoint(entry: Dictionary, cond, body: Array) -> Dictionary:
 	_quiet -= 1
 	if not settled:
 		for k in moving:
-			cur[k] = S.MAYBE
+			cur[0][k] = S.MAYBE
+		for k2 in moving_t:
+			(cur[1] as Dictionary).erase(k2)
+		for k3 in moving_i:
+			(cur[2] as Dictionary).erase(k3)
 	return cur
 
 
@@ -646,9 +715,9 @@ func _env_diff(a: Dictionary, b: Dictionary) -> Dictionary:
 
 
 func _walk_while(w: GateAST.WhileStmt) -> void:
-	var entry: Dictionary = _env.duplicate()
-	var stable: Dictionary = _loop_fixpoint(entry, w.cond, w.body)
-	_env = stable.duplicate()
+	var entry: Array = _state_copy()
+	var stable: Array = _loop_fixpoint(entry, w.cond, w.body)
+	_set_state(_copy_state(stable))
 	_check_expr(w.cond)
 	_env = _narrow(stable, w.cond, true)
 	_break_envs.append([])
@@ -656,45 +725,77 @@ func _walk_while(w: GateAST.WhileStmt) -> void:
 	_walk_block(w.body)
 	_env = _join(_env, _narrow(stable, w.cond, false))
 	for be2 in _break_envs[-1]:
-		_env = _join(_env, be2)
+		out = _join_state(out, be2)
+	_set_state(out)
 	_break_envs.pop_back()
 	_continue_envs.pop_back()
 
 
+func _walk_key_type(tr: GateAST.TypeRef) -> GateAST.TypeRef:
+	if tr == null or tr.array_depth != 0:
+		return null
+	if tr.is_dict():
+		return tr.dict_key
+	if GateTypes.canonical(tr.name) == "Dictionary" and tr.generic_args.size() == 2:
+		return tr.generic_args[0]
+	return null
+
+
+func _walked_type(tr: GateAST.TypeRef, f: GateAST.ForStmt) -> GateAST.TypeRef:
+	if f.var_names.size() == 1 and not f.is_enumerate:
+		var key: GateAST.TypeRef = _walk_key_type(tr)
+		if key != null:
+			return key
+	return infer.element_type(tr)
+
+
 func _walk_for(f: GateAST.ForStmt) -> void:
 	_check_expr(f.iterable)
-	var it: GateAST.TypeRef = infer.type_of(f.iterable, _locals)
+	_check_iterable(f)
+	if _gate_types:
+		_check_union_elements(f.iterable, "iterating", f.line, f.col)
+	var it: GateAST.TypeRef = _static_type_of(f.iterable)
+	var it_n: GateAST.TypeRef = _type_of(f.iterable)
+	var carried: Dictionary = {}
+	var outer: Array = _open_scope(f.var_names)
 	if f.var_names.size() == 2 and it != null and it.is_dict() and not f.is_enumerate:
-		_declare_local(f.var_names[0], it.dict_key)
-		_declare_local(f.var_names[1], it.dict_value)
+		_declare_local(f.var_names[0], it.dict_key, true)
+		_declare_local(f.var_names[1], it.dict_value, true)
 	else:
 		var et: GateAST.TypeRef = f.var_type
 		if et == null:
-			et = infer.element_type(it)
+			et = _walked_type(it, f)
+			var et_n: GateAST.TypeRef = _walked_type(it_n, f)
+			if et_n != null and not _same_type(et_n, et) \
+				and not (it_n != null and it_n.is_dict() and f.var_names.size() == 2):
+				carried[f.var_names[f.var_names.size() - 1]] = et_n
 		for i in f.var_names.size():
 			_declare_local(f.var_names[i],
-				et if i == f.var_names.size() - 1 else null)
+				et if i == f.var_names.size() - 1 else null, f.var_type == null)
 	for n in f.var_names:
 		_local_names[n] = true
 		_kill_path(n)
 		_kill_index_var(n)
+	for cn in carried:
+		_narrowed[cn] = carried[cn]
 
-	var entry: Dictionary = _env.duplicate()
-	var stable: Dictionary = _loop_fixpoint(entry, null, f.body)
-	_env = stable.duplicate()
+	var entry: Array = _state_copy()
+	var stable: Array = _loop_fixpoint(entry, null, f.body)
+	_set_state(_copy_state(stable))
 	_break_envs.append([])
 	_continue_envs.append([])
 	_walk_block(f.body)
-	_env = _join(_env, stable)
+	var out: Array = _join_state(_state_copy(), stable)
 	for be in _break_envs[-1]:
-		_env = _join(_env, be)
+		out = _join_state(out, be)
+	_set_state(out)
 	_break_envs.pop_back()
 	_continue_envs.pop_back()
 
 
 func _walk_match(mt: GateAST.MatchStmt) -> bool:
 	_check_expr(mt.subject)
-	var before: Dictionary = _env.duplicate()
+	var before: Array = _state_copy()
 	var joined = null
 	var exhaustive: bool = false
 	var has_null_arm: bool = false
@@ -702,7 +803,7 @@ func _walk_match(mt: GateAST.MatchStmt) -> bool:
 		if _is_null_pattern(br0[0]):
 			has_null_arm = true
 	for br in mt.branches:
-		_env = before.duplicate()
+		_set_state(_copy_state(before))
 		var subj: String = _path_of(mt.subject)
 		if subj != "" and _tracked(mt.subject) and has_null_arm:
 			_env[subj] = S.NULL if _is_null_pattern(br[0]) else S.NOTNULL
@@ -720,11 +821,11 @@ func _walk_match(mt: GateAST.MatchStmt) -> bool:
 		_local_names = saved_names
 		if exits:
 			continue
-		joined = _env.duplicate() if joined == null else _join(joined, _env)
+		joined = _state_copy() if joined == null else _join_state(joined, _state_copy())
 	if joined == null:
-		_env = before
+		_set_state(before)
 		return exhaustive and not mt.branches.is_empty()
-	_env = joined if exhaustive else _join(joined, before)
+	_set_state(joined if exhaustive else _join_state(joined, before))
 	return false
 
 
@@ -807,9 +908,160 @@ func _is_wildcard(patterns: Array) -> bool:
 	return false
 
 
-func _narrow(env: Dictionary, cond, truth: bool) -> Dictionary:
-	var out: Dictionary = env.duplicate()
-	_apply_narrow(out, cond, truth)
+func _state_copy() -> Array:
+	return [_env.duplicate(), _narrowed.duplicate(), _inferred.duplicate()]
+
+
+func _copy_state(st: Array) -> Array:
+	return [(st[0] as Dictionary).duplicate(), (st[1] as Dictionary).duplicate(),
+		(st[2] as Dictionary).duplicate()]
+
+
+func _set_state(st: Array) -> void:
+	_env = st[0]
+	_narrowed = st[1]
+	var nxt: Dictionary = st[2]
+	for n in _inferred:
+		if not nxt.has(n):
+			_locals.erase(n)
+	for n2 in nxt:
+		_locals[n2] = nxt[n2]
+	_inferred = nxt
+
+
+func _join_state(a: Array, b: Array) -> Array:
+	return [_join(a[0], b[0]), _join_types(a[1], b[1]), _join_inferred(a[2], b[2])]
+
+
+func _drop_killed(into: Array, before: Array, after: Array) -> void:
+	var env_b: Dictionary = before[0]
+	var env_a: Dictionary = after[0]
+	for k in env_b:
+		if not env_a.has(k) or env_a[k] != env_b[k]:
+			(into[0] as Dictionary).erase(k)
+	var nar_b: Dictionary = before[1]
+	var nar_a: Dictionary = after[1]
+	for k2 in nar_b:
+		if not nar_a.has(k2) or not _same_type(nar_a[k2], nar_b[k2]):
+			(into[1] as Dictionary).erase(k2)
+
+
+func _replay_kills(e) -> void:
+	if (_env.is_empty() and _narrowed.is_empty()) or not _may_kill(e, 0):
+		return
+	var live: Array = [_env, _narrowed, _inferred]
+	var before: Array = _state_copy()
+	_set_state(_copy_state(before))
+	_quiet += 1
+	_check_expr(e)
+	_quiet -= 1
+	var after: Array = _state_copy()
+	_set_state(live)
+	_drop_killed(live, before, after)
+
+
+func _may_kill(e, depth: int) -> bool:
+	if e == null or e is GateAST.Literal or e is GateAST.SelfExpr:
+		return false
+	if depth > MAX_PATH_DEPTH:
+		return true
+	if e is GateAST.Ident:
+		return not infer.accessor_fields.is_empty()
+	if e is GateAST.Member:
+		return not infer.accessor_fields.is_empty() or _may_kill((e as GateAST.Member).target, depth + 1)
+	if e is GateAST.Index:
+		return _may_kill((e as GateAST.Index).target, depth + 1) \
+			or _may_kill((e as GateAST.Index).index, depth + 1)
+	if e is GateAST.Binary:
+		return _may_kill((e as GateAST.Binary).left, depth + 1) \
+			or _may_kill((e as GateAST.Binary).right, depth + 1)
+	if e is GateAST.Unary:
+		return _may_kill((e as GateAST.Unary).operand, depth + 1)
+	if e is GateAST.IsExpr:
+		return _may_kill((e as GateAST.IsExpr).operand, depth + 1)
+	return true
+
+
+const JOINED := "?"
+
+
+func _join_inferred(a: Dictionary, b: Dictionary) -> Dictionary:
+	var out: Dictionary = {}
+	for k in a:
+		if not String(k).begins_with(JOINED) and b.has(k) and _same_type(a[k], b[k]):
+			out[k] = a[k]
+	var names: Dictionary = {}
+	for side in [a, b]:
+		for k2 in side:
+			names[String(k2).trim_prefix(JOINED)] = true
+	for n in names:
+		if out.has(n):
+			continue
+		var types: Array = []
+		if _types_on(a, n, types) and _types_on(b, n, types) and types.size() >= 2:
+			out[JOINED + n] = _union_of(types)
+	return out
+
+
+func _types_on(side: Dictionary, n: String, types: Array) -> bool:
+	if side.has(JOINED + n):
+		for m in (side[JOINED + n] as GateAST.TypeRef).union_members:
+			_add_type(types, m)
+		return true
+	if side.has(n):
+		_add_type(types, side[n])
+		return true
+	return false
+
+
+func _note_joined(name: String, value) -> void:
+	var types: Array = []
+	_branch_types(value, types)
+	if types.size() >= 2:
+		_inferred[JOINED + name] = _union_of(types)
+
+
+func _branch_types(e, out: Array) -> void:
+	if e is GateAST.Ternary:
+		_branch_types((e as GateAST.Ternary).if_true, out)
+		_branch_types((e as GateAST.Ternary).if_false, out)
+		return
+	var t: GateAST.TypeRef = _static_type_of(e)
+	if t != null:
+		_add_type(out, t)
+
+
+func _add_type(types: Array, t: GateAST.TypeRef) -> void:
+	if t == null:
+		return
+	for have in types:
+		if _same_type(have, t):
+			return
+	types.append(t)
+
+
+func _union_of(types: Array) -> GateAST.TypeRef:
+	var u: GateAST.TypeRef = GateAST.TypeRef.new()
+	u.union_members = types.duplicate()
+	return u
+
+
+func _narrow_state(st: Array, cond, truth: bool) -> Array:
+	var saved: Array = [_env, _narrowed, _inferred]
+	_set_state(_copy_state(st))
+	_apply_narrow(_env, cond, truth)
+	var out: Array = [_env, _narrowed, _inferred]
+	_set_state(saved)
+	return out
+
+
+func _narrow_step(st: Array, term, truth: bool) -> Array:
+	var saved: Array = [_env, _narrowed, _inferred]
+	_set_state(_copy_state(st))
+	_replay_kills(term)
+	_apply_narrow(_env, term, truth)
+	var out: Array = [_env, _narrowed, _inferred]
+	_set_state(saved)
 	return out
 
 
@@ -849,8 +1101,12 @@ func _apply_narrow(env: Dictionary, cond, truth: bool) -> void:
 	if cond is GateAST.IsExpr:
 		var ie: GateAST.IsExpr = cond
 		var ip: String = _path_of(ie.operand)
-		if ip != "" and _tracked(ie.operand) and (truth != ie.negated):
-			env[ip] = S.NOTNULL
+		if ip != "" and (truth != ie.negated):
+			if _tracked(ie.operand):
+				env[ip] = S.NOTNULL
+			_narrow_to(ip, ie.operand, ie.type)
+		elif ip != "" and _gate_types:
+			_narrow_out(ip, ie.operand, ie.type)
 		return
 
 	if cond is GateAST.Call:
@@ -866,6 +1122,73 @@ func _apply_narrow(env: Dictionary, cond, truth: bool) -> void:
 		env[p] = S.NOTNULL if truth else S.NULL
 
 
+func _narrow_to(path: String, operand, t: GateAST.TypeRef) -> void:
+	if t == null or t.name == "" or t.is_dict() or t.nullable:
+		return
+	if not _narrowable(path):
+		return
+	var cur: GateAST.TypeRef = _type_of(operand)
+	if cur != null:
+		if cur.array_depth > 0 or cur.is_dict():
+			if t.array_depth == 0 and GateTypes.canonical(t.name) in ["Array", "Dictionary"]:
+				return
+		else:
+			var cn: String = GateTypes.canonical(cur.name)
+			var known_class: bool = cn != "" and cn != "Variant" \
+				and not infer.open_types.has(cn)
+			if known_class and not (t.array_depth == 0 and _is_subclass(t.name, cn)
+					and GateTypes.canonical(t.name) != cn):
+				return
+	_narrowed[path] = t
+
+
+func _narrow_out(path: String, operand, t: GateAST.TypeRef) -> void:
+	if t == null or not _narrowable(path):
+		return
+	var cur: GateAST.TypeRef = _type_of(operand)
+	if cur == null or not cur.is_union() or cur.array_depth > 0:
+		return
+	var members: Array = GateTypeCompat.flat_members(cur)
+	var rest: Array = []
+	for m in members:
+		if GateTypeCompat.assignable(m, t, infer, false) != GateTypeCompat.YES:
+			rest.append(m)
+	if rest.is_empty() or rest.size() == members.size():
+		return
+	var out: GateAST.TypeRef
+	if rest.size() == 1:
+		out = GateChecker.copy_type(rest[0])
+		out.nullable = out.nullable or cur.nullable
+	else:
+		out = GateChecker.copy_type(cur)
+		out.shaped().union_members = rest
+	_narrowed[path] = out
+
+
+## Only a path whose every writer we can see may narrow. A static var can be
+## written from any class.
+func _narrowable(path: String) -> bool:
+	var segs: PackedStringArray = path.split(".")
+	var root: String = segs[0].split("[")[0]
+	if root == "self":
+		if segs.size() == 1:
+			return true
+		var f: String = segs[1].split("[")[0]
+		return _field_names.has(f) and not _is_static_field(f)
+	return _local_names.has(root)
+
+
+func _is_static_field(name: String) -> bool:
+	var seen: Dictionary = {}
+	var c: String = _cls
+	while c != "" and not seen.has(c):
+		seen[c] = true
+		if infer.static_fields.has("%s.%s" % [c, name]):
+			return true
+		c = String(infer.bases.get(c, ""))
+	return false
+
+
 func _note_assert(e) -> void:
 	if not (e is GateAST.Call):
 		return
@@ -875,7 +1198,10 @@ func _note_assert(e) -> void:
 	if c.args.is_empty():
 		return
 	var probe: Dictionary = {}
+	var saved_t: Dictionary = _narrowed
+	_narrowed = _narrowed.duplicate()
 	_apply_narrow(probe, c.args[0], true)
+	_narrowed = saved_t
 	for k in probe:
 		if probe[k] == S.NOTNULL:
 			_asserted[k] = true
@@ -902,7 +1228,7 @@ func _state_of(value) -> int:
 		var ct: GateAST.TypeRef = (value as GateAST.CastExpr).type
 		return S.MAYBE if (ct == null or ct.nullable) else S.NOTNULL
 	if value is GateAST.Call:
-		var t: GateAST.TypeRef = infer.type_of(value, _locals)
+		var t: GateAST.TypeRef = _type_of(value)
 		if t == null:
 			return S.MAYBE
 		return S.MAYBE if t.nullable else S.NOTNULL
@@ -1009,6 +1335,70 @@ func _check_plain_value(decl: GateAST.TypeRef, value, what: String, line: int, c
 		_err("%s may be null, but %s is not nullable" % [desc, what], line, col,
 			"guard it with `if %s != null:` first, or declare the target `%s? ...`"
 				% [src if src != "" else "value", decl.describe()])
+
+
+func _strict_casts_in(decl: GateAST.TypeRef, value, what: String, line: int, col: int) -> void:
+	if value is GateAST.CastExpr:
+		_check_strict_cast(decl, value, what, line, col)
+	elif value is GateAST.Ternary:
+		var te: GateAST.Ternary = value
+		var saved: Array = _state_copy()
+		_set_state(_narrow_state(saved, te.cond, true))
+		_strict_casts_in(decl, te.if_true, what, line, col)
+		_set_state(_narrow_state(saved, te.cond, false))
+		_strict_casts_in(decl, te.if_false, what, line, col)
+		_set_state(saved)
+	elif value is GateAST.NullCoalesce:
+		_strict_casts_in(decl, (value as GateAST.NullCoalesce).right, what, line, col)
+	elif value is GateAST.ArrayLit and decl.is_tuple() and decl.array_depth == 0:
+		var elems: Array = (value as GateAST.ArrayLit).elements
+		for i in mini(elems.size(), decl.tuple_elems.size()):
+			var slot: GateAST.TypeRef = decl.tuple_elems[i]
+			if slot != null and not slot.nullable:
+				_strict_casts_in(slot, elems[i], "element %d of %s" % [i, what], line, col)
+
+
+func _check_strict_cast(decl: GateAST.TypeRef, ce: GateAST.CastExpr, what: String,
+		line: int, col: int) -> void:
+	var ct: GateAST.TypeRef = ce.type
+	if ct == null or ct.nullable or not _cast_can_yield_null(ct):
+		return
+	var ot: GateAST.TypeRef = _type_of(ce.operand)
+	if ot != null and ot.array_depth == 0 and not ot.is_dict() \
+		and (_is_subclass(ot.name, ct.name) or infer.implements_type(ot.name, ct.name)) \
+		and _nullness(ce.operand) == S.NOTNULL:
+		return
+	var src: String = _path_of(ce.operand)
+	var hint: String
+	if src != "" and not _narrowable(src):
+		hint = ("GATE never narrows '%s' - a field any call may rebind - so an `is` check "
+			% src + "on it does not count; copy it to a local first (`var v = %s`), "
+			% src + "guard that with `is %s`, and cast it, or declare it `%s?`"
+			% [ct.describe(), decl.describe()])
+	elif src != "":
+		hint = "guard it with `if %s is %s:`, or declare it `%s?`" \
+			% [src, ct.describe(), decl.describe()]
+	else:
+		hint = "declare it `%s?` and check it for null, or cast a variable you have " \
+			% decl.describe() + "guarded with `is %s`" % ct.describe()
+	_err("'%s as %s' is null if the cast fails, but %s is not nullable"
+			% [src if src != "" else "...", ct.describe(), what],
+		line, col, hint)
+
+
+## `as T` yields null only for object types. A builtin cast converts or fails.
+func _cast_can_yield_null(ct: GateAST.TypeRef) -> bool:
+	if ct.array_depth > 0 or ct.is_dict():
+		return false
+	var n: String = GateTypes.canonical(ct.name)
+	if GateTypes.BUILTIN.has(n) or n.begins_with("Packed"):
+		return false
+	if infer.open_types.has(n):
+		return true
+	var sd = infer.struct_names.get(n, null)
+	if sd is GateAST.ClassDecl and (sd as GateAST.ClassDecl).lowering == "vector":
+		return false
+	return ClassDB.class_exists(n) or infer.has_class(n)
 
 
 func _check_return(r: GateAST.ReturnStmt) -> void:
@@ -1677,6 +2067,7 @@ func _report_mismatch(decl: GateAST.TypeRef, vt: GateAST.TypeRef, what: String, 
 func _check_expr(e) -> void:
 	if e == null:
 		return
+	_note_flow_type(e)
 
 	if e is GateAST.Member or e is GateAST.Index:
 		var spine: Array = []
@@ -1685,6 +2076,8 @@ func _check_expr(e) -> void:
 			spine.append(cur)
 			cur = (cur as GateAST.Member).target if cur is GateAST.Member else (cur as GateAST.Index).target
 		for node in spine:
+			if node != e:
+				_note_flow_type(node)   # `e` itself was noted above
 			if node is GateAST.Member:
 				var mm: GateAST.Member = node
 				_check_union_member(mm)
@@ -1750,8 +2143,9 @@ func _check_expr(e) -> void:
 	if e is GateAST.Ternary:
 		var t: GateAST.Ternary = e
 		_check_expr(t.cond)
-		var saved3: Dictionary = _env.duplicate()
-		_env = _narrow(saved3, t.cond, true)
+		var saved3: Array = _state_copy()
+		var yes: Array = _narrow_state(saved3, t.cond, true)
+		_set_state(_copy_state(yes))
 		_check_expr(t.if_true)
 		_env = _narrow(saved3, t.cond, false)
 		_check_expr(t.if_false)
@@ -1808,19 +2202,26 @@ func _check_expr(e) -> void:
 
 func _check_lambda(lam: GateAST.Lambda) -> void:
 	var saved_env: Dictionary = _env
+	var saved_narrowed: Dictionary = _narrowed
 	var saved_locals: Dictionary = _locals.duplicate()
 	var saved_names: Dictionary = _local_names.duplicate()
 	var saved_ret: GateAST.TypeRef = _ret
 	var carried: Dictionary = {}
 	for k in _env:
-		var key: String = String(k)
-		if key == "self" or key.begins_with("self."):
-			continue
-		if key.contains(".") or key.contains("["):
-			continue
-		if _local_names.has(key):
-			carried[key] = _env[k]
+		if _captured_by_value(String(k)):
+			carried[k] = _env[k]
+	var carried_t: Dictionary = {}
+	for k2 in _narrowed:
+		if _captured_by_value(String(k2)):
+			carried_t[k2] = _narrowed[k2]
 	_env = carried
+	_narrowed = carried_t
+	var saved_fresh: Dictionary = _fresh
+	_fresh = _scan_fresh(lam.body, lam.expr_body)
+	var saved_inferred: Dictionary = _inferred
+	var saved_fixed: Dictionary = _fixed
+	_inferred = _inferred.duplicate()
+	_fixed = _fixed.duplicate()
 	_ret = lam.return_type
 	var hints: Array = _param_hints.get(lam, [])
 	for pi in lam.params.size():
@@ -1835,9 +2236,21 @@ func _check_lambda(lam: GateAST.Lambda) -> void:
 	if lam.expr_body != null:
 		_check_expr(lam.expr_body)
 	_env = saved_env
+	_narrowed = saved_narrowed
+	_fresh = saved_fresh
+	_inferred = saved_inferred
+	_fixed = saved_fixed
 	_locals = saved_locals
 	_local_names = saved_names
 	_ret = saved_ret
+
+
+func _captured_by_value(key: String) -> bool:
+	if key == "self" or key.begins_with("self."):
+		return false
+	if key.contains(".") or key.contains("["):
+		return false
+	return _local_names.has(key)
 
 
 func _is_numeric_expr(e) -> bool:
@@ -1926,7 +2339,7 @@ func _report_deref(target, line: int, col: int, access: String) -> void:
 		return
 
 	if target is GateAST.Call:
-		var t: GateAST.TypeRef = infer.type_of(target, _locals)
+		var t: GateAST.TypeRef = _type_of(target)
 		if t != null and t.nullable:
 			var fname: String = "the call"
 			var callee = (target as GateAST.Call).callee
@@ -2041,7 +2454,7 @@ func _resolve_callee(c: GateAST.Call) -> Dictionary:
 					c.args.size())
 			return out
 		out["recv"] = _path_of(m.target)
-		var rt: GateAST.TypeRef = infer.type_of(m.target, _locals)
+		var rt: GateAST.TypeRef = _type_of(m.target)
 		if rt != null and rt.array_depth == 0 and not rt.is_dict():
 			out["fd"] = _pick_arity(infer.method_candidates(rt.name, m.name), c.args.size())
 		return out
@@ -2056,7 +2469,7 @@ func _pick_arity(cands: Array, given: int):
 	return null
 
 
-func _candidates(c: GateAST.Call) -> Array:
+func _candidates(c: GateAST.Call, narrowed: bool = false) -> Array:
 	if c.callee is GateAST.Ident:
 		var n: String = (c.callee as GateAST.Ident).name
 		if _cls != "":
@@ -2071,7 +2484,8 @@ func _candidates(c: GateAST.Call) -> Array:
 		var m: GateAST.Member = c.callee
 		if m.name == "new":
 			return []
-		var recv: GateAST.TypeRef = infer.type_of(m.target, _locals)
+		var recv: GateAST.TypeRef = _type_of(m.target) if narrowed \
+			else infer.type_of(m.target, _locals)
 		if recv != null and recv.array_depth == 0 and not recv.is_dict():
 			return infer.method_candidates(recv.name, m.name)
 	return []
@@ -2089,6 +2503,10 @@ func _accepts(fd: GateAST.FuncDecl, given: int) -> bool:
 
 func _check_call_site(c: GateAST.Call) -> void:
 	var cands: Array = _candidates(c)
+	var via_narrowing: bool = false
+	if cands.is_empty() and not _narrowed.is_empty():
+		cands = _candidates(c, true)
+		via_narrowing = true
 	if cands.is_empty():
 		return
 	var given: int = c.args.size()
@@ -2098,6 +2516,8 @@ func _check_call_site(c: GateAST.Call) -> void:
 			fd = f
 			break
 
+	if fd == null and via_narrowing:
+		return
 	if fd == null:
 		var counts: PackedStringArray = PackedStringArray()
 		for f2 in cands:

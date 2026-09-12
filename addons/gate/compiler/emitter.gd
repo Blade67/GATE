@@ -1004,18 +1004,33 @@ func _emit_match(st: GateAST.MatchStmt) -> void:
 		var body: Array = br[2]
 		var parts: PackedStringArray = PackedStringArray()
 		for p in pats:
-			parts.append(_expr(p))
+			if p is GateAST.TypePattern:
+				var tp: GateAST.TypePattern = p
+				_var_types[tp.bind_name] = tp.type.name
+				_var_depths[tp.bind_name] = tp.type.array_depth
+				_fn_locals[tp.bind_name] = _decl_info(_scope_class, tp.type)
+			elif subject_t != "" and _whole_binding(p) != "":
+				_var_types[_whole_binding(p)] = subject_t
+				_var_depths[_whole_binding(p)] = 0
 		var head: String = ", ".join(parts)
 		if guard != null:
+			var saved_no_hoist: String = _no_hoist
+			var saved_renames: Dictionary = _ident_renames
+			_no_hoist = "guard"
+			_ident_renames = bind_renames
 			var g: String = _expr(guard)
+			_ident_renames = saved_renames
+			_no_hoist = saved_no_hoist
 			if not _pending.is_empty():
 				_pending = PackedStringArray()
 				diagnostics.error(
-					"a `when` guard cannot contain `??`, `?.`, `?[` or a chained comparison",
+					"this `when` guard needs a value computed before it, and a guard has "
+						+ "nowhere to put one",
 					st.line, st.col,
-					"those need a temporary evaluated before the test, and a guard "
-					+ "has nowhere to put one. Compute it into a local before the "
-					+ "`match` and test that instead.")
+					"a guard runs only when its pattern matched, so nothing can be "
+					+ "evaluated ahead of it. `??`, `?.` or `?[` after a call, a chained "
+					+ "comparison, or a swizzle on something that is not a local need that. "
+					+ "Compute the value into a local before the `match` and test that.")
 			head += " when " + g
 		var arm_line: int = st.line
 		if not pats.is_empty() and pats[0] != null and pats[0].line > 0:

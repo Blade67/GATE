@@ -232,6 +232,11 @@ func _expr(e) -> String:
 
 	if e is GateAST.CastExpr:
 		var ce: GateAST.CastExpr = e
+		if ce.type != null and ce.type.array_depth == 0 and not _is_known_native(ce.type.name) \
+				and _looks_like_interface(ce.type.name):
+			_want_iface_helper()
+			return ("(func(__gate_v): return (__gate_v if __gate_is(__gate_v, \"%s\") else null))"
+				% ce.type.name) + ".call(%s)" % _expr(ce.operand)
 		var inner: String = _expr(ce.operand)
 		# A lambda body extends as far right as it can, so it needs parentheses before
 		# the cast or the cast lands inside the body.

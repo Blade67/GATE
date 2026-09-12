@@ -844,12 +844,30 @@ func _parse_match() -> GateAST.MatchStmt:
 				break
 		var arm_kw: GateLexer.Token = _cur()
 		var patterns: Array = []
-		patterns.append(_scan_pattern())
+		var type_tests: Array = []
+		patterns.append(_scan_arm_pattern(type_tests))
 		while _match_op(","):
-			patterns.append(_scan_pattern())
+			patterns.append(_scan_arm_pattern(type_tests))
+		if not type_tests.is_empty() and patterns.size() > 1:
+			var tt: GateAST.IsExpr = type_tests[0]
+			diagnostics.error(
+				"a type pattern binds a name, and GDScript does not allow bindings in an arm with several patterns",
+				tt.line, tt.col,
+				"give each type its own arm, or bind with `var %s when ...` and test the type in the guard"
+					% (tt.operand as GateAST.Ident).name)
 		var guard: GateAST.Expr = null
 		if _match_kw("when"):
 			guard = _parse_expr()
+		if not type_tests.is_empty():
+			if guard == null:
+				guard = type_tests[0]
+			else:
+				var both: GateAST.Binary = GateAST.Binary.new()
+				both.at(guard.line, guard.col)
+				both.op = "and"
+				both.left = type_tests[0]
+				both.right = guard
+				guard = both
 		_expect_op(":", "after the match pattern")
 		var body: Array = _parse_body_after_colon(arm_kw)
 		st.branches.append([patterns, guard, body])
@@ -859,11 +877,156 @@ func _parse_match() -> GateAST.MatchStmt:
 	return st
 
 
+## `Circle c` becomes `var c`, and `c is Circle` goes into the arm's guard.
+func _scan_arm_pattern(type_tests: Array) -> GateAST.Expr:
+	if not _type_pattern_ahead():
+		return _scan_pattern()
+	var start: GateLexer.Token = _cur()
+	var saw_nullable: bool = _saw_nullable
+	var tr: GateAST.TypeRef = _parse_type()
+	_saw_nullable = saw_nullable
+	if not tr.generic_args.is_empty():
+		_generic_uses.append(tr)
+	var name_tok: GateLexer.Token = _advance()
+	if tr.nullable:
+		diagnostics.error("a type pattern never matches null, so it cannot be nullable",
+			start.line, start.col,
+			"write `%s %s:`, and give null its own arm if it needs one"
+				% [tr.describe().trim_suffix("?"), name_tok.value])
+		tr.nullable = false
+	var pat: GateAST.TypePattern = GateAST.TypePattern.new()
+	pat.at(start.line, start.col)
+	pat.text = "var " + name_tok.value
+	pat.bind_name = name_tok.value
+	pat.type = tr
+	var id: GateAST.Ident = GateAST.Ident.new()
+	id.at(name_tok.line, name_tok.col)
+	id.name = name_tok.value
+	var test: GateAST.IsExpr = GateAST.IsExpr.new()
+	test.at(start.line, start.col)
+	test.operand = id
+	test.type = tr
+	type_tests.append(test)
+	return pat
+
+
+## A type, a name, then `:`, `,` or `when`. GDScript never puts a name right after
+## another in a pattern, so this cannot take one Godot accepts. A bare `Node2D:`
+## is left alone.
+func _type_pattern_ahead() -> bool:
+	var n: int = _toks.size()
+	var j: int = _pattern_type_end(_i)
+	if j < 0:
+		return false
+	if j + 1 >= n:
+		return false
+	var name_tok: GateLexer.Token = _toks[j]
+	if not _is_name_token(name_tok) or name_tok.is_kw("when"):
+		return false
+	var after: GateLexer.Token = _toks[j + 1]
+	return after.is_op(":") or after.is_op(",") or after.is_kw("when")
+
+
+func _pattern_type_end(from: int) -> int:
+	var n: int = _toks.size()
+	if from >= n:
+		return -1
+	var t: GateLexer.Token = _toks[from]
+	var j: int = from + 1
+	if t.is_op("{"):
+		var db: int = 0
+		j = from
+		while j < n:
+			var bt: GateLexer.Token = _toks[j]
+			if bt.type == GateLexer.T.OP:
+				if bt.value == "{":
+					db += 1
+				elif bt.value == "}":
+					db -= 1
+					if db == 0:
+						j += 1
+						break
+				elif bt.value != "," and not TYPE_ARG_OPS.has(bt.value):
+					return -1
+			elif bt.type != GateLexer.T.IDENT and bt.type != GateLexer.T.KEYWORD:
+				return -1
+			j += 1
+		if db != 0:
+			return -1
+	elif t.is_op("<") or t.is_op("<<"):
+		var close: int = _generic_span_end(from, false)
+		if close < 0:
+			return -1
+		j = close + 1
+	elif t.is_kw("func") and from + 1 < n and _toks[from + 1].is_op("("):
+		var dp: int = 0
+		j = from + 1
+		while j < n:
+			var pt: GateLexer.Token = _toks[j]
+			if pt.type == GateLexer.T.NEWLINE or pt.type == GateLexer.T.EOF:
+				return -1
+			if pt.is_op("("):
+				dp += 1
+			elif pt.is_op(")"):
+				dp -= 1
+				if dp == 0:
+					j += 1
+					break
+			j += 1
+		if dp != 0:
+			return -1
+		if j < n and _toks[j].is_op("->"):
+			return _pattern_type_end(j + 1)
+		return j
+	elif t.type != GateLexer.T.IDENT:
+		return -1
+	while j + 1 < n and _toks[j].is_op(".") and _toks[j + 1].type == GateLexer.T.IDENT:
+		j += 2
+	if j < n and (_toks[j].is_op("<") or _toks[j].is_op("<<")):
+		var gclose: int = _generic_span_end(j, false)
+		if gclose < 0:
+			return -1
+		j = gclose + 1
+	while j < n and (_toks[j].is_op("[") or _toks[j].is_op("?[")):
+		var d2: int = 0
+		while j < n:
+			var b: GateLexer.Token = _toks[j]
+			if b.type == GateLexer.T.OP:
+				if b.value == "[" or b.value == "?[":
+					d2 += 1
+				elif b.value == "]":
+					d2 -= 1
+					if d2 == 0:
+						j += 1
+						break
+				elif not TYPE_ARG_OPS.has(b.value):
+					return -1
+			elif b.type != GateLexer.T.IDENT and b.type != GateLexer.T.KEYWORD:
+				return -1
+			j += 1
+		if d2 != 0:
+			return -1
+	if j < n and _toks[j].is_op("?"):
+		j += 1
+	return j
+
+
 func _scan_pattern() -> GateAST.Expr:
 	var start: GateLexer.Token = _cur()
 	var depth: int = 0
+	var prev: GateLexer.Token = null
 	while not _at_end():
 		var t: GateLexer.Token = _cur()
+		var before: GateLexer.Token = prev
+		if depth > 0 and prev != null and t.type == GateLexer.T.IDENT \
+			and (prev.type == GateLexer.T.IDENT or prev.is_op(">") or prev.is_op("]")
+				or prev.is_op("?")):
+			diagnostics.error(
+				"a type pattern must be a whole arm pattern, not part of an array or dictionary pattern",
+				t.line, t.col,
+				"bind it with `var %s` there and test the type in a `when` guard: `... when %s is ...`"
+					% [t.value, t.value])
+		prev = t
 		if t.type == GateLexer.T.OP:
 			if t.value in ["(", "[", "{", "?["]:
 				depth += 1
