@@ -290,6 +290,12 @@ class FuncDecl extends Stmt:
 	var visibility: String = ""
 	var annotations: Array = []
 	var mangled_name: String = ""
+	var accessor: bool = false         ## a property's get/set block, printed inside the property
+
+
+class TypeAliasDecl extends Stmt:
+	var name: String = ""
+	var target: TypeRef = null
 
 
 class SignalDecl extends Stmt:

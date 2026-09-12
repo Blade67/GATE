@@ -695,6 +695,14 @@ func _parse_subexpression(src: String, line: int) -> GateAST.Expr:
 	p.diagnostics = sub_diags
 	p._toks = toks
 	p._i = 0
+	if src.contains("<") and not _names_scanned:
+		_names_scanned = true
+		_prescan_names()
+	p._names_scanned = true
+	p._generic_names = _generics_at(_i)
+	p._templates_scanned = true
+	p._templates = p._generic_names
+	p._alias_names = _alias_names
 	p._lines = PackedStringArray([src])
 	var e: GateAST.Expr = p._parse_expr()
 	for d in sub_diags.items:

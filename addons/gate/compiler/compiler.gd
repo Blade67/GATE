@@ -40,6 +40,12 @@ func compile(src_in: String, path: String, registry = null) -> Result:
 	var tokens: Array[GateLexer.Token] = lexer.tokenize(src, diags)
 
 	var parser: GateParser = GateParser.new()
+	if registry != null:
+		for gname in registry.generics:
+			parser.known_generics[gname] = true
+		if "aliases" in registry:
+			for aname in registry.aliases:
+				parser.known_aliases[aname] = true
 	var mod: GateAST.Module = parser.parse(tokens, src, diags)
 	mod.path = path
 

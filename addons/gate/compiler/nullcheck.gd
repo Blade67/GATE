@@ -291,6 +291,7 @@ func _walk_stmt(s) -> bool:
 
 	if s is GateAST.VarDecl:
 		var vd: GateAST.VarDecl = s
+		_adopt_callable_type(vd.type, vd.value)
 		if vd.value != null:
 			_check_expr(vd.value)
 		if vd.type != null and vd.value == null:
@@ -319,6 +320,8 @@ func _walk_stmt(s) -> bool:
 
 	if s is GateAST.AssignStmt:
 		var a: GateAST.AssignStmt = s
+		if _gate_types and a.op == "=" and a.value is GateAST.Lambda:
+			_adopt_callable_type(_type_of(a.target), a.value)
 		_check_expr(a.value)
 		_check_expr(a.target)
 		if a.op != "=":

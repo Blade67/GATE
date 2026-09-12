@@ -147,6 +147,10 @@ func _index(members: Array, owner: String) -> void:
 			if not methods.has(key):
 				methods[key] = []
 			methods[key].append(m)
+			_ref_names[(m as GateAST.FuncDecl).name] = true
+		elif m is GateAST.SignalDecl:
+			signals["%s.%s" % [owner, (m as GateAST.SignalDecl).name]] = m
+			_ref_names[(m as GateAST.SignalDecl).name] = true
 		elif m is GateAST.VarDecl:
 			var vd: GateAST.VarDecl = m
 			if vd.type != null:
@@ -256,10 +260,8 @@ func element_type(t: GateAST.TypeRef) -> GateAST.TypeRef:
 	if t.is_dict():
 		return t.dict_value
 	if t.array_depth > 0:
-		var inner: GateAST.TypeRef = GateAST.TypeRef.new()
-		inner.name = t.name
+		var inner: GateAST.TypeRef = GateChecker.copy_type(t)
 		inner.array_depth = t.array_depth - 1
-		inner.generic_args = t.generic_args
 		inner.elem_nullable = t.elem_nullable
 		inner.nullable = t.elem_nullable and t.array_depth == 1
 		return inner
@@ -271,14 +273,59 @@ func element_type(t: GateAST.TypeRef) -> GateAST.TypeRef:
 	return null
 
 
-func has_class(cls: String) -> bool:
-	if bases.has(cls):
-		return true
-	for k in fields:
-		if String(k).begins_with(cls + "."):
+func signature_of(params: Array, return_type: GateAST.TypeRef) -> GateAST.TypeRef:
+	var ct: GateAST.TypeRef = _named("Callable")
+	ct.callable_return = return_type
+	ct.sig_known = true
+	for p in params:
+		var pp: GateAST.Param = p
+		if pp.is_rest:
+			ct.callable_rest = true
+			continue
+		ct.shaped().callable_params.append(pp.type)
+		if pp.default != null:
+			ct.callable_optional += 1
+	return ct
+
+
+func _lambda_return(lam: GateAST.Lambda, locals: Dictionary) -> GateAST.TypeRef:
+	if lam.return_type != null:
+		return lam.return_type
+	if lam.body.size() == 1 and lam.body[0] is GateAST.ReturnStmt \
+			and (lam.body[0] as GateAST.ReturnStmt).value != null:
+		var inner: Dictionary = locals.duplicate()
+		for p in lam.params:
+			var pp: GateAST.Param = p
+			if pp.type != null:
+				inner[pp.name] = pp.type
+			else:
+				inner.erase(pp.name)
+		return type_of((lam.body[0] as GateAST.ReturnStmt).value, inner)
+	if not _returns_value(lam.body):
+		return _shared("void")
+	return null
+
+
+static func _returns_value(body: Array) -> bool:
+	for s in body:
+		if s is GateAST.ReturnStmt and (s as GateAST.ReturnStmt).value != null:
 			return true
-	for k in methods:
-		if String(k).begins_with(cls + "."):
+		if s is GateAST.IfStmt:
+			var ifs: GateAST.IfStmt = s
+			if _returns_value(ifs.then_body) or _returns_value(ifs.else_body):
+				return true
+			for pair in ifs.elifs:
+				if _returns_value(pair[1]):
+					return true
+		elif s is GateAST.ForStmt and _returns_value((s as GateAST.ForStmt).body):
+			return true
+		elif s is GateAST.WhileStmt and _returns_value((s as GateAST.WhileStmt).body):
+			return true
+		elif s is GateAST.MatchStmt:
+			for br in (s as GateAST.MatchStmt).branches:
+				if _returns_value(br[2]):
+					return true
+		elif s is GateAST.AnnotatedStmt and _returns_value([(s as GateAST.AnnotatedStmt).stmt]):
 			return true
 	return false
 
@@ -372,6 +419,16 @@ func type_of(e, locals: Dictionary) -> GateAST.TypeRef:
 		var n: String = (e as GateAST.Ident).name
 		if locals.has(n):
 			return locals[n]
+		if not _ref_names.has(n):
+			return _shared("float") if FLOAT_CONSTANTS.has(n) else null
+		var self_t: Variant = locals.get("self", null)
+		if self_t is GateAST.TypeRef:
+			var sig: GateAST.TypeRef = signal_type((self_t as GateAST.TypeRef).name, n)
+			if sig != null:
+				return sig
+		var ref: GateAST.FuncDecl = _method_ref(n, locals)
+		if ref != null:
+			return signature_of(ref.params, ref.return_type)
 		return null
 
 	if e is GateAST.SelfExpr:
@@ -412,16 +469,29 @@ func type_of(e, locals: Dictionary) -> GateAST.TypeRef:
 
 	if e is GateAST.Lambda:
 		var lam: GateAST.Lambda = e
-		var ct: GateAST.TypeRef = _named("Callable")
-		ct.callable_return = lam.return_type
-		return ct
+		return signature_of(lam.params, _lambda_return(lam, locals))
+
+	if e is GateAST.Unary:
+		var un: GateAST.Unary = e
+		if un.op == "not" or un.op == "!":
+			return _shared("bool")
+		if un.op == "~":
+			var nt: GateAST.TypeRef = type_of(un.operand, locals)
+			return _shared("int") if nt != null and nt.array_depth == 0 \
+				and GateTypes.canonical(nt.name) == "int" else null
+		if un.op == "-" or un.op == "+":
+			var ot: GateAST.TypeRef = type_of(un.operand, locals)
+			if ot != null and ot.array_depth == 0 and SIGNED.has(GateTypes.canonical(ot.name)):
+				return ot
+		return null
 
 	if e is GateAST.Member:
-		var m: GateAST.Member = e
-		var base: GateAST.TypeRef = type_of(m.target, locals)
-		if base == null or base.array_depth > 0 or base.is_dict():
-			return null
-		return field_type(base.name, m.name)
+		var sm: GateAST.Member = e
+		var sm_null: bool = false
+		if sm.safe:
+			var sb: GateAST.TypeRef = type_of(sm.target, locals)
+			sm_null = sb != null and sb.nullable
+		return maybe_null(_member_type(sm, locals), sm_null)
 
 	if e is GateAST.Call:
 		var c: GateAST.Call = e
@@ -430,8 +500,17 @@ func type_of(e, locals: Dictionary) -> GateAST.TypeRef:
 			if cm.name == "new" and cm.target is GateAST.Ident:
 				return _named((cm.target as GateAST.Ident).name)
 			var recv: GateAST.TypeRef = type_of(cm.target, locals)
-			if recv != null and cm.name in ["call", "callv", "bind"] and GateTypes.canonical(recv.name) == "Callable":
-				return recv.callable_return
+			if recv != null and GateTypes.canonical(recv.name) == "Callable":
+				if cm.name == "call" or cm.name == "callv":
+					return recv.callable_return
+				if cm.name == "bind" or cm.name == "unbind":
+					return _named("Callable")   # a Callable still, not its result
+			if recv != null and cm.name == "instantiate" and recv.array_depth == 0 \
+					and GateTypes.canonical(recv.name) == "PackedScene" and recv.generic_args.size() == 1:
+				var inst: GateAST.TypeRef = recv.generic_args[0]
+				var it: GateAST.TypeRef = _named(inst.name)
+				it.generic_args = inst.generic_args
+				return it
 			if recv != null and recv.array_depth == 0 and not recv.is_dict():
 				var cands: Array = method_candidates(recv.name, cm.name)
 				var fd: GateAST.FuncDecl = _pick(cands, c.args.size())
@@ -475,3 +554,38 @@ func _named(n: String) -> GateAST.TypeRef:
 	var t: GateAST.TypeRef = GateAST.TypeRef.new()
 	t.name = GateTypes.canonical(n)
 	return t
+
+
+static var _shared_types: Dictionary = {}
+
+
+func _shared(n: String) -> GateAST.TypeRef:
+	var t: GateAST.TypeRef = _shared_types.get(n, null)
+	if t == null:
+		t = _named(n)
+		_shared_types[n] = t
+	return t
+
+
+func _member_type(e: GateAST.Member, locals: Dictionary) -> GateAST.TypeRef:
+	var m: GateAST.Member = e
+	if m.target is GateAST.Ident and not locals.has((m.target as GateAST.Ident).name):
+		var ct: String = builtin_constant_type((m.target as GateAST.Ident).name, m.name)
+		if ct != "":
+			return _shared(ct)
+	var base: GateAST.TypeRef = type_of(m.target, locals)
+	if base == null or base.array_depth > 0 or base.is_dict():
+		return null
+	var ft: GateAST.TypeRef = field_type(base.name, m.name)
+	if ft != null:
+		return subst_generic(ft, base)
+	if not _ref_names.has(m.name):
+		return null
+	var st: GateAST.TypeRef = signal_type(base.name, m.name)
+	if st != null:
+		return st
+	var mc: Array = method_candidates(base.name, m.name)
+	if mc.size() == 1:
+		var mfd: GateAST.FuncDecl = mc[0]
+		return signature_of(mfd.params, subst_generic(mfd.return_type, base))
+	return null

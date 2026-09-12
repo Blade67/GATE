@@ -35,6 +35,13 @@ func _expr(e) -> String:
 			return "null"
 		var gb: String = (e as GateAST.Ident).generic_base
 		if gb != "":
+			var gt: GateAST.TypeRef = (e as GateAST.Ident).generic_type
+			if gt != null:
+				var st: GateAST.TypeRef = _substituted(gt)
+				if _generics.has(gb):
+					iname = _generic_name(st)
+				else:
+					iname = GateParser.mangle_generic(st)
 			if _generic_renames.has(iname):
 				iname = _generic_renames[iname]
 			var galias: String = _extern_generic_alias(gb)

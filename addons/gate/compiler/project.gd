@@ -15,6 +15,20 @@ class Registry extends RefCounted:
 	var generics: Dictionary = {}     ## name -> ClassDecl (the template)
 	var generic_uses: Array = []   ## Array[TypeRef]
 	var script_class_names: Dictionary = {}
+	var gd_class_names: Dictionary = {}   ## class_name -> the plain .gd declaring it
+	var class_name_declared_in: Dictionary = {}   ## class_name -> every .gate declaring it
+	var script_modules: Dictionary = {}
+	var script_class_decls: Dictionary = {}   ## class_name -> that script's members, as a class
+	var injects: bool = false
+	var gd_bases: Dictionary = {}
+	var gd_chain: Dictionary = {}     ## .gate path -> the hand-written .gd bases it extends, hashed
+	var trait_text: Dictionary = {}   ## trait name -> hash of its source lines
+	var aliases: Dictionary = {}      ## name -> TypeRef, fully resolved
+	var alias_decls: Dictionary = {}  ## name -> TypeAliasDecl, as written
+	var alias_files: Dictionary = {}  ## name -> every file declaring an alias of that name
+	var alias_cycles: Dictionary = {} ## name -> the cycle it is part of, as "X -> Y -> X"
+	var kind_files: Dictionary = {}   ## "<kind>|<name>" -> every file declaring it that way
+	var module_names: Dictionary = {} ## .gate path -> {name: "static" | "instance"} at its top level
 
 	var origin: Dictionary = {}
 	var top_level: Dictionary = {}
@@ -89,8 +103,41 @@ var registry: Registry = Registry.new()
 
 func index(root: String = "res://") -> Registry:
 	registry = Registry.new()
+	_file_names = {}
+	_generic_use_paths = []
+	var lexed: Array = []
+	var generics: Dictionary = {}
+	var aliases: Dictionary = {}
 	for path in find_gate_files(root):
-		_index_file(path)
+		var f: FileAccess = FileAccess.open(path, FileAccess.READ)
+		if f == null:
+			continue
+		var src: String = f.get_as_text()
+		f.close()
+		if not is_utf8(path):
+			continue   # the builder reports it
+		var diags: GateDiagnostics = GateDiagnostics.new()
+		diags.file = path
+		var sum: String = src.md5_text()
+		var kept: Array = _lexed(path, src, sum, diags)
+		generics.merge(kept[3])
+		aliases.merge(kept[4])
+		lexed.append([path, src, kept[1], diags, sum, kept[5]])
+	var names_key: String = "%s|%s" % [",".join(PackedStringArray(_sorted_keys(generics))),
+		",".join(PackedStringArray(_sorted_keys(aliases)))]
+	var shorthand: Dictionary = _shadowing_classes()
+	for entry in lexed:
+		var shadows: Dictionary = (entry[5] as Dictionary).duplicate()
+		shadows.merge(shorthand)
+		var key: String = "%s|%s|%s" % [entry[4], names_key, ",".join(PackedStringArray(_sorted_keys(shadows)))]
+		var parsed: Array = _parsed_memo.get(entry[0], [])
+		if parsed.is_empty() or String(parsed[0]) != key:
+			GateTypes.shadow_declared(entry[2])
+		_index_file(entry[0], entry[1], entry[2], entry[3], generics, aliases, key)
+	GateTypes.shadowed.clear()
+	_resolve_aliases()
+	_index_gd_bases()
+	_index_gd_class_names(root)
 	return registry
 
 
@@ -98,24 +145,79 @@ func _index_file(path: String) -> void:
 	var f: FileAccess = FileAccess.open(path, FileAccess.READ)
 	if f == null:
 		return
-	var src: String = f.get_as_text()
-	f.close()
+	var taken: Dictionary = GateChecker.project_names(registry, "", true)
+	var usable: Array = []
+	for aname in registry.alias_decls:
+		var path: String = String((registry.alias_files[aname] as Array)[0])
+		if (registry.alias_files[aname] as Array).size() > 1 or taken.has(aname):
+			continue
+		if (_file_names.get(path, {}) as Dictionary).has(aname):
+			continue
+		usable.append(registry.alias_decls[aname])
+	registry.aliases = GateChecker.extend_alias_scope({}, usable, {}, Callable(), Callable(), {},
+		registry.alias_cycles)
+	for cyc in registry.alias_cycles:
+		registry.aliases.erase(cyc)
+	for aname2 in registry.aliases:
+		var target: GateAST.TypeRef = registry.aliases[aname2]
+		if not target.generic_args.is_empty():
+			registry.generic_uses.append(GateChecker.copy_type(target))
+			_generic_use_paths.append("")
+	var walk: GateChecker.AliasWalk = GateChecker.AliasWalk.new()
+	walk.inherited = {"*": true}
+	for table in [registry.classes, registry.structs, registry.namespaces, registry.generics,
+			registry.interfaces, registry.traits]:
+		for cname in table:
+			if registry.top_level.has(cname):
+				walk.stmt(table[cname], _scope_for(String(registry.origin.get(cname, ""))), {}, {})
+	for i in registry.generic_uses.size():
+		var gpath: String = _generic_use_paths[i] if i < _generic_use_paths.size() else ""
+		GateChecker.substitute_type(registry.generic_uses[i], _scope_for(gpath))
+	for sname in registry.structs:
+		_compute_struct_lowering(registry.structs[sname])
+	for table2 in [registry.classes, registry.structs, registry.namespaces, registry.generics]:
+		for cname2 in table2:
+			var cd: GateAST.ClassDecl = table2[cname2]
+			if cd.extends_type != null:
+				registry.bases[cname2] = cd.extends_type.name
 
-	var diags: GateDiagnostics = GateDiagnostics.new()
-	diags.file = path
-	var lexer: GateLexer = GateLexer.new()
-	var tokens: Array[GateLexer.Token] = lexer.tokenize(src, diags)
-	var parser: GateParser = GateParser.new()
-	var mod: GateAST.Module = parser.parse(tokens, src, diags)
+
+func _index_file(path: String, src: String, tokens: Array, diags: GateDiagnostics,
+		generics: Dictionary, aliases: Dictionary, key: String = "") -> void:
+	var mod: GateAST.Module = null
+	var kept: Array = _parsed_memo.get(path, [])
+	if key != "" and not kept.is_empty() and String(kept[0]) == key:
+		mod = kept[1]
+	else:
+		var parser: GateParser = GateParser.new()
+		parser.known_generics = generics
+		parser.known_aliases = aliases
+		mod = parser.parse(tokens, src, diags)
+		if key != "":
+			_parsed_memo[path] = [key, mod]
 
 	if mod.class_name_decl != "":
 		registry.script_class_names[mod.class_name_decl] = path
 	for m in mod.members:
 		if m is GateAST.ClassDecl:
 			registry.top_level[(m as GateAST.ClassDecl).name] = true
+		elif m is GateAST.TypeAliasDecl:
+			var ad: GateAST.TypeAliasDecl = m
+			registry.alias_decls[ad.name] = ad
+			if not registry.alias_files.has(ad.name):
+				registry.alias_files[ad.name] = []
+			if not registry.alias_files[ad.name].has(path):
+				registry.alias_files[ad.name].append(path)
+	_index_trait_text(mod.members, src.split("\n"), src)
+	var own: Dictionary = GateChecker.block_names(mod.members)
+	if mod.class_name_decl != "":
+		own[mod.class_name_decl] = true
+	_file_names[path] = own
+	registry.module_names[path] = GateChecker.scope_names(mod.members, false)
 	_collect(mod.members, path)
 	for gu in mod.generic_uses:
 		registry.generic_uses.append(gu)
+		_generic_use_paths.append(path)
 
 
 func _collect(members: Array, path: String) -> void:

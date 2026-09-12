@@ -109,7 +109,11 @@ func _emit_monomorphised() -> void:
 
 
 func _emit_member(m) -> void:
-	if m != null and "line" in m:
+	if m is GateAST.TypeAliasDecl:
+		return   # substituted away by the checker; nothing to emit
+	if m is GateAST.Stmt and (m as GateAST.Stmt).injected:
+		_blank_line(m.line)
+	elif m != null and "line" in m:
 		_blank_gap(m.line)
 	if m is GateAST.CommentStmt:
 		_line((m as GateAST.CommentStmt).text, m.line)
@@ -751,7 +755,7 @@ func _emit_discarded_safe_call(e, line: int) -> bool:
 
 
 func _emit_statement(s) -> void:
-	if s == null:
+	if s == null or s is GateAST.TypeAliasDecl:
 		return
 	if "line" in s:
 		_blank_gap(s.line)

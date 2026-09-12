@@ -162,6 +162,14 @@ func _parse_member() -> GateAST.Stmt:
 			cd.is_abstract = is_abstract
 		return cd
 
+	if _cur().type == GateLexer.T.KEYWORD and _looks_like_func_type_decl():
+		var vd3: GateAST.VarDecl = _parse_typed_decl()
+		if vd3 != null:
+			vd3.annotations = annotations
+			vd3.visibility = visibility
+			vd3.is_static = is_static
+		return vd3
+
 	if _check_kw("func") or _check_kw("operator"):
 		var fd: GateAST.FuncDecl = _parse_func()
 		if fd != null:
@@ -197,7 +205,11 @@ func _parse_member() -> GateAST.Stmt:
 		var vraw: GateAST.RawStmt = _raw_from(start_line, maxi(_cur().line, start_line))
 		return vraw
 
-	if _looks_like_typed_decl():
+	if _cur().type == GateLexer.T.IDENT and _at_type_alias():
+		_saw_alias = true
+		return _parse_type_alias()
+
+	if _looks_like_typed_decl() or (_cur().type == GateLexer.T.OP and _looks_like_paren_type_decl()):
 		var vd2: GateAST.VarDecl = _parse_typed_decl()
 		if vd2 != null:
 			vd2.annotations = annotations
@@ -277,7 +289,11 @@ func _parse_func() -> GateAST.FuncDecl:
 			return null
 	else:
 		if not (_check(GateLexer.T.IDENT) or _check(GateLexer.T.KEYWORD)):
-			_err("expected a function name")
+			if _check_op("("):
+				_err("a lambda on its own is never called; assign it to a variable",
+					"Godot rejects this too (\"Standalone lambdas cannot be accessed\").")
+			else:
+				_err("expected a function name")
 			_skip_to_statement_end()
 			return null
 		fd.name = _advance().value
@@ -681,11 +697,16 @@ func _parse_statement() -> GateAST.Stmt:
 			_skip_to_statement_end()
 			return raw
 		return vd
+	if _cur().type == GateLexer.T.KEYWORD and _looks_like_func_type_decl():
+		return _parse_typed_decl()
 	if _check_kw("func"):
 		return _parse_func()
 	if (_check_kw("class") or _check_kw("struct")) and _is_name_token(_peek(1)):
 		return _parse_class_like()
-	if _looks_like_typed_decl():
+	if _cur().type == GateLexer.T.IDENT and _at_type_alias():
+		_saw_alias = true
+		return _parse_type_alias()
+	if _looks_like_typed_decl() or (_cur().type == GateLexer.T.OP and _looks_like_paren_type_decl()):
 		return _parse_typed_decl()
 
 	return _parse_expression_statement(start_line)

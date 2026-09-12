@@ -118,6 +118,44 @@ class Effects extends RefCounted:
 		param_paths[i].append(sfx)
 		return true
 
+	func add_static(path: String) -> bool:
+		if path == "" or statics.has(path): return false
+		statics.append(path)
+		return true
+
+## GDScript's global built-ins. A bare call to one of these names always reaches the
+## built-in, even where the class defines a function of the same name.
+const GLOBAL_FUNCTIONS := {
+	"Color8": true, "abs": true, "absf": true, "absi": true, "acos": true, "acosh": true,
+	"angle_difference": true, "asin": true, "asinh": true, "assert": true, "atan": true,
+	"atan2": true, "atanh": true, "bezier_derivative": true, "bezier_interpolate": true,
+	"bytes_to_var": true, "bytes_to_var_with_objects": true, "ceil": true, "ceilf": true,
+	"ceili": true, "char": true, "clamp": true, "clampf": true, "clampi": true, "convert": true,
+	"cos": true, "cosh": true, "cubic_interpolate": true, "cubic_interpolate_angle": true,
+	"cubic_interpolate_angle_in_time": true, "cubic_interpolate_in_time": true,
+	"db_to_linear": true, "deg_to_rad": true, "dict_to_inst": true, "ease": true,
+	"error_string": true, "exp": true, "floor": true, "floorf": true, "floori": true,
+	"fmod": true, "fposmod": true, "get_stack": true, "hash": true, "inst_to_dict": true,
+	"instance_from_id": true, "inverse_lerp": true, "is_equal_approx": true, "is_finite": true,
+	"is_inf": true, "is_instance_id_valid": true, "is_instance_of": true,
+	"is_instance_valid": true, "is_nan": true, "is_same": true, "is_zero_approx": true,
+	"len": true, "lerp": true, "lerp_angle": true, "lerpf": true, "linear_to_db": true,
+	"load": true, "log": true, "max": true, "maxf": true, "maxi": true, "min": true, "minf": true,
+	"mini": true, "move_toward": true, "nearest_po2": true, "ord": true, "pingpong": true,
+	"posmod": true, "pow": true, "preload": true, "print": true, "print_debug": true,
+	"print_rich": true, "print_stack": true, "print_verbose": true, "printerr": true,
+	"printraw": true, "prints": true, "printt": true, "push_error": true, "push_warning": true,
+	"rad_to_deg": true, "rand_from_seed": true, "randf": true, "randf_range": true,
+	"randfn": true, "randi": true, "randi_range": true, "randomize": true, "range": true,
+	"remap": true, "rid_allocate_id": true, "rid_from_int64": true, "rotate_toward": true,
+	"round": true, "roundf": true, "roundi": true, "seed": true, "sign": true, "signf": true,
+	"signi": true, "sin": true, "sinh": true, "smoothstep": true, "snapped": true,
+	"snappedf": true, "snappedi": true, "sqrt": true, "step_decimals": true, "str": true,
+	"str_to_var": true, "tan": true, "tanh": true, "type_convert": true, "type_exists": true,
+	"type_string": true, "typeof": true, "var_to_bytes": true, "var_to_bytes_with_objects": true,
+	"var_to_str": true, "weakref": true, "wrap": true, "wrapf": true, "wrapi": true
+}
+
 const PURE_GLOBALS := {
 	"print": true, "printerr": true, "printraw": true, "printt": true,
 	"prints": true, "print_rich": true, "print_debug": true, "push_error": true,

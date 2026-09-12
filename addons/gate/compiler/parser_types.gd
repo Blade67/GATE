@@ -395,7 +395,7 @@ func _decl_name_follows(j2: int) -> bool:
 
 
 func _is_type_looking(name: String) -> bool:
-	if GateTypes.SHORTHAND.has(name):
+	if GateTypes.is_shorthand(name) or _alias_names.has(name):
 		return true
 	if name.length() > 0 and name[0] == name[0].to_upper() and name[0] != "_":
 		return true
