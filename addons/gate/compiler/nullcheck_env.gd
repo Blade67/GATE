@@ -260,7 +260,8 @@ func _kill_path(path: String) -> void:
 	_invalidate_under(path)
 
 
-func _kill_suffix(base: String, sfx: String) -> void:
+func _kill_suffix(base: String, sfx: String, bt: GateAST.TypeRef = null) -> void:
+	_kill_suffix_aliases(base, sfx, bt)
 	if base == "":
 		return
 	var star: int = sfx.find("*")
@@ -273,9 +274,9 @@ func _kill_suffix(base: String, sfx: String) -> void:
 	_kill_path(_join_path(base, sfx))
 
 
-func _kill_self_suffix(recv: String, sfx: String) -> void:
+func _kill_self_suffix(recv: String, sfx: String, recv_t: GateAST.TypeRef = null) -> void:
 	if recv != "self" or not _in_static:
-		_kill_suffix(recv, sfx)
+		_kill_suffix(recv, sfx, recv_t)
 		return
 	var star: int = sfx.find("*")
 	if star < 0:
@@ -288,25 +289,302 @@ func _kill_self_suffix(recv: String, sfx: String) -> void:
 		_kill_path(pre)
 		_invalidate_under(pre)
 		return
-	var drop: Array = []
-	for k in _env:
-		var root: String = String(k).split(".")[0].split("[")[0]
-		if not _local_names.has(root):
-			drop.append(k)
-	for k2 in drop:
-		_env.erase(k2)
+	for d in [_env, _narrowed]:
+		var drop: Array = []
+		for k in d:
+			var root: String = String(k).split(".")[0].split("[")[0]
+			if not _local_names.has(root):
+				drop.append(k)
+		for k2 in drop:
+			d.erase(k2)
 
 
-func _kill_target(target) -> void:
+func _kill_static(key: String) -> void:
+	var owner: String = ""
+	var field: String = ""
+	var sfx: String = ""
+	if key != "*":
+		var parts: PackedStringArray = key.split(".", true, 2)
+		if parts.size() < 2:
+			return
+		owner = parts[0]
+		field = parts[1]
+		sfx = parts[2] if parts.size() > 2 else ""
+	for h in _static_heads(owner, field):
+		_kill_suffix(h, sfx)
+
+
+func _static_heads(owner: String, field: String) -> Dictionary:
+	var heads: Dictionary = {}
+	for d in [_env, _narrowed]:
+		for k in d:
+			var h: String = _static_head(String(k), owner, field, [])
+			if h != "":
+				heads[h] = true
+	return heads
+
+
+func _static_head(path: String, owner: String, field: String, slot: Array) -> String:
+	var seps: PackedInt32Array = _path_seps(path)
+	var root: String = path.substr(0, seps[0]) if not seps.is_empty() else path
+	var named: bool = not _local_names.has(root)   # not hidden by a local
+	if named and _in_static and _is_static_of(_cls, root, owner, field):
+		slot.append("%s.%s" % [infer.static_owner(_cls, root), root])
+		return root
+	var class_root: bool = named and not _field_names.has(root) and infer.has_class(root)
+	for i in seps.size():
+		if path[seps[i]] != ".":
+			continue
+		var end: int = seps[i + 1] if i + 1 < seps.size() else path.length()
+		var f: String = path.substr(seps[i] + 1, end - seps[i] - 1)
+		var holder: String = root if i == 0 and class_root else ""
+		if holder == "":
+			var ht: GateAST.TypeRef = _type_of_path(path.substr(0, seps[i]))
+			if ht == null or ht.array_depth > 0 or ht.is_dict():
+				continue
+			holder = ht.name
+		if _is_static_of(holder, f, owner, field):
+			slot.append("%s.%s" % [infer.static_owner(holder, f), f])
+			return path.substr(0, end)
+	return ""
+
+
+func _is_static_of(cls: String, f: String, owner: String, field: String) -> bool:
+	var found: String = infer.static_owner(cls, f)
+	return found != "" and (owner == "" or (found == owner and f == field))
+
+
+func _kill_target(target, value_state: int = -1) -> void:
 	if target is GateAST.Ident:
 		_kill_index_var((target as GateAST.Ident).name)
+		var fp: String = _path_of(target)
+		if fp.begins_with("self."):
+			_kill_aliases("self", _locals.get("self", null), fp.substr(5), value_state)
 	if target is GateAST.Index:
 		var ix: GateAST.Index = target
-		_invalidate_siblings(_path_of(ix.target))
+		var container: String = _path_of(ix.target)
+		_invalidate_siblings(container)
+		_kill_aliases(container, _type_of(ix.target), "", value_state)
+	elif target is GateAST.Member:
+		var m: GateAST.Member = target
+		_kill_aliases(_path_of(m.target), _type_of(m.target), m.name, value_state)
 	var p: String = _path_of(target)
 	if p != "":
 		_narrowed.erase(p)
 		_invalidate_under(p)
+		if not infer.static_fields.is_empty():
+			_write_static_spellings(p, value_state)
+
+
+func _write_static_spellings(path: String, value_state: int) -> void:
+	var slot: Array = []
+	if _static_head(path, "", "", slot) != path:
+		return
+	var parts: PackedStringArray = String(slot[0]).split(".")
+	for h in _static_heads(parts[0], parts[1]):
+		if h == path:
+			continue
+		_kill_path(h)
+		if value_state >= 0:
+			_env[h] = value_state
+
+
+## A write to a slot clears that slot on every path that may be the same object.
+func _kill_aliases(base: String, bt: GateAST.TypeRef, f: String, new_state: int = -1) -> void:
+	if base != "" and _fresh.has(base):
+		return
+	var needle: String = ("." + f) if f != "" else "["
+	var memo: Dictionary = {}
+	for di in 2:
+		var d: Dictionary = _env if di == 0 else _narrowed
+		var drop: Array = []
+		var joins: Dictionary = {}
+		for k in d:
+			var key: String = String(k)
+			if not key.contains(needle):
+				continue
+			for pos in _slot_positions(key, f):
+				var x: String = key.substr(0, pos)
+				if x == base or _fresh.has(x):
+					continue
+				if not memo.has(x):
+					memo[x] = _may_alias(x, _type_of_path(x), base, bt)
+				if memo[x]:
+					var seps: PackedInt32Array = _path_seps(key)
+					if di == 0 and new_state >= 0 and seps[seps.size() - 1] == pos:
+						joins[k] = d[k] if int(d[k]) == new_state else S.MAYBE
+					else:
+						drop.append(k)
+					break
+		for k2 in drop:
+			d.erase(k2)
+		for k3 in joins:
+			d[k3] = joins[k3]
+
+
+func _kill_suffix_aliases(base: String, sfx: String, bt: GateAST.TypeRef) -> void:
+	var star: int = sfx.find("*")
+	var pre: String = sfx if star < 0 else sfx.substr(0, star)
+	while pre.ends_with("."):
+		pre = pre.substr(0, pre.length() - 1)
+	if pre == "":
+		return
+	var segs: PackedStringArray = pre.split(".")
+	var holder: String = base
+	var ht: GateAST.TypeRef = bt if base == "" else _type_of_path(base)
+	for i in segs.size() - 1:
+		if holder != "":
+			holder = holder + "." + segs[i]
+		ht = _field_step(ht, segs[i])
+	var last: String = segs[segs.size() - 1]
+	if star < 0:
+		_kill_aliases(holder, ht, last)
+	else:
+		var sub: String = holder + "." + last if holder != "" else ""
+		_kill_alias_subtrees(sub, _field_step(ht, last))
+
+
+func _field_step(t: GateAST.TypeRef, f: String) -> GateAST.TypeRef:
+	if t == null or t.array_depth > 0 or t.is_dict():
+		return null
+	return infer.field_type(t.name, f)
+
+
+func _kill_alias_subtrees(sub: String, st: GateAST.TypeRef) -> void:
+	if sub != "" and _fresh.has(sub):
+		return
+	var memo: Dictionary = {}
+	for d in [_env, _narrowed]:
+		var drop: Array = []
+		for k in d:
+			var key: String = String(k)
+			for pos in _path_seps(key):
+				var x: String = key.substr(0, pos)
+				if x == sub or _fresh.has(x):
+					continue
+				if not memo.has(x):
+					memo[x] = _may_alias(x, _type_of_path(x), sub, st)
+				if memo[x]:
+					drop.append(k)
+					break
+		for k2 in drop:
+			d.erase(k2)
+
+
+func _slot_positions(key: String, f: String) -> PackedInt32Array:
+	var out: PackedInt32Array = PackedInt32Array()
+	var seps: PackedInt32Array = _path_seps(key)
+	for i in seps.size():
+		var at: int = seps[i]
+		if f == "":
+			if key[at] == "[":
+				out.append(at)
+			continue
+		if key[at] != ".":
+			continue
+		var end: int = seps[i + 1] if i + 1 < seps.size() else key.length()
+		if key.substr(at + 1, end - at - 1) == f:
+			out.append(at)
+	return out
+
+
+func _path_seps(path: String) -> PackedInt32Array:
+	var out: PackedInt32Array = PackedInt32Array()
+	var depth: int = 0
+	var quote: String = ""
+	var i: int = 0
+	while i < path.length():
+		var c: String = path[i]
+		if quote != "":
+			if c == "\\":
+				i += 2
+				continue
+			if c == quote:
+				quote = ""
+		elif c == "\"" or c == "'":
+			quote = c
+		elif c == "[":
+			if depth == 0:
+				out.append(i)
+			depth += 1
+		elif c == "]":
+			depth -= 1
+		elif c == "." and depth == 0:
+			out.append(i)
+		i += 1
+	return out
+
+
+func _type_of_path(path: String, depth: int = 0) -> GateAST.TypeRef:
+	if _narrowed.has(path):
+		return _narrowed[path]
+	if depth > MAX_PATH_DEPTH:
+		return null
+	var seps: PackedInt32Array = _path_seps(path)
+	if seps.is_empty():
+		return _locals.get(path, null)
+	var cut: int = seps[seps.size() - 1]
+	var bt: GateAST.TypeRef = _type_of_path(path.substr(0, cut), depth + 1)
+	if bt == null:
+		return null
+	if path[cut] == "[":
+		return infer.element_type(bt)
+	if bt.array_depth > 0 or bt.is_dict():
+		return null
+	return infer.field_type(bt.name, path.substr(cut + 1))
+
+
+## Whether two paths may name the same object. `b` is "" for an object reached
+## through a call.
+func _may_alias(x: String, xt: GateAST.TypeRef, b: String, bt: GateAST.TypeRef,
+		depth: int = 0) -> bool:
+	if _is_struct_type(xt) or _is_struct_type(bt):
+		if b == "" or depth > MAX_PATH_DEPTH:
+			return true
+		var xs: PackedInt32Array = _path_seps(x)
+		var bs: PackedInt32Array = _path_seps(b)
+		if xs.is_empty() or bs.is_empty():
+			return false
+		var xc: int = xs[xs.size() - 1]
+		var bc: int = bs[bs.size() - 1]
+		if x[xc] != b[bc]:
+			return false
+		if x[xc] == "." and x.substr(xc + 1) != b.substr(bc + 1):
+			return false
+		var xp: String = x.substr(0, xc)
+		var bp: String = b.substr(0, bc)
+		if xp == bp:
+			return true
+		return _may_alias(xp, _type_of_path(xp), bp, _type_of_path(bp), depth + 1)
+	if xt == null or bt == null:
+		return true
+	if xt.is_dict() or bt.is_dict():
+		return (xt.is_dict() or _is_plain(xt, "Dictionary")) \
+			and (bt.is_dict() or _is_plain(bt, "Dictionary"))
+	if xt.array_depth > 0 or bt.array_depth > 0:
+		if xt.array_depth == bt.array_depth:
+			return _related(xt.name, bt.name)
+		return _is_plain(xt, "Array") or _is_plain(bt, "Array")
+	var xn: String = GateTypes.canonical(xt.name)
+	var bn: String = GateTypes.canonical(bt.name)
+	if xn in ["", "Variant", "Object"] or bn in ["", "Variant", "Object"]:
+		return true
+	if infer.open_types.has(xn) or infer.open_types.has(bn):
+		return true
+	return _related(xn, bn)
+
+
+func _related(a: String, b: String) -> bool:
+	return _is_subclass(a, b) or _is_subclass(b, a)
+
+
+func _is_plain(t: GateAST.TypeRef, name: String) -> bool:
+	return t.array_depth == 0 and not t.is_dict() and GateTypes.canonical(t.name) == name
+
+
+func _is_struct_type(t: GateAST.TypeRef) -> bool:
+	return t != null and t.array_depth == 0 and not t.is_dict() \
+		and infer.struct_names.has(t.name)
 
 
 func _invalidate_across_suspend() -> void:

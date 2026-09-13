@@ -523,9 +523,28 @@ func _emit_var(vd: GateAST.VarDecl) -> void:
 
 	if packed and vd.type != null and vd.type.array_depth == 0:
 		diagnostics.warn("@packed only applies to array declarations", vd.line, vd.col)
+	elif packed and vd.type != null and not _map_type(vd.type, true).contains("Packed"):
+		diagnostics.warn("'%s' has no Packed equivalent; @packed left unenforced"
+				% vd.type.describe(), vd.line, vd.col,
+			"GDScript packs byte, int, float, String, Vector2/3/4 and Color arrays. "
+			+ "Emitting %s." % _map_type(vd.type, true))
 
-	var infer_this: bool = vd.inferred
+	var infer_this: bool = vd.inferred and not _infers_gate_shape(vd.value)
+	var infer_as: String = ""
+	var infer_untyped: bool = false
+	if (infer_this and vd.type == null and not vd.is_const and vd.value != null
+			and _has_null_ops(vd.value)):
+		infer_as = _type_text_of_key(_declared_type_of(vd.value))
+		if infer_as == "" or _may_be_null(vd.value):
+			infer_as = ""
+			infer_untyped = true
+		infer_this = false
 
+	var saved_no_hoist: String = _no_hoist
+	if vd.is_const:
+		_no_hoist = "const"
+	elif not _in_func_body:
+		_no_hoist = "field"
 	var value_src: String = ""
 	if vd.value != null:
 		value_src = _copy_value(vd.value)
@@ -551,6 +570,8 @@ func _emit_var(vd: GateAST.VarDecl) -> void:
 
 	if vd.type != null:
 		decl += ": " + _map_type(vd.type, packed)
+	elif infer_as != "":
+		decl += ": " + infer_as
 	elif infer_this:
 		decl += " :="
 		if value_src != "":

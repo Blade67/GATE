@@ -114,6 +114,10 @@ func update() -> void:
 		target.queue_free()         # fine
 ```
 
+`?.` gives null when its left side is null, so its result is itself a value that may be
+null. Where `a` may be null, `str n = a?.label` is an error and `str n = a?.label ?? ""` is
+not.
+
 ### Structs
 
 `struct` has value semantics, `class` has reference semantics. A struct of two to four

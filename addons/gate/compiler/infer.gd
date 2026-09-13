@@ -105,6 +105,18 @@ static func _from_registry(registry, key: String, own: Dictionary) -> bool:
 class Effects extends RefCounted:
 	var self_paths: Array = []   ## suffixes relative to the receiver
 	var param_paths: Dictionary = {}        ## param index -> Array of suffixes
+	var statics: Array = []   ## "Class.field" paths of static fields written, reached any way
+	var returns: Array = []
+	var opaque: bool = false
+
+	func add_return(r: Array) -> bool:
+		if returns.has(r) or returns.has(["any", -1, ""]):
+			return false
+		if returns.size() >= 24:
+			returns = [["any", -1, ""]]
+			return true
+		returns.append(r)
+		return true
 
 	func add_self(sfx: String) -> bool:
 		if sfx == "" or self_paths.has(sfx): return false
@@ -176,18 +188,57 @@ const PURE_GLOBALS := {
 var _fx: Dictionary = {}
 var _fx_owner: Dictionary = {}
 var _fields_by_class: Dictionary = {}
+var _fx_built: bool = false
 
 
 func effects_of(fd) -> Effects:
+	ensure_effects()
+	if fd != null and not _fx.has(fd) and _fx_every.has(fd) and not _fx_roots.has(fd):
+		_fx_roots[fd] = true
+		_build_effects()   # asked about a function the calls in this file did not reach
 	return _fx.get(fd, null)
+
+
+func summarise_all() -> Dictionary:
+	var roots: Array = []
+	for k in methods:
+		roots.append_array(methods[k])
+	for n in module_functions:
+		roots.append_array(module_functions[n])
+	return summarise(roots)
+
+
+func summarise(roots: Array) -> Dictionary:
+	_fx_built = true
+	_fx_roots = {}
+	for f in roots:
+		_fx_roots[f] = true
+	_build_effects()
+	return _fx
+
+
+func ensure_effects() -> void:
+	if not _fx_built:
+		_fx_built = true
+		_build_effects()
 
 const MAX_EFFECT_PASSES := 12
 
 
+var _fx_roots: Dictionary = {}
+var _fx_every: Dictionary = {}
+
+
+## Summaries only for the functions this file can ask about, and the ones their
+## summaries read: a summary reads another only through a call it resolves or an
+## override it merges, so the functions left out cannot change the ones kept, and
+## each comes out as summarising the whole project would make it, pass for pass.
+## Summarising every function of every file for each file compiled was what made a
+## large project slow.
 func _build_effects() -> void:
 	_fx.clear(); _fx_owner.clear(); _fields_by_class.clear()
 
-	for k in fields:
+	for k in fields.keys() + untyped_fields.keys():
 		var fkey: String = String(k)
 		var fdot: int = fkey.rfind(".")
 		if fdot <= 0:
@@ -197,6 +248,28 @@ func _build_effects() -> void:
 			_fields_by_class[fcls] = {}
 		_fields_by_class[fcls][fkey.substr(fdot + 1)] = true
 
+	var owner_of: Dictionary = {}
+	for k1 in methods:
+		var okey: String = String(k1)
+		var odot: int = okey.rfind(".")
+		if odot <= 0:
+			continue
+		for f0 in methods[k1]:
+			owner_of[f0] = okey.substr(0, odot)
+	for n0 in module_functions:
+		for f1 in module_functions[n0]:
+			if not owner_of.has(f1):
+				owner_of[f1] = ""
+	_fx_every = owner_of
+
+	_subclasses.clear()
+	for sub in bases:
+		var base: String = String(bases[sub])
+		if not _subclasses.has(base):
+			_subclasses[base] = []
+		_subclasses[base].append(String(sub))
+	var chosen: Dictionary = _summary_closure(owner_of)
+
 	for k2 in methods:
 		var mkey: String = String(k2)
 		var mdot: int = mkey.rfind(".")
@@ -204,31 +277,216 @@ func _build_effects() -> void:
 			continue
 		var mcls: String = mkey.substr(0, mdot)
 		for f in methods[k2]:
+			if not chosen.has(f):
+				continue
 			_fx_owner[f] = mcls
 			_fx[f] = Effects.new()
 	for n in module_functions:
 		for f2 in module_functions[n]:
-			if not _fx.has(f2):
+			if not _fx.has(f2) and chosen.has(f2):
 				_fx_owner[f2] = ""
 				_fx[f2] = Effects.new()
 
-	var limit: int = maxi(MAX_EFFECT_PASSES, _fx.size() + 1)
+	var limit: int = maxi(MAX_EFFECT_PASSES, owner_of.size() + 1)   # as if every function were summarised
+	_fx_clock = 0
+	_fx_moved_at.clear(); _fx_scan_at.clear(); _fx_scan_reads.clear()
+	_fx_merge_at.clear(); _fx_merge_reads.clear()
 	var still_moving: Dictionary = {}
 	for _pass in limit:
 		still_moving = {}
 		for f3 in _fx:
-			if _scan_effects(f3):
+			if _rescan(f3):
 				still_moving[f3] = true
+		for f4 in _fx:
+			if _remerge(f4):
+				still_moving[f4] = true
 		if still_moving.is_empty():
 			return
 	_widen_effects(still_moving)
+
+
+## A scan reads only its own summary and those of the functions it calls, so when
+## none of them has grown since it last ran it would add nothing, and is skipped.
+var _fx_clock: int = 0
+var _fx_moved_at: Dictionary = {}
+var _fx_scan_at: Dictionary = {}
+var _fx_scan_reads: Dictionary = {}
+var _fx_merge_at: Dictionary = {}
+var _fx_merge_reads: Dictionary = {}
+var _fx_reading: Dictionary = {}
+
+
+func _rescan(fd) -> bool:
+	if _fx_scan_at.has(fd) and not _moved_since(fd, _fx_scan_reads[fd], _fx_scan_at[fd]):
+		return false
+	_fx_clock += 1
+	_fx_scan_at[fd] = _fx_clock
+	_fx_reading = {}
+	var changed: bool = _scan_effects(fd)
+	_fx_scan_reads[fd] = _fx_reading
+	_fx_reading = {}
+	if changed:
+		_fx_clock += 1
+		_fx_moved_at[fd] = _fx_clock
+	return changed
+
+
+func _remerge(fd) -> bool:
+	if _fx_merge_at.has(fd) and not _moved_since(fd, _fx_merge_reads[fd], _fx_merge_at[fd]):
+		return false
+	_fx_clock += 1
+	_fx_merge_at[fd] = _fx_clock
+	_fx_reading = {}
+	var changed: bool = _merge_overrides(fd)
+	_fx_merge_reads[fd] = _fx_reading
+	_fx_reading = {}
+	if changed:
+		_fx_clock += 1
+		_fx_moved_at[fd] = _fx_clock
+	return changed
+
+
+func _moved_since(fd, reads: Dictionary, at: int) -> bool:
+	if int(_fx_moved_at.get(fd, 0)) > at:
+		return true
+	for r in reads:
+		if int(_fx_moved_at.get(r, 0)) > at:
+			return true
+	return false
+
+
+var _subclasses: Dictionary = {}
+
+
+func _summary_closure(owner_of: Dictionary) -> Dictionary:
+	var by_name: Dictionary = {}
+	for f in owner_of:
+		_file_by_name(by_name, f)
+	var chosen: Dictionary = {}
+	var todo: Array = []
+	var asked: Dictionary = {}
+	_calls_in(_names_mod.members if _names_mod != null else [], asked, asked, true)
+	for an in asked:
+		for af in by_name.get(an, []):
+			_choose(af, chosen, todo)
+	for rf in _fx_roots:
+		if owner_of.has(rf):
+			_choose(rf, chosen, todo)
+	while not todo.is_empty():
+		var fd: GateAST.FuncDecl = todo.pop_back()
+		var owner: String = owner_of[fd]
+		var bare: Dictionary = {}
+		var dotted: Dictionary = {}
+		_calls_in(fd.body, bare, dotted, false)
+		for bn in bare:
+			for mf in module_functions.get(bn, []):
+				_choose(mf, chosen, todo)
+			var seen: Dictionary = {}
+			var c: String = owner
+			while c != "" and not seen.has(c):
+				seen[c] = true
+				for cf in methods.get("%s.%s" % [c, bn], []):
+					_choose(cf, chosen, todo)
+				c = bases.get(c, "")
+		for dn in dotted:
+			for df in by_name.get(dn, []):
+				_choose(df, chosen, todo)
+		if owner != "":
+			var sub_seen: Dictionary = {owner: true}
+			var subs: Array = (_subclasses.get(owner, []) as Array).duplicate()
+			while not subs.is_empty():
+				var sub: String = subs.pop_back()
+				if sub_seen.has(sub):
+					continue
+				sub_seen[sub] = true
+				subs.append_array(_subclasses.get(sub, []))
+				for of in methods.get("%s.%s" % [sub, fd.name], []):
+					_choose(of, chosen, todo)
+	return chosen
+
+
+static func _choose(fd, chosen: Dictionary, todo: Array) -> void:
+	if not chosen.has(fd):
+		chosen[fd] = true
+		todo.append(fd)
+
+
+static func _file_by_name(by_name: Dictionary, fd) -> void:
+	var n: String = (fd as GateAST.FuncDecl).name
+	if not by_name.has(n):
+		by_name[n] = []
+	(by_name[n] as Array).append(fd)
+
+
+## The names called under `root`: a bare `f()` into `bare`, `x.f()` into `dotted`.
+## A scan resolves `X.new()` to nothing; the null analysis asks for `_init`, so for
+## this file's own calls (`asked`) that name counts too.
+static func _calls_in(root, bare: Dictionary, dotted: Dictionary, asked: bool) -> void:
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n = stack.pop_back()
+		if n is Array:
+			stack.append_array(n)
+			continue
+		if not (n is GateAST.ASTNode) or n is GateAST.TypeRef:
+			continue
+		if n is GateAST.Call:
+			var callee = (n as GateAST.Call).callee
+			if callee is GateAST.Ident:
+				bare[(callee as GateAST.Ident).name] = true
+			elif callee is GateAST.Member:
+				var mn: String = (callee as GateAST.Member).name
+				if mn != "new":
+					dotted[mn] = true
+				elif asked:
+					dotted["_init"] = true
+		for pn in GateAST.child_names(n):
+			var v = (n as Object).get(pn)
+			if v is Array or v is Object:
+				stack.append(v)
+
+
+func _merge_overrides(fd) -> bool:
+	var owner: String = _fx_owner.get(fd, "")
+	var fdecl: GateAST.FuncDecl = fd
+	if owner == "" or fdecl.is_static or fdecl.name in ["_init", "_static_init"]:
+		return false   # constructors and static functions are not dispatched on the object
+	var ctx: Dictionary = {"fx": _fx[fd], "changed": false}
+	var seen: Dictionary = {owner: true}
+	var todo: Array = (_subclasses.get(owner, []) as Array).duplicate()
+	while not todo.is_empty():
+		var sub: String = todo.pop_back()
+		if seen.has(sub):
+			continue
+		seen[sub] = true
+		todo.append_array(_subclasses.get(sub, []))
+		var ofd: GateAST.FuncDecl = _pick(methods.get("%s.%s" % [sub, fdecl.name], []), fdecl.params.size())
+		if ofd == null or ofd == fd or not _fx.has(ofd):
+			continue
+		_fx_reading[ofd] = true
+		var src: Effects = _fx[ofd]
+		if src.opaque:
+			_fx_opaque(ctx)
+		for sfx in src.self_paths:
+			_fx_add(ctx, "self", -1, sfx)
+		for j in src.param_paths:
+			for sfx2 in src.param_paths[j]:
+				_fx_add(ctx, "param", j, sfx2)
+		for sp in src.statics:
+			_fx_add(ctx, "static", -1, sp)
+		for r in src.returns:
+			if (ctx["fx"] as Effects).add_return(r):
+				ctx["changed"] = true
+	return ctx["changed"]
 
 
 func _widen_effects(which: Dictionary) -> void:
 	for f in which:
 		var e: Effects = _fx[f]
 		e.self_paths = ["*"]
+		e.statics = ["*"]
 		e.param_paths.clear()
+		e.returns = [["any", -1, ""]]
 		var fd: GateAST.FuncDecl = f
 		for i in fd.params.size():
 			e.param_paths[i] = ["*"]
@@ -257,8 +515,24 @@ func _scan_effects(fd) -> bool:
 		if pp.type != null:
 			locals[pp.name] = pp.type
 	var ctx: Dictionary = {"fx": _fx[fd], "cls": owner, "params": params,
-		"locals": locals, "changed": false}
+		"locals": locals, "changed": false, "aliases": {}, "declared": {},
+		"widen": false}
+	var passes: int = 0
+	while _collect_aliases(fd.body, ctx):
+		passes += 1
+		if passes >= maxi(MAX_ALIAS_PASSES, (ctx["declared"] as Dictionary).size() + 2):
+			ctx["widen"] = true
+			break
 	_fx_stmts(fd.body, ctx)
+	var bodiless: bool = (fd.is_virtual or fd.is_abstract) and fd.body.is_empty()
+	if ctx["widen"] or bodiless:
+		_fx_add(ctx, "self", -1, "*")
+		for i in fd.params.size():
+			_fx_add(ctx, "param", i, "*")
+	if ctx["widen"]:
+		_fx_add(ctx, "static", -1, "*")
+		if (ctx["fx"] as Effects).add_return(["any", -1, ""]):
+			ctx["changed"] = true
 	return ctx["changed"]
 
 
@@ -268,32 +542,223 @@ func _join_suffix(a: String, b: String) -> String:
 	return a + "." + b
 
 const MAX_REL_DEPTH := 24
+const MAX_ALIAS_PASSES := 4
+const MAX_ALIASES := 24
 
 
 func _rel(e, ctx: Dictionary, depth: int = 0) -> Array:
+	var all: Array = _rels(e, ctx, depth)
+	return all[0] if not all.is_empty() else ["", -1, ""]
+
+
+func _rels(e, ctx: Dictionary, depth: int = 0) -> Array:
 	if depth > MAX_REL_DEPTH:
-		return ["", -1, ""]
+		return []
 	if e is GateAST.SelfExpr:
-		return ["self", -1, ""]
+		return [["self", -1, ""]]
 	if e is GateAST.Ident:
 		var n: String = (e as GateAST.Ident).name
 		if n == "super":
-			return ["self", -1, ""]
+			return [["self", -1, ""]]
 		if (ctx["params"] as Dictionary).has(n):
-			return ["param", ctx["params"][n], ""]
+			return [["param", ctx["params"][n], ""]]
+		var al = (ctx["aliases"] as Dictionary).get(n, null)
+		if al != null:
+			return (al as Array).duplicate()
 		if _has_field(ctx["cls"], n):
-			return ["self", -1, n]
-		return ["", -1, ""]
+			var so: String = static_owner(ctx["cls"], n)
+			if so != "":
+				return [["self", -1, n], ["static", -1, "%s.%s" % [so, n]]]
+			return [["self", -1, n]]
+		return []
 	if e is GateAST.Member:
 		var m: GateAST.Member = e
-		var b: Array = _rel(m.target, ctx, depth + 1)
-		if b[0] == "": return ["", -1, ""]
-		return [b[0], b[1], _join_suffix(b[2], m.name)]
+		var out: Array = []
+		for b in _rels(m.target, ctx, depth + 1):
+			out.append([b[0], b[1], _join_suffix(b[2], m.name)])
+		if static_fields.is_empty():
+			return out
+		var holder: String = _class_named(m.target, ctx)
+		if holder == "":
+			var ht: GateAST.TypeRef = type_of(m.target, ctx["locals"])
+			if ht != null and ht.array_depth == 0 and not ht.is_dict():
+				holder = ht.name
+		var owner: String = static_owner(holder, m.name) if holder != "" else ""
+		if owner != "":
+			out.append(["static", -1, "%s.%s" % [owner, m.name]])
+		return out
 	if e is GateAST.Index:
-		var b2: Array = _rel((e as GateAST.Index).target, ctx, depth + 1)
-		if b2[0] == "": return ["", -1, ""]
-		return [b2[0], b2[1], _join_suffix(b2[2], "*")]
-	return ["", -1, ""]
+		var out2: Array = []
+		for b2 in _rels((e as GateAST.Index).target, ctx, depth + 1):
+			out2.append([b2[0], b2[1], _join_suffix(b2[2], "*")])
+		return out2
+	if e is GateAST.CastExpr:
+		return _rels((e as GateAST.CastExpr).operand, ctx, depth + 1)
+	if e is GateAST.NullCoalesce:
+		var nc: GateAST.NullCoalesce = e
+		return _rels(nc.left, ctx, depth + 1) + _rels(nc.right, ctx, depth + 1)
+	if e is GateAST.Ternary:
+		var te: GateAST.Ternary = e
+		return _rels(te.if_true, ctx, depth + 1) + _rels(te.if_false, ctx, depth + 1)
+	if e is GateAST.Call:
+		return _call_rels(e, ctx, depth)
+	return []
+
+
+func _class_named(e, ctx: Dictionary) -> String:
+	if not (e is GateAST.Ident):
+		return ""
+	var n: String = (e as GateAST.Ident).name
+	if (ctx["params"] as Dictionary).has(n) or (ctx["declared"] as Dictionary).has(n) \
+			or (ctx["aliases"] as Dictionary).has(n) or _has_field(ctx["cls"], n):
+		return ""
+	return n if has_class(n) else ""
+
+
+func _note_alias(name: String, value, ctx: Dictionary, extra: String = "",
+		held: GateAST.TypeRef = null) -> bool:
+	if value == null or (ctx["params"] as Dictionary).has(name):
+		return false
+	var t: GateAST.TypeRef = held if extra != "" else type_of(value, ctx["locals"])
+	if _holds_value(t):
+		return false
+	var al: Array = (ctx["aliases"] as Dictionary).get(name, [])
+	var changed: bool = false
+	for r in _rels(value, ctx):
+		var one: Array = [r[0], r[1], _join_suffix(r[2], extra)]
+		if one[0] == "" or al.has(one):
+			continue
+		if al.size() >= MAX_ALIASES:
+			ctx["widen"] = true   # more than we keep: summarise conservatively
+			continue
+		al.append(one)
+		changed = true
+	if changed:
+		ctx["aliases"][name] = al
+	return changed
+
+
+func _holds_value(t: GateAST.TypeRef) -> bool:
+	if t == null or t.array_depth > 0 or t.is_dict():
+		return false
+	var n: String = GateTypes.canonical(t.name)
+	if struct_names.has(n):
+		return true
+	return GateTypes.BUILTIN.has(n) and not n in ["Array", "Dictionary", "Variant"]
+
+
+func _collect_aliases(body: Array, ctx: Dictionary) -> bool:
+	var changed: bool = false
+	for s in body:
+		if s is GateAST.AnnotatedStmt:
+			s = (s as GateAST.AnnotatedStmt).stmt
+		if s is GateAST.VarDecl:
+			var vd: GateAST.VarDecl = s
+			ctx["declared"][vd.name] = true
+			if _note_alias(vd.name, vd.value, ctx):
+				changed = true
+		elif s is GateAST.AssignStmt:
+			var a: GateAST.AssignStmt = s
+			if a.op == "=" and a.target is GateAST.Ident \
+				and (ctx["declared"] as Dictionary).has((a.target as GateAST.Ident).name):
+				if _note_alias((a.target as GateAST.Ident).name, a.value, ctx):
+					changed = true
+		elif s is GateAST.MultiAssign:
+			var ma: GateAST.MultiAssign = s
+			for t in ma.targets:
+				if t is GateAST.Ident and ma.declares:
+					ctx["declared"][(t as GateAST.Ident).name] = true
+			for i in ma.targets.size():
+				var tg = ma.targets[i]
+				if not (tg is GateAST.Ident) \
+					or not (ctx["declared"] as Dictionary).has((tg as GateAST.Ident).name):
+					continue
+				var tn: String = (tg as GateAST.Ident).name
+				if not ma.destructure and ma.values.size() == ma.targets.size():
+					if _note_alias(tn, ma.values[i], ctx):
+						changed = true
+				elif ma.values.size() == 1 and ma.values[0] is GateAST.ArrayLit \
+					and (ma.values[0] as GateAST.ArrayLit).elements.size() == ma.targets.size():
+					if _note_alias(tn, (ma.values[0] as GateAST.ArrayLit).elements[i], ctx):
+						changed = true
+				elif ma.values.size() == 1:
+					if _note_alias(tn, ma.values[0], ctx, "*"):
+						changed = true
+		elif s is GateAST.IfStmt:
+			var i: GateAST.IfStmt = s
+			if _collect_aliases(i.then_body, ctx): changed = true
+			for pair in i.elifs:
+				if _collect_aliases(pair[1], ctx): changed = true
+			if _collect_aliases(i.else_body, ctx): changed = true
+		elif s is GateAST.ForStmt:
+			var fo: GateAST.ForStmt = s
+			if not fo.var_names.is_empty():
+				var lv: String = fo.var_names[fo.var_names.size() - 1]
+				ctx["declared"][lv] = true
+				var et: GateAST.TypeRef = fo.var_type
+				if et == null:
+					et = element_type(type_of(fo.iterable, ctx["locals"]))
+				if _note_alias(lv, fo.iterable, ctx, "*", et):
+					changed = true
+			if _collect_aliases(fo.body, ctx): changed = true
+		elif s is GateAST.WhileStmt:
+			if _collect_aliases((s as GateAST.WhileStmt).body, ctx): changed = true
+		elif s is GateAST.MatchStmt:
+			var mt: GateAST.MatchStmt = s
+			for br in mt.branches:
+				for p in br[0]:
+					if not (p is GateAST.RawExpr):
+						continue
+					var text: String = (p as GateAST.RawExpr).text.strip_edges()
+					for bn in _var_binds(text):
+						ctx["declared"][bn] = true
+						var whole: bool = text == "var " + bn
+						if _note_alias(bn, mt.subject, ctx, "" if whole else "*"):
+							changed = true
+				if _collect_aliases(br[2], ctx): changed = true
+	return changed
+
+
+static func _var_binds(text: String) -> Array:
+	var bare: String = ""
+	var quote: String = ""
+	var i: int = 0
+	while i < text.length():
+		var c: String = text[i]
+		if quote != "":
+			if c == "\\":
+				bare += "  "
+				i += 2
+				continue
+			if c == quote:
+				quote = ""
+			bare += " "
+		elif c == "\"" or c == "'":
+			quote = c
+			bare += " "
+		else:
+			bare += c
+		i += 1
+	var out: Array = []
+	var at: int = bare.find("var ")
+	while at >= 0:
+		if at == 0 or not _is_word_char(bare[at - 1]):
+			var j: int = at + 4
+			while j < bare.length() and bare[j] == " ":
+				j += 1
+			var name: String = ""
+			while j < bare.length() and _is_word_char(bare[j]):
+				name += bare[j]
+				j += 1
+			if name != "":
+				out.append(name)
+		at = bare.find("var ", at + 4)
+	return out
+
+
+static func _is_word_char(c: String) -> bool:
+	return (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") \
+		or (c >= "0" and c <= "9") or c == "_" or c.unicode_at(0) >= 0x80
 
 const MAX_SUFFIX_DEPTH := 3
 const MAX_SUFFIXES := 24
@@ -316,17 +781,22 @@ func _fx_add(ctx: Dictionary, kind: String, idx: int, sfx: String) -> void:
 	if kind == "" or sfx == "":
 		return
 	var fx: Effects = ctx["fx"]
-	var bucket: Array = fx.self_paths if kind == "self" else fx.param_paths.get(idx, [])
+	var bucket: Array = fx.self_paths if kind == "self" \
+		else (fx.statics if kind == "static" else fx.param_paths.get(idx, []))
 	if bucket.has("*"):
 		return
 	var s: String = _cap_suffix(sfx)
+	if kind == "static" and sfx != "*":
+		var head: int = sfx.find(".", sfx.find(".") + 1)   # "Class.field" stays whole
+		s = sfx if head < 0 else sfx.substr(0, head + 1) + _cap_suffix(sfx.substr(head + 1))
 	if s != "*" and bucket.size() >= MAX_SUFFIXES:
 		s = "*"
 	if s == "*":
 		bucket.clear()
-		if kind != "self":
+		if kind == "param":
 			fx.param_paths[idx] = bucket
-	var ch: bool = fx.add_self(s) if kind == "self" else fx.add_param(idx, s)
+	var ch: bool = fx.add_self(s) if kind == "self" \
+		else (fx.add_static(s) if kind == "static" else fx.add_param(idx, s))
 	if ch:
 		ctx["changed"] = true
 
@@ -335,13 +805,16 @@ func _fx_stmts(body: Array, ctx: Dictionary) -> void:
 	for s in body:
 		if s is GateAST.AssignStmt:
 			var a: GateAST.AssignStmt = s
-			var r: Array = _rel(a.target, ctx)
-			_fx_add(ctx, r[0], r[1], r[2])
+			for r in _rels(a.target, ctx):
+				_fx_add(ctx, r[0], r[1], r[2])
+			if not _fx_accessor(a.target, ctx).is_empty():
+				_fx_opaque(ctx)   # a setter runs
 			_fx_expr(a.target, ctx)
 			_fx_expr(a.value, ctx)
 		elif s is GateAST.VarDecl:
 			var vd: GateAST.VarDecl = s
 			_fx_expr(vd.value, ctx)
+			_note_alias(vd.name, vd.value, ctx)
 			if vd.type != null:
 				ctx["locals"][vd.name] = vd.type
 			else:
@@ -351,7 +824,13 @@ func _fx_stmts(body: Array, ctx: Dictionary) -> void:
 		elif s is GateAST.ExprStmt:
 			_fx_expr((s as GateAST.ExprStmt).expr, ctx)
 		elif s is GateAST.ReturnStmt:
-			_fx_expr((s as GateAST.ReturnStmt).value, ctx)
+			var rv = (s as GateAST.ReturnStmt).value
+			_fx_expr(rv, ctx)
+			if int(ctx.get("lambda", 0)) == 0 and rv != null \
+				and not _holds_value(type_of(rv, ctx["locals"])):
+				for r in _rels(rv, ctx):
+					if (ctx["fx"] as Effects).add_return(r):
+						ctx["changed"] = true
 		elif s is GateAST.IfStmt:
 			var i: GateAST.IfStmt = s
 			_fx_expr(i.cond, ctx)
@@ -369,6 +848,7 @@ func _fx_stmts(body: Array, ctx: Dictionary) -> void:
 					et = element_type(type_of(fo.iterable, ctx["locals"]))
 				if et != null:
 					ctx["locals"][fo.var_names[fo.var_names.size() - 1]] = et
+				_note_alias(fo.var_names[fo.var_names.size() - 1], fo.iterable, ctx, "*", et)
 			_fx_stmts(fo.body, ctx)
 		elif s is GateAST.WhileStmt:
 			_fx_expr((s as GateAST.WhileStmt).cond, ctx)
@@ -376,19 +856,35 @@ func _fx_stmts(body: Array, ctx: Dictionary) -> void:
 		elif s is GateAST.MatchStmt:
 			_fx_expr((s as GateAST.MatchStmt).subject, ctx)
 			for br in (s as GateAST.MatchStmt).branches:
+				_fx_expr(br[1], ctx)   # a `when` guard can call things too
 				_fx_stmts(br[2], ctx)
 		elif s is GateAST.MultiAssign:
 			var ma: GateAST.MultiAssign = s
 			for t in ma.targets:
-				var r2: Array = _rel(t, ctx)
-				_fx_add(ctx, r2[0], r2[1], r2[2])
+				for r2 in _rels(t, ctx):
+					_fx_add(ctx, r2[0], r2[1], r2[2])
+				if not _fx_accessor(t, ctx).is_empty():
+					_fx_opaque(ctx)
 			for v in ma.values:
 				_fx_expr(v, ctx)
+
+
+func _fx_accessor(e, ctx: Dictionary) -> Dictionary:
+	if accessor_fields.is_empty():
+		return {}
+	if e is GateAST.Ident and not _accessor_names.has((e as GateAST.Ident).name):
+		return {}
+	if e is GateAST.Member and not _accessor_names.has((e as GateAST.Member).name):
+		return {}
+	var names: Dictionary = (ctx["declared"] as Dictionary).merged(ctx["params"])
+	return accessor_at(e, String(ctx["cls"]), ctx["locals"], names)
 
 
 func _fx_expr(e, ctx: Dictionary) -> void:
 	if e == null:
 		return
+	if (e is GateAST.Ident or e is GateAST.Member) and _fx_accessor(e, ctx).get("get", false):
+		_fx_opaque(ctx)
 	if e is GateAST.Call:
 		var c: GateAST.Call = e
 		_fx_expr(c.callee, ctx)
@@ -421,6 +917,8 @@ func _fx_expr(e, ctx: Dictionary) -> void:
 		for pn in pspine:
 			if pn is GateAST.Index:
 				_fx_expr((pn as GateAST.Index).index, ctx)
+			elif pn != e and _fx_accessor(pn, ctx).get("get", false):
+				_fx_opaque(ctx)
 	elif e is GateAST.Unary:
 		_fx_expr((e as GateAST.Unary).operand, ctx)
 	elif e is GateAST.AwaitExpr:
@@ -441,12 +939,14 @@ func _fx_expr(e, ctx: Dictionary) -> void:
 			if not (part is String): _fx_expr(part, ctx)
 	elif e is GateAST.Lambda:
 		var lam: GateAST.Lambda = e
+		ctx["lambda"] = int(ctx.get("lambda", 0)) + 1
 		_fx_stmts(lam.body, ctx)
 		_fx_expr(lam.expr_body, ctx)
+		ctx["lambda"] = int(ctx["lambda"]) - 1
 
 
-func _fx_call(c: GateAST.Call, ctx: Dictionary) -> void:
-	var recv: Array = ["", -1, ""]
+func _callee_of(c: GateAST.Call, ctx: Dictionary):
+	var recvs: Array = []
 	var callee_fd = null
 	var uname: String = ""
 
@@ -454,48 +954,150 @@ func _fx_call(c: GateAST.Call, ctx: Dictionary) -> void:
 		var n: String = (c.callee as GateAST.Ident).name
 		callee_fd = _pick(module_functions.get(n, []), c.args.size())
 		if callee_fd != null:
-			recv = ["self", -1, ""]
+			recvs = [["self", -1, ""]]
 		if callee_fd == null and ctx["cls"] != "":
 			callee_fd = _pick(method_candidates(ctx["cls"], n), c.args.size())
 			if callee_fd != null:
-				recv = ["self", -1, ""]
+				recvs = [["self", -1, ""]]
 		if callee_fd == null:
 			uname = n
 			if not is_engine_method(engine_root(String(ctx["cls"])), n):
-				recv = ["self", -1, ""]
+				recvs = [["self", -1, ""]]
 	elif c.callee is GateAST.Member:
 		var m: GateAST.Member = c.callee
 		if m.name == "new":
-			return
-		recv = _rel(m.target, ctx)
+			return null
+		recvs = _rels(m.target, ctx)
 		if m.target is GateAST.Ident and (m.target as GateAST.Ident).name == "super":
 			callee_fd = _pick(
 				method_candidates(String(bases.get(ctx["cls"], "")), m.name), c.args.size())
+		if callee_fd == null and not _method_names.has(m.name):
+			uname = m.name   # no class declares a method of that name
+			return [callee_fd, recvs, uname]
 		var rt: GateAST.TypeRef = type_of(m.target, ctx["locals"])
 		if callee_fd == null and rt != null and rt.array_depth == 0 and not rt.is_dict():
 			callee_fd = _pick(method_candidates(rt.name, m.name), c.args.size())
+		if callee_fd == null and rt == null:
+			var holder: String = _class_named(m.target, ctx)
+			if holder != "":
+				var sfd: GateAST.FuncDecl = _pick(method_candidates(holder, m.name), c.args.size())
+				if sfd != null and sfd.is_static:
+					callee_fd = sfd   # `Class.f()`: its writes to statics reach every caller
 		if callee_fd == null:
 			uname = m.name
 	else:
+		return null
+	return [callee_fd, recvs, uname]
+
+
+const ELEMENT_GETTERS := {
+	"back": true, "front": true, "pop_back": true, "pop_front": true, "pop_at": true,
+	"get": true, "pick_random": true, "min": true, "max": true, "values": true,
+}
+
+
+func _call_rels(c: GateAST.Call, ctx: Dictionary, depth: int) -> Array:
+	var r = _callee_of(c, ctx)
+	if r == null:
+		return []
+	var callee_fd = r[0]
+	var recvs: Array = r[1]
+	var out: Array = []
+	if callee_fd != null and _fx.has(callee_fd):
+		_fx_reading[callee_fd] = true
+		for ret in (_fx[callee_fd] as Effects).returns:
+			if ret[0] == "any":
+				out.append(["self", -1, ""])
+				for i in (ctx["params"] as Dictionary).size():
+					out.append(["param", i, ""])
+				return out
+			if ret[0] == "self":
+				for recv in recvs:
+					out.append([recv[0], recv[1], _join_suffix(recv[2], ret[2])])
+			elif ret[0] == "param" and int(ret[1]) < c.args.size():
+				for ar in _rels(c.args[int(ret[1])], ctx, depth + 1):
+					out.append([ar[0], ar[1], _join_suffix(ar[2], ret[2])])
+			elif ret[0] == "static":
+				out.append(ret)
+		return out
+	if c.callee is GateAST.Member and ELEMENT_GETTERS.get(r[2], false):
+		for recv2 in recvs:
+			out.append([recv2[0], recv2[1], _join_suffix(recv2[2], "*")])
+	return out
+
+
+const OPAQUE_CALLS := ["call", "callv", "emit", "emit_signal"]
+
+
+func _fx_opaque(ctx: Dictionary) -> void:
+	var fx: Effects = ctx["fx"]
+	if not fx.opaque:
+		fx.opaque = true
+		ctx["changed"] = true
+
+
+func accessor_at(e, cls: String, locals: Dictionary, local_names: Dictionary) -> Dictionary:
+	if accessor_fields.is_empty():
+		return {}
+	var owner: String = ""
+	var name: String = ""
+	if e is GateAST.Ident:
+		name = (e as GateAST.Ident).name
+		if local_names.has(name):
+			return {}   # a local of that name hides the property
+		owner = cls
+	elif e is GateAST.Member and not (e as GateAST.Member).safe:
+		var m: GateAST.Member = e
+		name = m.name
+		if not _accessor_names.has(name):
+			return {}
+		if m.target is GateAST.SelfExpr:
+			owner = cls
+		else:
+			var t: GateAST.TypeRef = type_of(m.target, locals)
+			if t == null or t.array_depth > 0 or t.is_dict():
+				return {}
+			owner = t.name
+	else:
+		return {}
+	var found = _lookup(accessor_fields, owner, name)
+	return found if found is Dictionary else {}
+
+
+func _fx_call(c: GateAST.Call, ctx: Dictionary) -> void:
+	var r = _callee_of(c, ctx)
+	if r == null:
 		return
+	var callee_fd = r[0]
+	var recvs: Array = r[1]
+	var uname: String = r[2]
 
 	if callee_fd != null and _fx.has(callee_fd):
+		_fx_reading[callee_fd] = true
 		var e2: Effects = _fx[callee_fd]
+		if e2.opaque:
+			_fx_opaque(ctx)
 		for sfx in e2.self_paths:
-			_fx_add(ctx, recv[0], recv[1], _join_suffix(recv[2], sfx))
+			for recv in recvs:
+				_fx_add(ctx, recv[0], recv[1], _join_suffix(recv[2], sfx))
+		for sp in e2.statics:
+			_fx_add(ctx, "static", -1, sp)
 		for j in e2.param_paths:
 			if j >= c.args.size():
 				continue
-			var ar: Array = _rel(c.args[j], ctx)
-			for sfx2 in e2.param_paths[j]:
-				_fx_add(ctx, ar[0], ar[1], _join_suffix(ar[2], sfx2))
+			for ar in _rels(c.args[j], ctx):
+				for sfx2 in e2.param_paths[j]:
+					_fx_add(ctx, ar[0], ar[1], _join_suffix(ar[2], sfx2))
 		return
 
 	if PURE_GLOBALS.has(uname):
 		return
+	if uname in OPAQUE_CALLS:
+		_fx_opaque(ctx)
 	if uname in CALLABLE_INVOKERS or SYNC_HIGHER_ORDER.has(uname):
 		_fx_add(ctx, "self", -1, "*")
-	_fx_add(ctx, recv[0], recv[1], _join_suffix(recv[2], "*"))
+	for recv2 in recvs:
+		_fx_add(ctx, recv2[0], recv2[1], _join_suffix(recv2[2], "*"))
 	for a2 in c.args:
-		var ar2: Array = _rel(a2, ctx)
-		_fx_add(ctx, ar2[0], ar2[1], _join_suffix(ar2[2], "*"))
+		for ar2 in _rels(a2, ctx):
+			_fx_add(ctx, ar2[0], ar2[1], _join_suffix(ar2[2], "*"))

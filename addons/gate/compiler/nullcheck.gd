@@ -427,6 +427,8 @@ func _walk_stmt(s) -> bool:
 					and _tuple_slot(a.target as GateAST.Index, false) != null):
 				a.value = _check_value_against(_type_of(a.target), a.value,
 					"'%s'" % path, a.line, a.col)
+		if not _accessor(a.target).is_empty():
+			_opaque_call()   # the property's setter runs
 		return false
 
 	if s is GateAST.ExprStmt:
@@ -488,6 +490,8 @@ func _walk_stmt(s) -> bool:
 				_retype_local((t as GateAST.Ident).name, value_types[i])
 			if p != "" and _tracked(t):
 				_env[p] = _state_of(ma.values[i]) if paired else S.MAYBE
+			if not _accessor(t).is_empty():
+				_opaque_call()
 		return false
 
 	if s is GateAST.FuncDecl:
@@ -635,12 +639,13 @@ func _walk_if(st: GateAST.IfStmt) -> bool:
 	for pair in st.elifs:
 		_set_state(_copy_state(else_state))
 		_check_expr(pair[0])
-		_env = _narrow(else_env, pair[0], true)
+		var tested: Array = _state_copy()   # what the condition called has already run
+		_set_state(_narrow_state(tested, pair[0], true))
 		var e_exits: bool = _walk_block(pair[1])
 		if not e_exits:
 			branch_states.append(_state_copy())
 		all_exit = all_exit and e_exits
-		else_env = _narrow(else_env, pair[0], false)
+		else_state = _narrow_state(tested, pair[0], false)
 
 	if not st.else_body.is_empty():
 		_set_state(_copy_state(else_state))
@@ -670,6 +675,7 @@ const MAX_LOOP_PASSES_CAP := 24
 func _loop_fixpoint(entry: Array, cond, body: Array) -> Array:
 	var cur: Array = _copy_state(entry)
 	_quiet += 1
+	_break_envs.append([])   # a break here leaves this loop, not the one around it
 	_continue_envs.append([])
 	var limit: int = mini(maxi(MAX_LOOP_PASSES, (entry[0] as Dictionary).size() + 1),
 		MAX_LOOP_PASSES_CAP)
@@ -678,7 +684,12 @@ func _loop_fixpoint(entry: Array, cond, body: Array) -> Array:
 	var moving_t: Dictionary = {}
 	var moving_i: Dictionary = {}
 	for _pass in limit:
-		_env = _narrow(cur, cond, true) if cond != null else cur.duplicate()
+		if cond != null:
+			_set_state(_copy_state(cur))
+			_check_expr(cond)
+			_set_state(_narrow_state(_state_copy(), cond, true))
+		else:
+			_set_state(_copy_state(cur))
 		_walk_block(body)
 		var nxt: Array = _join_state(cur, _state_copy())
 		for ce in _continue_envs[-1]:
@@ -691,6 +702,7 @@ func _loop_fixpoint(entry: Array, cond, body: Array) -> Array:
 			settled = true
 			break
 		cur = nxt
+	_break_envs.pop_back()
 	_continue_envs.pop_back()
 	_quiet -= 1
 	if not settled:
@@ -719,11 +731,12 @@ func _walk_while(w: GateAST.WhileStmt) -> void:
 	var stable: Array = _loop_fixpoint(entry, w.cond, w.body)
 	_set_state(_copy_state(stable))
 	_check_expr(w.cond)
-	_env = _narrow(stable, w.cond, true)
+	var tested: Array = _state_copy()
+	_set_state(_narrow_state(tested, w.cond, true))
 	_break_envs.append([])
 	_continue_envs.append([])
 	_walk_block(w.body)
-	_env = _join(_env, _narrow(stable, w.cond, false))
+	var out: Array = _join_state(_state_copy(), _narrow_state(tested, w.cond, false))
 	for be2 in _break_envs[-1]:
 		out = _join_state(out, be2)
 	_set_state(out)
@@ -791,6 +804,51 @@ func _walk_for(f: GateAST.ForStmt) -> void:
 	_set_state(out)
 	_break_envs.pop_back()
 	_continue_envs.pop_back()
+	_close_scope(f.var_names, outer)
+
+
+func _open_scope(names: Array) -> Array:
+	var out: Array = []
+	for n in names:
+		out.append([_local_names.has(n), _locals.get(n, null), _inferred.get(n, null),
+			_inferred.get(JOINED + n, null), _fixed.has(n)])
+	return out
+
+
+func _close_scope(names: Array, outer: Array) -> void:
+	for i in names.size():
+		var n: String = names[i]
+		var was: Array = outer[i]
+		_kill_path(n)
+		_kill_index_var(n)
+		if was[0]:
+			_local_names[n] = true
+		else:
+			_local_names.erase(n)
+		for pair in [[_locals, n, was[1]], [_inferred, n, was[2]], [_inferred, JOINED + n, was[3]]]:
+			if pair[2] != null:
+				(pair[0] as Dictionary)[pair[1]] = pair[2]
+			else:
+				(pair[0] as Dictionary).erase(pair[1])
+		if was[4]:
+			_fixed[n] = true
+		else:
+			_fixed.erase(n)
+
+
+func _check_iterable(f: GateAST.ForStmt) -> void:
+	var st: int = _expr_nullness(f.iterable)
+	if st == S.NOTNULL:
+		return
+	var src: String = _path_of(f.iterable)
+	var desc: String = "'%s'" % src if src != "" else "the value"
+	if st == S.NULL:
+		_err("%s is null here, and a for loop cannot iterate null" % desc, f.line, f.col,
+			"assign it before the loop")
+	else:
+		_err("%s may be null, and a for loop cannot iterate null" % desc, f.line, f.col,
+			"guard it with `if %s != null:`, or iterate `%s ?? []`"
+				% [src if src != "" else "value", src if src != "" else "value"])
 
 
 func _walk_match(mt: GateAST.MatchStmt) -> bool:
@@ -802,22 +860,31 @@ func _walk_match(mt: GateAST.MatchStmt) -> bool:
 	for br0 in mt.branches:
 		if _is_null_pattern(br0[0]):
 			has_null_arm = true
+	var null_taken: bool = false   # an unguarded `null` arm came before this one
 	for br in mt.branches:
 		_set_state(_copy_state(before))
 		var subj: String = _path_of(mt.subject)
 		if subj != "" and _tracked(mt.subject) and has_null_arm:
-			_env[subj] = S.NULL if _is_null_pattern(br[0]) else S.NOTNULL
+			if _is_null_pattern(br[0]):
+				_env[subj] = S.NULL
+			elif null_taken:
+				_env[subj] = S.NOTNULL
+		if _is_null_pattern(br[0]) and br[1] == null:
+			null_taken = true
 		var bound: Array = _pattern_bindings(br[0])
 		var saved_names: Dictionary = _local_names.duplicate()
+		var outer: Array = _open_scope(bound)
 		for bn in bound:
-			_local_names[bn] = true
-			_env[bn] = S.MAYBE
+			_declare_local(bn, null, true)
+			_kill_path(bn)
+			_kill_index_var(bn)
 		if br[1] != null:
 			_check_expr(br[1])
 			_apply_narrow(_env, br[1], true)
 		if br[1] == null and _is_wildcard(br[0]):
 			exhaustive = true
 		var exits: bool = _walk_block(br[2])
+		_close_scope(bound, outer)
 		_local_names = saved_names
 		if exits:
 			continue
@@ -1078,11 +1145,13 @@ func _apply_narrow(env: Dictionary, cond, truth: bool) -> void:
 		if b.op == "and":
 			if truth:
 				_apply_narrow(env, b.left, true)
+				_replay_kills(b.right)
 				_apply_narrow(env, b.right, true)
 			return
 		if b.op == "or":
 			if not truth:
 				_apply_narrow(env, b.left, false)
+				_replay_kills(b.right)
 				_apply_narrow(env, b.right, false)
 			return
 		if b.op == "!=" or b.op == "==":
@@ -1211,9 +1280,54 @@ func _is_null_literal(e) -> bool:
 	return e is GateAST.Literal and (e as GateAST.Literal).kind == "null"
 
 
+func _expr_nullness(e, opted: bool = false) -> int:
+	if _is_null_literal(e):
+		return S.NULL if opted else S.NOTNULL
+	if e is GateAST.NullCoalesce:
+		var nc: GateAST.NullCoalesce = e
+		if _expr_nullness(nc.left) == S.NOTNULL:
+			return S.NOTNULL
+		return _expr_nullness(nc.right, true)   # `a ?? null` on a nullable `a`
+	if e is GateAST.Ternary:
+		var te: GateAST.Ternary = e
+		var saved: Array = _state_copy()
+		_set_state(_narrow_state(saved, te.cond, true))
+		var a: int = _expr_nullness(te.if_true)
+		_set_state(_narrow_state(saved, te.cond, false))
+		var b: int = _expr_nullness(te.if_false)
+		_set_state(saved)
+		if a == S.NOTNULL and b == S.NOTNULL:
+			return S.NOTNULL
+		if a == S.NULL and b == S.NULL:
+			return S.NULL
+		return S.MAYBE
+	return _nullness(e)
+
+
+func _safe_access_nullness(value) -> int:
+	var target = null
+	if value is GateAST.Member and (value as GateAST.Member).safe:
+		target = (value as GateAST.Member).target
+	elif value is GateAST.Index and (value as GateAST.Index).safe:
+		target = (value as GateAST.Index).target
+	else:
+		return -1
+	if _nullness(target) != S.NOTNULL:
+		return S.MAYBE
+	var own: GateAST.TypeRef = null
+	if value is GateAST.Member:
+		own = infer._member_type(value, _locals)
+	else:
+		own = infer.element_type(_type_of(target))
+	return S.MAYBE if own != null and own.nullable else S.NOTNULL
+
+
 func _state_of(value) -> int:
 	if value == null or _is_null_literal(value):
 		return S.NULL
+	var safe_st: int = _safe_access_nullness(value)
+	if safe_st >= 0:
+		return safe_st
 	if value is GateAST.Literal:
 		return S.NOTNULL
 	if value is GateAST.NullCoalesce:
@@ -1241,6 +1355,9 @@ func _state_of(value) -> int:
 func _nullness(value) -> int:
 	if value == null or _is_null_literal(value):
 		return S.NULL
+	var safe_st: int = _safe_access_nullness(value)
+	if safe_st >= 0:
+		return safe_st
 	var p: String = _path_of(value)
 	if p != "" and _tracked(value):
 		return _state(p)
@@ -2093,6 +2210,13 @@ func _check_expr(e) -> void:
 					_tuple_slot(ii)
 					_check_union_elements(ii.target, "indexing", ii.line, ii.col)
 		_check_expr(cur)
+		for gi in range(spine.size() - 1, -1, -1):
+			if spine[gi] is GateAST.Member and _accessor(spine[gi]).get("get", false):
+				_opaque_call()
+		return
+
+	if e is GateAST.Ident and _accessor(e).get("get", false):
+		_opaque_call()
 		return
 
 	if e is GateAST.Call:
@@ -2117,11 +2241,33 @@ func _check_expr(e) -> void:
 	if e is GateAST.Binary:
 		var b: GateAST.Binary = e
 		if b.op == "and" or b.op == "or":
-			_check_expr(b.left)
-			var saved: Dictionary = _env.duplicate()
-			_env = _narrow(_env, b.left, b.op == "and")
-			_check_expr(b.right)
-			_env = saved
+			var truth: bool = b.op == "and"
+			var run: Array = []
+			var below = b
+			while below is GateAST.Binary and (below as GateAST.Binary).op == b.op:
+				run.append(below)
+				below = (below as GateAST.Binary).left
+			run.reverse()
+			for ri in range(run.size() - 1, 0, -1):
+				_note_flow_type(run[ri - 1])   # `b` itself was noted above
+			_check_expr(below)
+			var saved: Array = _state_copy()
+			var tested: Array = _narrow_state(saved, below, truth)
+			for ri2 in run.size():
+				var node: GateAST.Binary = run[ri2]
+				_set_state(_copy_state(tested))
+				_check_expr(node.right)
+				var env_n: int = (saved[0] as Dictionary).size()
+				var nar_n: int = (saved[1] as Dictionary).size()
+				_drop_killed(saved, tested, _state_copy())   # the right side may have run
+				_set_state(saved)
+				if ri2 + 1 == run.size():
+					break
+				if (saved[0] as Dictionary).size() == env_n and (saved[1] as Dictionary).size() == nar_n:
+					tested = _narrow_step(tested, node.right, truth)
+				else:
+					tested = _narrow_state(saved, node, truth)   # the base moved: narrow it afresh
+			_set_state(saved)
 			return
 		var spine: Array = []
 		var cur = b
@@ -2147,9 +2293,13 @@ func _check_expr(e) -> void:
 		var yes: Array = _narrow_state(saved3, t.cond, true)
 		_set_state(_copy_state(yes))
 		_check_expr(t.if_true)
-		_env = _narrow(saved3, t.cond, false)
+		var yes_after: Array = _state_copy()
+		var no: Array = _narrow_state(saved3, t.cond, false)
+		_set_state(_copy_state(no))
 		_check_expr(t.if_false)
-		_env = saved3
+		_drop_killed(saved3, yes, yes_after)
+		_drop_killed(saved3, no, _state_copy())
+		_set_state(saved3)
 		return
 
 	if e is GateAST.NullCoalesce:
@@ -2353,6 +2503,15 @@ func _report_deref(target, line: int, col: int, access: String) -> void:
 		return
 
 	var path: String = _path_of(target)
+	if path == "" and (target is GateAST.NullCoalesce or target is GateAST.Ternary):
+		var vst: int = _expr_nullness(target)
+		if vst == S.NOTNULL:
+			return
+		var kind: String = ("the `??` expression" if target is GateAST.NullCoalesce
+			else "the conditional expression")
+		_err("%s may give null; '%s' is unchecked" % [kind, access.trim_prefix(".")],
+			line, col, "give it a fallback that is not null, or guard the value first")
+		return
 	if path == "" or not _tracked(target):
 		return
 	var st: int = _state(path)
@@ -2375,23 +2534,86 @@ func _report_deref(target, line: int, col: int, access: String) -> void:
 const CALLABLE_INVOKERS := GateInfer.CALLABLE_INVOKERS
 
 
+func _opaque_call() -> void:
+	_invalidate_across_suspend()
+
+
+func _accessor(e) -> Dictionary:
+	return infer.accessor_at(e, _cls, _locals, _local_names)
+
+
+func _lambda_writes(lam: GateAST.Lambda) -> bool:
+	var found: Array = [false]
+	var probe: Callable = func(node) -> void:
+		if node is GateAST.Call:
+			found[0] = true
+		elif node is GateAST.AssignStmt and not ((node as GateAST.AssignStmt).target is GateAST.Ident):
+			found[0] = true
+		elif node is GateAST.MultiAssign:
+			found[0] = true
+	_each_node(lam.body, probe)
+	_each_node(lam.expr_body, probe)
+	return found[0]
+
+
+func _each_node(node, visit: Callable) -> void:
+	if node == null:
+		return
+	if node is Array:
+		for x in node:
+			_each_node(x, visit)
+		return
+	if not (node is Object) or (node as Object).get_script() == null:
+		return
+	visit.call(node)
+	for prop in (node as Object).get_property_list():
+		var pn: String = prop["name"]
+		if pn in ["script", "Built-in script", "RefCounted", "Object"]:
+			continue
+		var v = (node as Object).get(pn)
+		if v is Array or (v is Object and v != null and (v as Object).get_script() != null):
+			_each_node(v, visit)
+
+
 func _apply_call_effects(c: GateAST.Call) -> void:
+	if _env.is_empty() and _narrowed.is_empty():
+		return   # nothing is tracked, so there is nothing a call could invalidate
 	var r: Dictionary = _resolve_callee(c)
 	var fd = r["fd"]
 	if fd != null:
 		var fx = infer.effects_of(fd)
+		if fx != null and fx.opaque:
+			_opaque_call()
 		if fx != null:
-			for sfx in fx.self_paths:
-				_kill_self_suffix(r["recv"], sfx)
+			var fresh_recv: bool = c.callee is GateAST.Member \
+				and (c.callee as GateAST.Member).name == "new"
+			var recv_t: GateAST.TypeRef = null
+			if r["recv"] == "" and c.callee is GateAST.Member and not fresh_recv:
+				recv_t = _type_of((c.callee as GateAST.Member).target)
+			if not fresh_recv:
+				for sfx in fx.self_paths:
+					_kill_self_suffix(r["recv"], sfx, recv_t)
+			for sp in fx.statics:
+				_kill_static(sp)
 			for j in fx.param_paths:
 				if j >= c.args.size():
 					continue
 				var ap: String = _path_of(c.args[j])
+				if ap == "" and _is_fresh(c.args[j]):
+					continue
+				var at: GateAST.TypeRef = _type_of(c.args[j]) if ap == "" else null
 				for sfx2 in fx.param_paths[j]:
-					_kill_suffix(ap, sfx2)
+					_kill_suffix(ap, sfx2, at)
 			return
 	if GateInfer.PURE_GLOBALS.has(r["name"]):
 		return
+	if r["name"] in GateInfer.OPAQUE_CALLS:
+		_opaque_call()   # a Callable or a signal's handlers: any lambda may run
+	elif GateInfer.SYNC_HIGHER_ORDER.has(r["name"]):
+		for la in c.args:
+			if la is GateAST.Lambda and _lambda_writes(la):
+				_opaque_call()
+				break
 	if (r["name"] in CALLABLE_INVOKERS
 			or (GateInfer.SYNC_HIGHER_ORDER.has(r["name"]) and _has_lambda_arg(c))):
 		_invalidate_under("self")
@@ -2403,6 +2625,205 @@ func _apply_call_effects(c: GateAST.Call) -> void:
 		_kill_self_suffix(r["recv"], "*")
 	for a in c.args:
 		_kill_suffix(_path_of(a), "*")
+
+
+## Locals holding an object built here that never leaves. One escaping use
+## anywhere disqualifies it.
+func _scan_fresh(body: Array, expr_body) -> Dictionary:
+	var decls: Dictionary = {}
+	_fresh_decls(body, decls)
+	var cands: Dictionary = {}
+	for n in decls:
+		if decls[n] is GateAST.VarDecl and _is_fresh((decls[n] as GateAST.VarDecl).value) \
+			and not ((decls[n] as GateAST.VarDecl).value is GateAST.Literal):
+			cands[n] = true
+	if cands.is_empty():
+		return cands
+	_fresh_stmts(body, cands)
+	_fresh_expr(expr_body, cands)
+	return cands
+
+
+func _fresh_decls(body: Array, out: Dictionary) -> void:
+	for s in body:
+		if s is GateAST.AnnotatedStmt:
+			s = (s as GateAST.AnnotatedStmt).stmt
+		if s is GateAST.VarDecl:
+			var vd: GateAST.VarDecl = s
+			out[vd.name] = false if out.has(vd.name) else vd
+		elif s is GateAST.MultiAssign:
+			for t in (s as GateAST.MultiAssign).targets:
+				if t is GateAST.Ident:
+					out[(t as GateAST.Ident).name] = false
+		elif s is GateAST.ForStmt:
+			for vn in (s as GateAST.ForStmt).var_names:
+				out[String(vn)] = false
+			_fresh_decls((s as GateAST.ForStmt).body, out)
+		elif s is GateAST.IfStmt:
+			var i: GateAST.IfStmt = s
+			_fresh_decls(i.then_body, out)
+			for pair in i.elifs:
+				_fresh_decls(pair[1], out)
+			_fresh_decls(i.else_body, out)
+		elif s is GateAST.WhileStmt:
+			_fresh_decls((s as GateAST.WhileStmt).body, out)
+		elif s is GateAST.MatchStmt:
+			for br in (s as GateAST.MatchStmt).branches:
+				for bn in _pattern_bindings(br[0]):
+					out[bn] = false
+				_fresh_decls(br[2], out)
+
+
+func _fresh_stmts(body: Array, cands: Dictionary) -> void:
+	for s in body:
+		if cands.is_empty():
+			return
+		if s is GateAST.AnnotatedStmt:
+			s = (s as GateAST.AnnotatedStmt).stmt
+		if s is GateAST.VarDecl:
+			_fresh_expr((s as GateAST.VarDecl).value, cands)
+		elif s is GateAST.AssignStmt:
+			var a: GateAST.AssignStmt = s
+			if a.target is GateAST.Ident:
+				cands.erase((a.target as GateAST.Ident).name)   # rebound
+			else:
+				_fresh_place(a.target, cands)
+			_fresh_expr(a.value, cands)
+		elif s is GateAST.MultiAssign:
+			var ma: GateAST.MultiAssign = s
+			for t in ma.targets:
+				if t is GateAST.Ident:
+					cands.erase((t as GateAST.Ident).name)
+				else:
+					_fresh_place(t, cands)
+			for v in ma.values:
+				_fresh_expr(v, cands)
+		elif s is GateAST.ExprStmt:
+			_fresh_expr((s as GateAST.ExprStmt).expr, cands)
+		elif s is GateAST.ReturnStmt:
+			_fresh_expr((s as GateAST.ReturnStmt).value, cands)
+		elif s is GateAST.IfStmt:
+			var i: GateAST.IfStmt = s
+			_fresh_test(i.cond, cands)
+			_fresh_stmts(i.then_body, cands)
+			for pair in i.elifs:
+				_fresh_test(pair[0], cands)
+				_fresh_stmts(pair[1], cands)
+			_fresh_stmts(i.else_body, cands)
+		elif s is GateAST.WhileStmt:
+			_fresh_test((s as GateAST.WhileStmt).cond, cands)
+			_fresh_stmts((s as GateAST.WhileStmt).body, cands)
+		elif s is GateAST.ForStmt:
+			_fresh_expr((s as GateAST.ForStmt).iterable, cands)
+			_fresh_stmts((s as GateAST.ForStmt).body, cands)
+		elif s is GateAST.MatchStmt:
+			var mt: GateAST.MatchStmt = s
+			_fresh_expr(mt.subject, cands)
+			for br in mt.branches:
+				_fresh_test(br[1], cands)
+				_fresh_stmts(br[2], cands)
+		elif s is GateAST.FuncDecl:
+			cands.clear()
+
+
+func _fresh_place(e, cands: Dictionary) -> void:
+	while e is GateAST.Member or e is GateAST.Index:
+		if e is GateAST.Index:
+			_fresh_expr((e as GateAST.Index).index, cands)
+			e = (e as GateAST.Index).target
+		else:
+			e = (e as GateAST.Member).target
+	if not (e is GateAST.Ident):
+		_fresh_expr(e, cands)
+
+
+func _fresh_test(e, cands: Dictionary) -> void:
+	if e is GateAST.Ident:
+		return
+	if e is GateAST.Unary and (e as GateAST.Unary).op == "not":
+		_fresh_test((e as GateAST.Unary).operand, cands)
+		return
+	if e is GateAST.IsExpr:
+		_fresh_test((e as GateAST.IsExpr).operand, cands)
+		return
+	if e is GateAST.Binary and (e as GateAST.Binary).op in ["==", "!=", "<", ">", "<=", ">=",
+			"in", "not in", "and", "or"]:
+		_fresh_test((e as GateAST.Binary).left, cands)
+		_fresh_test((e as GateAST.Binary).right, cands)
+		return
+	_fresh_expr(e, cands)
+
+
+func _fresh_expr(e, cands: Dictionary) -> void:
+	if e == null or cands.is_empty():
+		return
+	if e is GateAST.Ident:
+		cands.erase((e as GateAST.Ident).name)
+	elif e is GateAST.Member or e is GateAST.Index:
+		_fresh_place(e, cands)
+	elif e is GateAST.Call:
+		var c: GateAST.Call = e
+		if c.callee is GateAST.Member:
+			_fresh_expr((c.callee as GateAST.Member).target, cands)   # a method may keep self
+		else:
+			_fresh_expr(c.callee, cands)
+		for a in c.args:
+			_fresh_expr(a, cands)
+	elif e is GateAST.Binary:
+		var b: GateAST.Binary = e
+		if b.op in ["==", "!=", "<", ">", "<=", ">=", "in", "not in", "and", "or"]:
+			_fresh_test(e, cands)
+		else:
+			var cur = b
+			while cur is GateAST.Binary:
+				_fresh_expr((cur as GateAST.Binary).right, cands)
+				cur = (cur as GateAST.Binary).left
+			_fresh_expr(cur, cands)
+	elif e is GateAST.IsExpr or (e is GateAST.Unary and (e as GateAST.Unary).op == "not"):
+		_fresh_test(e, cands)
+	elif e is GateAST.Unary:
+		_fresh_expr((e as GateAST.Unary).operand, cands)
+	elif e is GateAST.CastExpr:
+		_fresh_expr((e as GateAST.CastExpr).operand, cands)
+	elif e is GateAST.Ternary:
+		_fresh_test((e as GateAST.Ternary).cond, cands)
+		_fresh_expr((e as GateAST.Ternary).if_true, cands)
+		_fresh_expr((e as GateAST.Ternary).if_false, cands)
+	elif e is GateAST.NullCoalesce:
+		_fresh_expr((e as GateAST.NullCoalesce).left, cands)
+		_fresh_expr((e as GateAST.NullCoalesce).right, cands)
+	elif e is GateAST.ArrayLit:
+		for el in (e as GateAST.ArrayLit).elements:
+			_fresh_expr(el, cands)
+	elif e is GateAST.DictLit:
+		for k in (e as GateAST.DictLit).keys:
+			_fresh_expr(k, cands)
+		for v in (e as GateAST.DictLit).values:
+			_fresh_expr(v, cands)
+	elif e is GateAST.ObjectInit:
+		for v2 in (e as GateAST.ObjectInit).values:
+			_fresh_expr(v2, cands)
+	elif e is GateAST.FString:
+		for part in (e as GateAST.FString).parts:
+			if not (part is String):
+				_fresh_expr(part, cands)
+	elif e is GateAST.AwaitExpr:
+		_fresh_expr((e as GateAST.AwaitExpr).operand, cands)
+	elif e is GateAST.Lambda:
+		cands.clear()
+
+
+func _is_fresh(e) -> bool:
+	if e is GateAST.Literal or e is GateAST.ArrayLit or e is GateAST.DictLit \
+		or e is GateAST.ObjectInit or e is GateAST.FString or e is GateAST.Lambda:
+		return true
+	if e is GateAST.Call:
+		var callee = (e as GateAST.Call).callee
+		if callee is GateAST.Member and (callee as GateAST.Member).name == "new":
+			return true
+		if callee is GateAST.Ident and infer.struct_names.has((callee as GateAST.Ident).name):
+			return true
+	return false
 
 
 func _has_lambda_arg(c: GateAST.Call) -> bool:
@@ -2457,6 +2878,12 @@ func _resolve_callee(c: GateAST.Call) -> Dictionary:
 		var rt: GateAST.TypeRef = _type_of(m.target)
 		if rt != null and rt.array_depth == 0 and not rt.is_dict():
 			out["fd"] = _pick_arity(infer.method_candidates(rt.name, m.name), c.args.size())
+		elif rt == null and m.target is GateAST.Ident:
+			var holder: String = (m.target as GateAST.Ident).name
+			if not _local_names.has(holder) and not _field_names.has(holder) and infer.has_class(holder):
+				var sfd: GateAST.FuncDecl = _pick_arity(infer.method_candidates(holder, m.name), c.args.size())
+				if sfd != null and sfd.is_static:
+					out["fd"] = sfd
 		return out
 
 	return out

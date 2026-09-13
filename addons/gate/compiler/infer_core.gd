@@ -157,6 +157,11 @@ func _index(members: Array, owner: String) -> void:
 				fields["%s.%s" % [owner, vd.name]] = vd.type
 				if vd.is_static:
 					static_fields["%s.%s" % [owner, vd.name]] = vd.type
+			else:
+				untyped_fields["%s.%s" % [owner, vd.name]] = true
+			var acc: Dictionary = accessor_kinds(vd)
+			if not acc.is_empty():
+				accessor_fields["%s.%s" % [owner, vd.name]] = acc
 		elif m is GateAST.ClassDecl:
 			var cd: GateAST.ClassDecl = m
 			_note_implements(cd)
@@ -179,6 +184,21 @@ func _lookup(table: Dictionary, cls: String, key_suffix: String):
 			return table[k]
 		c = bases.get(c, "")
 	return null
+
+
+func static_owner(cls: String, field: String) -> String:
+	if static_fields.is_empty():
+		return ""
+	var seen: Dictionary = {}
+	var c: String = cls
+	while c != "" and not seen.has(c):
+		seen[c] = true
+		if static_fields.has("%s.%s" % [c, field]):
+			return c
+		if fields.has("%s.%s" % [c, field]):
+			return ""
+		c = bases.get(c, "")
+	return ""
 
 
 func field_type(cls: String, field: String) -> GateAST.TypeRef:

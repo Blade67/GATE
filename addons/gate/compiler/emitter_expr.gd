@@ -75,13 +75,7 @@ func _expr(e) -> String:
 		return _emit_binary(e)
 
 	if e is GateAST.NullCoalesce:
-		var nc: GateAST.NullCoalesce = e
-		var lhs: String = _expr(nc.left)
-		if not _is_simple(nc.left) and not _is_bare_ident(lhs):
-			var t: String = _new_tmp()
-			_hoist("var %s = %s" % [t, lhs])
-			lhs = t
-		return "(%s if %s != null else %s)" % [lhs, lhs, _expr(nc.right)]
+		return _emit_coalesce(e, false)
 
 	if e is GateAST.Ternary:
 		var t3: GateAST.Ternary = e
@@ -162,27 +156,31 @@ func _expr(e) -> String:
 			return "null"
 
 		var base: String = _postfix_base(m.target)
-		if m.safe:
-			if not _is_simple(m.target) and not _is_bare_ident(base):
-				var t4: String = _new_tmp()
-				_hoist("var %s = %s" % [t4, base])
-				base = t4
-			var res: String = _new_tmp()
-			_hoist("var %s = (%s.%s if %s != null else null)" % [res, base, m.name, base])
-			return res
-		return "%s.%s" % [base, m.name]
+		var mname: String = _member_name(m.member_class if m.member_class != "" else _owner_key(m.target), m.name)
+		return "%s.%s" % [base, mname]
 
 	if e is GateAST.Index:
 		var ix: GateAST.Index = e
-		var base2: String = _postfix_base(ix.target)
-		var idx: String = _expr(ix.index)
+		if ix.safe and _no_hoist_ctx() != "":
+			return _safe_inplace(ix.target, _postfix_base(ix.target), "[%s]" % _lazy_part(ix.index))
 		if ix.safe:
-			if not _is_simple(ix.target) and not _is_bare_ident(base2):
-				var t5: String = _new_tmp()
-				_hoist("var %s = %s" % [t5, base2])
-				base2 = t5
+			var base2: String = _render_once(ix.target, _postfix_base(ix.target))
+			var saved_p: PackedStringArray = _pending
+			_pending = PackedStringArray()
+			var sidx: String = _expr(ix.index)
+			var idx_pending: PackedStringArray = _pending
+			_pending = saved_p
+			if _no_hoist == "guard" and idx_pending.is_empty() and _repeatable(ix.target, base2):
+				return "(%s[%s] if %s != null else null)" % [base2, sidx, base2]
 			var res2: String = _new_tmp()
-			_hoist("var %s = (%s[%s] if %s != null else null)" % [res2, base2, idx, base2])
+			if idx_pending.is_empty() or _no_hoist_ctx() != "":
+				_rehoist(idx_pending)
+				_hoist("var %s = (%s[%s] if %s != null else null)" % [res2, base2, sidx, base2])
+				return res2
+			_hoist("var %s = null" % res2)
+			_hoist("if %s != null:" % base2)
+			_hoist_nested(idx_pending)
+			_hoist_in_block("%s = %s[%s]" % [res2, base2, sidx])
 			return res2
 		if _is_value_class(_static_type_of(ix.index)):
 			_struct_key_error(ix.index)
@@ -280,6 +278,116 @@ func _expr(e) -> String:
 func _needs_copy(e) -> bool:
 	if e is GateAST.Call or e is GateAST.ObjectInit:
 		return false
+	var depth: int = 0
+	var quote: String = ""
+	var saw_if: bool = false
+	for i in text.length():
+		var ch: String = text[i]
+		if quote != "":
+			if ch == quote:
+				quote = ""
+			continue
+		if ch == "\"" or ch == "'":
+			quote = ch
+		elif ch == "(" or ch == "[" or ch == "{":
+			depth += 1
+		elif ch == ")" or ch == "]" or ch == "}":
+			depth -= 1
+			if depth == 0 and i != text.length() - 1:
+				return false   # the first group closes before the end
+		elif depth == 1 and text.substr(i, 4) == " if ":
+			saw_if = true
+	return saw_if
+
+
+func _tmp_like(name: String, like) -> GateAST.Ident:
+	var id: GateAST.Ident = _tmp_ident(name, like)
+	id.flow_type = (like as GateAST.Expr).flow_type if like is GateAST.Expr else null
+	var info: Dictionary = {"t": _declared_type_of(like), "e": ""}
+	var tr: GateAST.TypeRef = _value_tref(like)
+	if tr != null:
+		info = _decl_info(_scope_class, tr)
+	_fn_locals[name] = info
+	var st: String = _static_type_of(like)
+	if st != "":
+		_var_types[name] = st
+		_var_depths[name] = 0
+	return id
+
+
+func _raw_like(text: String, like) -> GateAST.RawExpr:
+	var r: GateAST.RawExpr = GateAST.RawExpr.new()
+	r.at(like.line, like.col)
+	r.text = text
+	return r
+
+
+func _tmp_ident(name: String, at_node) -> GateAST.Ident:
+	var id: GateAST.Ident = GateAST.Ident.new()
+	id.at(at_node.line, at_node.col)
+	id.name = name
+	return id
+
+
+func _emit_safe_member(m: GateAST.Member) -> String:
+	var base: String = _postfix_base(m.target)
+	if _no_hoist_ctx() != "":
+		if _repeatable(m.target, base) or _keeps_inplace(m.target):
+			return "(%s if %s != null else null)" % [_safe_step(m, base), base]
+		return "(func(__v): return (%s if __v != null else null)).call(%s)" \
+			% [_safe_step(m, "__v"), base]
+	var once: String = _render_once(m.target, base)
+	var inner: String = _safe_step(m, once)
+	if _no_hoist == "guard" and _repeatable(m.target, once):
+		return "(%s if %s != null else null)" % [inner, once]
+	var res: String = _new_tmp()
+	_hoist("var %s = (%s if %s != null else null)" % [res, inner, once])
+	return res
+
+
+func _safe_step(m: GateAST.Member, base: String) -> String:
+	var had_local: bool = _fn_locals.has(base)
+	var was_local = _fn_locals.get(base)
+	var had_type: bool = _var_types.has(base)
+	var was_type = _var_types.get(base)
+	var had_depth: bool = _var_depths.has(base)
+	var was_depth = _var_depths.get(base)
+	var had_tmp: bool = _tmp_names.has(base)
+	var stand: GateAST.Ident = _tmp_like(base, m.target)
+	_tmp_names[base] = true
+	var step: GateAST.Member = GateAST.Member.new()
+	step.at(m.line, m.col)
+	step.name = m.name
+	step.member_class = m.member_class
+	step.flow_type = m.flow_type
+	step.target = stand
+	var text: String = _expr(step)
+	if not had_tmp:
+		_tmp_names.erase(base)
+	if had_local:
+		_fn_locals[base] = was_local
+	else:
+		_fn_locals.erase(base)
+	if had_type:
+		_var_types[base] = was_type
+	else:
+		_var_types.erase(base)
+	if had_depth:
+		_var_depths[base] = was_depth
+	else:
+		_var_depths.erase(base)
+	return text
+
+
+func _safe_inplace(target, base: String, suffix: String) -> String:
+	if _repeatable(target, base) or _keeps_inplace(target):
+		return "(%s%s if %s != null else null)" % [base, suffix, base]
+	return "(func(__v): return (__v%s if __v != null else null)).call(%s)" % [suffix, base]
+
+
+func _needs_copy(e) -> bool:
+	if e is GateAST.Call or e is GateAST.ObjectInit or e is GateAST.Binary:
+		return false   # a fresh value (an overloaded operator is a call)
 	var tn: String = _static_type_of(e)
 	if tn == "":
 		return false
@@ -498,14 +606,26 @@ func _emit_call(c: GateAST.Call) -> String:
 
 	if c.callee is GateAST.Member and (c.callee as GateAST.Member).safe:
 		var sm: GateAST.Member = c.callee
-		var recv: String = _postfix_base(sm.target)
-		if not _is_simple(sm.target) and not _is_bare_ident(recv):
-			var rt: String = _new_tmp()
-			_hoist("var %s = %s" % [rt, recv])
-			recv = rt
+		var recv: String = _render_once(sm.target, _postfix_base(sm.target))
+		var saved_p: PackedStringArray = _pending
+		_pending = PackedStringArray()
+		var sargs: PackedStringArray = _ordered(c.args,
+			func(i: int) -> String: return _arg_text(c, callee_fd, i))
+		var arg_pending: PackedStringArray = _pending
+		_pending = saved_p
+		var sname: String = _method_emit_name(sm.target, sm.name, c.args.size(), sm.member_class)
+		if _no_hoist == "guard" and arg_pending.is_empty() and _repeatable(sm.target, recv):
+			return "(%s.%s(%s) if %s != null else null)" % [recv, sname, ", ".join(sargs), recv]
 		var sres: String = _new_tmp()
-		_hoist("var %s = (%s.%s(%s) if %s != null else null)"
-			% [sres, recv, sm.name, ", ".join(args), recv])
+		if arg_pending.is_empty() or _no_hoist_ctx() != "":
+			_rehoist(arg_pending)
+			_hoist("var %s = (%s.%s(%s) if %s != null else null)"
+				% [sres, recv, sname, ", ".join(sargs), recv])
+			return sres
+		_hoist("var %s = null" % sres)
+		_hoist("if %s != null:" % recv)
+		_hoist_nested(arg_pending)
+		_hoist_in_block("%s = %s.%s(%s)" % [sres, recv, sname, ", ".join(sargs)])
 		return sres
 
 	if c.callee is GateAST.Ident:
