@@ -212,6 +212,16 @@ const NARROWABLE_FLOAT := {"float": true, "f32": true}
 const NARROWABLE_INT := {"int": true, "i32": true}
 
 
+static func struct_field_kind(tr) -> String:
+	if tr == null:
+		return "Variant"
+	var t: GateAST.TypeRef = tr
+	if t.array_depth != 0 or t.is_dict() or t.is_set() or t.is_union() or t.is_tuple() \
+			or t.is_func_type or not t.generic_args.is_empty():
+		return ""
+	return t.name
+
+
 static func struct_lowering(field_types: Array) -> Dictionary:
 	var n: int = field_types.size()
 	if n < 2 or n > 4:

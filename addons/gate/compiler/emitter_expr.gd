@@ -8,6 +8,14 @@ func _emit_statement(s) -> void:
 	push_error("[GATE] internal: _emit_statement not overridden")
 
 
+func _is_assigned(n: String) -> bool:
+	return true
+
+
+func _never_holds_struct(n: String, seen: Dictionary) -> bool:
+	return false
+
+
 func _expr(e) -> String:
 	if e == null:
 		return "null"
@@ -16,6 +24,8 @@ func _expr(e) -> String:
 		return (e as GateAST.Literal).raw
 	if e is GateAST.Ident:
 		var iname: String = (e as GateAST.Ident).name
+		if _ident_renames.has(iname):
+			return _ident_renames[iname]
 		if _soa_cursors.has(iname):
 			diagnostics.error(
 				"'%s' is a value view into the @soa array '%s' and cannot be stored"
@@ -50,6 +60,11 @@ func _expr(e) -> String:
 		var ialias: String = _extern_alias(iname)
 		if ialias != "":
 			return "%s.%s" % [ialias, iname]
+		var nsq: String = _namespace_qualifier(iname) if gb == "" else ""
+		if nsq != "":
+			return "%s.%s" % [nsq, _member_name(nsq, iname)]
+		if gb == "" and not _fn_locals.has(iname):
+			return _member_name(_scope_class, iname)   # a `priv` member is `_name`
 		return iname
 	if e is GateAST.SelfExpr:
 		return "self"
@@ -79,13 +94,24 @@ func _expr(e) -> String:
 
 	if e is GateAST.Ternary:
 		var t3: GateAST.Ternary = e
-		var cond: String = _expr(t3.cond)
+		var copy_arms: bool = _copy_arms_node == e
+		_copy_arms_node = null
+		var cond: String = _paren_below(t3.cond, PREC_TERNARY + 1)
 		var saved_p: PackedStringArray = _pending
 		_pending = PackedStringArray()
-		var av: String = _expr(t3.if_true)
+		var av: String
+		if copy_arms:
+			av = _lazy_part(t3.if_true, true) if _lazy_ctx() else _copy_value(t3.if_true)
+		else:
+			av = _lazy_part(t3.if_true, false, PREC_TERNARY + 1) if _lazy_ctx() \
+				else _paren_below(t3.if_true, PREC_TERNARY + 1)
 		var ap: PackedStringArray = _pending
 		_pending = PackedStringArray()
-		var bv: String = _expr(t3.if_false)
+		var bv: String
+		if copy_arms:
+			bv = _lazy_part(t3.if_false, true) if _lazy_ctx() else _copy_value(t3.if_false)
+		else:
+			bv = _lazy_part(t3.if_false) if _lazy_ctx() else _expr(t3.if_false)
 		var bp: PackedStringArray = _pending
 		_pending = saved_p
 		if t3.if_true is GateAST.Lambda:
@@ -152,12 +178,24 @@ func _expr(e) -> String:
 						"'%s' has no field '%s'" % [info["struct"], m.name], m.line, m.col)
 					return "null"
 				return "%s[%s]" % [arr, _expr(mix.index)]
+		var owner_key: String = _declared_type_of(m.target)
+		if owner_key == "":
+			owner_key = _name_key(_scope_class, _static_type_of(m.target))
+		if owner_key != "" and _soa_fields.has("%s#%s" % [owner_key, m.name]):
+			diagnostics.error("'%s' is an @soa array and cannot be reached through an instance"
+					% m.name, m.line, m.col,
+				"@soa keeps each field in its own array, so '%s.%s' is not one value. " % [
+					_expr(m.target), m.name]
+				+ "Give the class a method that answers what you need, or remove @soa.")
+			return "null"
+		if m.safe:
+			return _emit_safe_member(m)
 		var vst: Dictionary = _vector_struct_of(m.target)
 		if not vst.is_empty():
 			var vfields: Array = vst["fields"]
 			var fi: int = vfields.find(m.name)
 			if fi >= 0:
-				return "%s.%s" % [_postfix_base(m.target), GateTypes.VECTOR_COMPONENTS[fi]]
+				return "%s.%s" % [_postfix_base(m.target), _vec_component(vst, fi)]
 			diagnostics.error("'%s' has no field '%s'" % [vst["name"], m.name],
 				m.line, m.col,
 				"it lowered to %s, whose components are the struct's fields in order: %s"
@@ -272,8 +310,170 @@ func _expr(e) -> String:
 	return "null"
 
 
-func _needs_copy(e) -> bool:
-	if e is GateAST.Call or e is GateAST.ObjectInit:
+func _emit_coalesce(nc: GateAST.NullCoalesce, copy: bool, guard: bool = false) -> String:
+	var ltext: String = _expr(nc.left)
+	if _lazy_ctx() and not _repeatable(nc.left, ltext) and not _keeps_inplace(nc.left):
+		var took_v: String = "__v._gate_copy()" if copy else (_guarded_copy("__v") if guard else "__v")
+		return "(func(__v): return %s).call(%s)" \
+			% [_ternary_text(took_v, "__v != null", _lazy_part(nc.right, copy)), ltext]
+	var lhs: String = _render_once(nc.left, ltext)
+	var took: String = "%s._gate_copy()" % lhs if copy else lhs
+	if guard:
+		took = _guarded_copy(lhs)
+	if _lazy_ctx():
+		return _ternary_text(took, "%s != null" % lhs, _lazy_part(nc.right, copy))
+	var saved_p: PackedStringArray = _pending
+	_pending = PackedStringArray()
+	var rhs: String = _copy_value(nc.right) if copy else _expr(nc.right)
+	var rhs_pending: PackedStringArray = _pending
+	_pending = saved_p
+	if rhs_pending.is_empty() or _no_hoist_ctx() != "":
+		_rehoist(rhs_pending)
+		return _ternary_text(took, "%s != null" % lhs, rhs)
+	var t: String = _new_tmp()
+	_hoist("var %s = %s" % [t, lhs])
+	_hoist("if %s == null:" % t)
+	_hoist_nested(rhs_pending)
+	_hoist_in_block("%s = %s" % [t, rhs])
+	if copy or guard:
+		_hoist("else:")
+		_hoist("\t%s = %s" % [t, _guarded_copy(t) if guard else "%s._gate_copy()" % t])
+	return t
+
+
+func _guarded_copy(text: String) -> String:
+	var owner: String = _guard_owner()
+	if owner == "":
+		return GUARD_LAMBDA % text
+	return "%s(%s)" % [owner, text]
+
+
+const GUARD_LAMBDA := "(func(__v): return (__v._gate_copy() if is_instance_valid(__v) and __v.has_method(\"_gate_copy\") else __v)).call(%s)"
+
+
+func _guard_owner(want: String = "_gate_value") -> String:
+	var fallback: String = ""
+	for sn in _structs:
+		var st: Dictionary = _structs[sn]
+		if st.get("lowering", "") == "vector" or not st.has("decl"):
+			continue
+		var helper: String = _eq_helper(st, want)
+		var scope: String = String(st.get("scope", ""))
+		if scope != "":
+			var own: String = _struct_class_text(String(sn))
+			if not _name_rebound(own.get_slice(".", 0)):
+				return "%s.%s" % [own, helper]
+			continue
+		if fallback != "":
+			continue
+		var origin: String = String(_extern_origin.get(sn, _extern_origin.get(String(sn).get_slice(".", 0), "")))
+		if origin != "":
+			fallback = "%s.%s.%s" % [_dep_const_for(origin), sn, helper]
+	return fallback
+
+
+func _eqv_text(b: GateAST.Binary) -> String:
+	var es: String = _eq_struct(b)
+	if es != "":
+		return "%s.%s" % [_struct_class_text(es), _eq_helper(_struct_of(es), "_gate_eqv")]
+	if _against_null(b) or not _structs_visible():
+		return ""
+	if _static_type_of(b.left) != "" or _static_type_of(b.right) != "":
+		return ""
+	if not (_may_hold_struct(b.left) or _may_hold_struct(b.right)):
+		return ""
+	return _guard_owner("_gate_eqv")
+
+
+func _in_struct_text(b: GateAST.Binary) -> String:
+	var ct: GateAST.TypeRef = _container_tref(b.right)
+	if not _is_array_tref(ct):
+		return ""
+	var et: GateAST.TypeRef = _array_elem(ct)
+	if et == null or et.array_depth != 0 or not _is_value_class(et.name):
+		return ""
+	return "%s.%s" % [_struct_class_text(et.name), _eq_helper(_struct_of(et.name), "_gate_index")]
+
+
+func _name_rebound(n: String) -> bool:
+	return _bound_names.has(n) or _fn_locals.has(n) or _declares_value(_scope_class, n)
+
+
+func _dep_const_for(origin: String) -> String:
+	if _used_origins.has(origin):
+		return _used_origins[origin]
+	var target: String = "\"%s.gd\"" % String(origin).get_basename()
+	for m in _module_members:
+		if m is GateAST.VarDecl and (m as GateAST.VarDecl).is_const \
+				and (m as GateAST.VarDecl).value is GateAST.Call:
+			var c: GateAST.Call = (m as GateAST.VarDecl).value
+			if c.callee is GateAST.Ident and (c.callee as GateAST.Ident).name == "preload" \
+					and c.args.size() == 1 and c.args[0] is GateAST.Literal \
+					and (c.args[0] as GateAST.Literal).raw == target:
+				return (m as GateAST.VarDecl).name
+	return _origin_alias(origin)
+
+
+func _lazy_ctx() -> bool:
+	var ctx: String = _no_hoist_ctx()
+	return ctx != "" and ctx != "const"
+
+
+func _lazy_part(e, copy: bool = false, floor_prec: int = -1) -> String:
+	var before: int = _pending.size()
+	var text: String
+	if floor_prec >= 0:
+		text = _paren_below(e, floor_prec)
+	else:
+		text = _copy_value(e) if copy else _expr(e)
+	if _pending.size() > before and _no_hoist_ctx() == "field":
+		_pending.resize(before)
+		diagnostics.error("this part runs only when it is reached, and computing it needs a "
+				+ "statement a field initialiser has nowhere to put", e.line, e.col,
+			"initialise the field in _init() instead.")
+	return text
+
+
+func _emit_swizzle_read(m: GateAST.Member, sw: Dictionary) -> String:
+	if not _swizzle_in_range(m, sw):
+		return "null"
+	var result: String = _swizzle_result(sw, m.name.length())
+	var names: String = m.name
+	var target = m.target
+	while target is GateAST.Member and not _swizzle_of(target).is_empty():
+		var inner: GateAST.Member = target
+		if not _swizzle_in_range(inner, _swizzle_of(inner)):
+			return "null"
+		var composed: String = ""
+		for i in names.length():
+			composed += inner.name[GateTypes.VECTOR_COMPONENTS.find(names[i])]
+		names = composed
+		target = inner.target
+	var text: String = _postfix_base(target)
+	var base: String = text
+	if not _repeatable(target, text):
+		var ctx: String = _no_hoist_ctx()
+		if ctx == "":
+			base = _render_once(target, text)
+		elif ctx != "const":
+			var lcomps: PackedStringArray = PackedStringArray()
+			for i in names.length():
+				lcomps.append("__v.%s" % names[i])
+			return "(func(__v): return %s(%s)).call(%s)" % [result, ", ".join(lcomps), text]
+	var comps: PackedStringArray = PackedStringArray()
+	for i in names.length():
+		comps.append("%s.%s" % [base, names[i]])
+	return "%s(%s)" % [result, ", ".join(comps)]
+
+
+static func _ternary_text(if_true: String, cond: String, if_false: String) -> String:
+	if _reads_as_ternary(if_false) or _bare_ternary(if_false):
+		return "%s if %s else %s" % [if_true, cond, if_false]
+	return "(%s if %s else %s)" % [if_true, cond, if_false]
+
+
+static func _reads_as_ternary(text: String) -> bool:
+	if not text.begins_with("(") or not text.ends_with(")"):
 		return false
 	var depth: int = 0
 	var quote: String = ""
@@ -392,10 +592,851 @@ func _needs_copy(e) -> bool:
 	return not st.is_empty() and st["lowering"] != "vector"
 
 
+func _engine_result(e) -> Dictionary:
+	if e is GateAST.Binary and (e as GateAST.Binary).op == "+":
+		var bt: GateAST.TypeRef = _container_tref(e)
+		var bs: String = _innermost_struct(bt)
+		return {"deep": bs} if bs != "" else {}
+	if not (e is GateAST.Call) or not ((e as GateAST.Call).callee is GateAST.Member):
+		return {}
+	var cm: GateAST.Member = (e as GateAST.Call).callee
+	if cm.safe:
+		return {}
+	var rt: GateAST.TypeRef = _container_tref(cm.target)
+	if rt == null:
+		return {}
+	var elem: GateAST.TypeRef = null
+	var parts: Array = _dict_parts(rt)
+	if not parts.is_empty():
+		if cm.name == "get":
+			elem = parts[1]
+		elif cm.name == "find_key":
+			elem = parts[0]
+		elif cm.name in ["values", "keys", "duplicate"]:
+			var ds: String = _innermost_struct(_container_tref(e))
+			return {"deep": ds} if ds != "" else {}
+	elif _is_array_tref(rt):
+		if cm.name in ["back", "front", "get", "pick_random", "max", "min"]:
+			elem = _array_elem(rt)
+		elif cm.name in ["duplicate", "slice", "filter"]:
+			var arr_st: String = _innermost_struct(rt)
+			return {"deep": arr_st} if arr_st != "" else {}
+	if elem == null:
+		return {}
+	if elem.array_depth == 0 and not elem.is_dict() and _is_value_class(elem.name):
+		return {"elem": elem}
+	var inner: String = _innermost_struct(elem)
+	return {"deep": inner} if inner != "" else {}
+
+
+func _innermost_struct(t: GateAST.TypeRef) -> String:
+	var node: GateAST.TypeRef = t
+	for _guard in 16:
+		if node == null:
+			return ""
+		if _is_array_tref(node):
+			node = _array_elem(node)
+		elif not _dict_parts(node).is_empty():
+			node = _dict_parts(node)[1]
+		else:
+			return node.name if _is_value_class(node.name) else ""
+	return ""
+
+
+func _struct_key_error(at) -> void:
+	var key: String = "%d:%d" % [at.line, at.col]
+	if _key_errors.has(key):
+		return
+	_key_errors[key] = true
+	diagnostics.error("a struct lowered to a class cannot be a dictionary key", at.line, at.col,
+		"a dictionary finds an object key by identity, so an equal copy would not find it. "
+		+ "Key by a field, or use a struct of 2-4 same-typed numbers, which lowers to a Vector.")
+
+
+func _struct_class_text(sname: String) -> String:
+	var scope: String = String(_struct_of(sname).get("scope", ""))
+	if scope != "" and scope != ".":
+		return "%s.%s" % [scope, sname.get_slice(".", sname.get_slice_count(".") - 1)]
+	var t: GateAST.TypeRef = GateAST.TypeRef.new()
+	t.name = sname
+	return _map_type(t)
+
+
+func _eq_helper(st: Dictionary, want: String) -> String:
+	var n: String = want
+	while (st["fields"] as Array).has(n) or (st.get("methods", {}) as Dictionary).has(n) \
+			or (st.get("consts", {}) as Dictionary).has(n):
+		n = "_" + n
+	return n
+
+
+func _struct_search(c: GateAST.Call) -> String:
+	if not (c.callee is GateAST.Member) or (c.callee as GateAST.Member).safe:
+		return ""
+	var cm: GateAST.Member = c.callee
+	if not (cm.name in ["has", "find", "rfind", "count", "erase"]) or c.args.is_empty():
+		return ""
+	var ct: GateAST.TypeRef = _container_tref(cm.target)
+	if not _is_array_tref(ct):
+		return ""
+	var et: GateAST.TypeRef = _array_elem(ct)
+	if et == null or et.array_depth != 0 or not _is_value_class(et.name):
+		return ""
+	var st: Dictionary = _struct_of(et.name)
+	var cls: String = _struct_class_text(et.name)
+	var parts: PackedStringArray = _ordered([cm.target] + c.args, func(i: int) -> String:
+		return _expr(cm.target) if i == 0 else _expr(c.args[i - 1]))
+	match cm.name:
+		"has":
+			return "%s.%s(%s, %s, 0, 1) >= 0" % [cls, _eq_helper(st, "_gate_index"), parts[0], parts[1]]
+		"find":
+			return "%s.%s(%s, %s, %s, 1)" % [cls, _eq_helper(st, "_gate_index"), parts[0], parts[1],
+				parts[2] if parts.size() > 2 else "0"]
+		"rfind":
+			return "%s.%s(%s, %s, %s, -1)" % [cls, _eq_helper(st, "_gate_index"), parts[0], parts[1],
+				parts[2] if parts.size() > 2 else "-1"]
+		"count":
+			return "%s.%s(%s, %s)" % [cls, _eq_helper(st, "_gate_count"), parts[0], parts[1]]
+	return "%s.%s(%s, %s)" % [cls, _eq_helper(st, "_gate_erase"), parts[0], parts[1]]
+
+
+func _struct_store(c: GateAST.Call) -> String:
+	if not (c.callee is GateAST.Member) or (c.callee as GateAST.Member).safe:
+		return ""
+	var cm: GateAST.Member = c.callee
+	if not (cm.name in ["append_array", "assign", "merge"]) or c.args.is_empty():
+		return ""
+	var sname: String = _innermost_struct(_container_tref(cm.target))
+	if sname == "":
+		sname = _innermost_struct(_container_tref(c.args[0]))
+	if sname == "" or not _is_value_class(sname):
+		return ""
+	var parts: PackedStringArray = _ordered([cm.target] + c.args, func(i: int) -> String:
+		return _postfix_base(cm.target) if i == 0 else _expr(c.args[i - 1]))
+	var args: PackedStringArray = PackedStringArray()
+	for i in c.args.size():
+		args.append("%s.%s(%s)" % [_struct_class_text(sname), _deep_helper(_struct_of(sname)),
+			parts[i + 1]] if i == 0 else parts[i + 1])
+	return "%s.%s(%s)" % [parts[0], cm.name, ", ".join(args)]
+
+
+func _deep_helper(st: Dictionary) -> String:
+	var n: String = "_gate_deep"
+	while (st["fields"] as Array).has(n) or (st.get("methods", {}) as Dictionary).has(n) \
+			or (st.get("consts", {}) as Dictionary).has(n):
+		n = "_" + n
+	return n
+
+
 func _copy_value(e) -> String:
-	if not _needs_copy(e):
+	if _in_gate_helper:
 		return _expr(e)
+	var sft: GateAST.TypeRef = _soa_field_tref(e)
+	if sft != null:
+		return _copied(_expr(e), sft)
+	var er: Dictionary = _engine_result(e)
+	if er.has("elem"):
+		var etr: GateAST.TypeRef = GateChecker.copy_type(er["elem"])
+		etr.nullable = true   # an empty container hands out null
+		if _no_hoist_ctx() in ["param", "annotation", "guard", "const"]:
+			return "(func(__v): return (__v._gate_copy() if __v != null else null)).call(%s)" % _expr(e)
+		return _copied(_render_once(e, _expr(e)), etr)
+	if er.has("deep"):
+		var dst: GateAST.TypeRef = GateAST.TypeRef.new()
+		dst.name = er["deep"]
+		return "%s.%s(%s)" % [_map_type(dst), _deep_helper(_struct_of(er["deep"])), _expr(e)]
+	if e is GateAST.NullCoalesce:
+		var nlt: String = _static_type_of((e as GateAST.NullCoalesce).left)
+		if _is_value_class(nlt):
+			return _emit_coalesce(e, true)
+		if nlt == "" and (_is_value_class(_static_type_of((e as GateAST.NullCoalesce).right))
+				or (_structs_visible() and _may_hold_struct((e as GateAST.NullCoalesce).left))):
+			return _emit_coalesce(e, true, true)
+	if e is GateAST.Ternary and (_is_value_class(_static_type_of((e as GateAST.Ternary).if_true))
+			or _is_value_class(_static_type_of((e as GateAST.Ternary).if_false))
+			or (_structs_visible() and (_may_hold_struct((e as GateAST.Ternary).if_true)
+				or _may_hold_struct((e as GateAST.Ternary).if_false)))):
+		_copy_arms_node = e
+		return _expr(e)
+	if e is GateAST.CastExpr and _is_value_class(_static_type_of(e)):
+		return _with_once(e, _expr(e), func(n: String) -> String:
+			return "(%s._gate_copy() if %s != null else null)" % [n, n])
+	if e is GateAST.Index and _structs_visible() and _from_tuple((e as GateAST.Index).target):
+		return _guard_value(e)
+	var tr: GateAST.TypeRef = _declared_tref(e)
+	if tr == null and e is GateAST.Member:
+		tr = _value_tref(e)   # another object's field, `h.st`, declared `Ctr?`
+	if tr == null and e is GateAST.Ident and _null_locals.has((e as GateAST.Ident).name) and _needs_copy(e):
+		var nt: String = _expr(e)
+		return "(%s._gate_copy() if %s != null else null)" % [nt, nt]
+	if tr != null and tr.array_depth == 0 and (tr.is_union() or tr.nullable):
+		var text: String = _expr(e)
+		if _copied(text, tr) == text:
+			return text
+		return _with_once(e, text, func(n: String) -> String: return _copied(n, tr))
+	if not _needs_copy(e):
+		var members: Array = _union_struct_members(e)
+		if members.is_empty():
+			if (_structs_visible() and _static_type_of(e) == "" and _declared_type_of(e) == ""
+					and _may_hold_struct(e)):
+				return _guard_value(e)
+			return _expr(e)
+		return _with_once(e, _postfix_base(e), func(n: String) -> String:
+			var tests: PackedStringArray = PackedStringArray()
+			for mn in members:
+				tests.append("%s is %s" % [n, mn])
+			return "(%s._gate_copy() if %s else %s)" % [n, " or ".join(tests), n])
+	if _has_safe_step(e):
+		return _with_once(e, _postfix_base(e), func(n: String) -> String:
+			return "(%s._gate_copy() if %s != null else null)" % [n, n])
 	return "%s._gate_copy()" % _postfix_base(e)
+
+
+func _value_may_be_null(e) -> bool:
+	if e is GateAST.Ident and _fn_locals.has((e as GateAST.Ident).name) \
+			and (_fn_locals[(e as GateAST.Ident).name] as Dictionary).get("tr", null) == null:
+		return _null_locals.has((e as GateAST.Ident).name)
+	return _may_be_null(e)
+
+
+func _from_tuple(e) -> bool:
+	if _tuple_tref(_container_tref(e)) != null:
+		return true
+	return e is GateAST.Index and _from_tuple((e as GateAST.Index).target)
+
+
+func _with_once(e, text: String, build: Callable) -> String:
+	if _repeatable(e, text):
+		return build.call(text)
+	var ctx: String = _no_hoist_ctx()
+	if ctx == "":
+		return build.call(_render_once(e, text))
+	if _keeps_inplace(e):
+		return build.call(text)
+	return "(func(__v): return %s).call(%s)" % [build.call("__v"), text]
+
+
+func _guard_value(e) -> String:
+	return _guarded_copy(_expr(e))
+
+
+func _union_struct_members(e) -> Array:
+	if not (e is GateAST.Expr) or e is GateAST.Call or e is GateAST.ObjectInit:
+		return []
+	var ft: GateAST.TypeRef = (e as GateAST.Expr).flow_type
+	if ft == null or not ft.is_union() or ft.array_depth != 0:
+		return []
+	var out: Array = []
+	for um in ft.union_members:
+		if _is_class_struct(um):
+			out.append(_map_type(um))
+	return out
+
+
+func _observable_prop(e) -> String:
+	var owner: String = _scope_class
+	var n: String = ""
+	if e is GateAST.Ident:
+		n = (e as GateAST.Ident).name
+		if _fn_locals.has(n):
+			return ""
+	elif e is GateAST.Member and not (e as GateAST.Member).safe:
+		n = (e as GateAST.Member).name
+		if not ((e as GateAST.Member).target is GateAST.SelfExpr):
+			owner = _declared_type_of((e as GateAST.Member).target)
+			if owner == "" and _static_type_of((e as GateAST.Member).target) != "":
+				owner = _name_key(_scope_class, _static_type_of((e as GateAST.Member).target))
+	if n == "" or owner == "":
+		return ""
+	var q: String = owner
+	for _guard in 64:
+		var key: String = "%s#%s" % [q, n]
+		if _observable_fields.has(key):
+			return _observable_fields[key] if _is_value_class(_observable_fields[key]) else ""
+		var b: Dictionary = _base_of(q) if (q == "." or _class_decls.has(q)) else {"kind": "none"}
+		if String(b["kind"]) != "local":
+			return ""
+		q = String(b["key"])
+	return ""
+
+
+func _observable_root_of(e) -> Dictionary:
+	var node = e
+	while node is GateAST.Member or node is GateAST.Index:
+		var inner = node.target
+		var sn: String = _observable_prop(inner)
+		if sn != "":
+			return {"node": inner, "struct": sn}
+		node = inner
+	return {}
+
+
+func _observable_lvalue(node) -> String:
+	if node is GateAST.Ident:
+		return _expr(node)
+	var m: GateAST.Member = node
+	if m.target is GateAST.SelfExpr:
+		return "self." + m.name
+	return "%s.%s" % [_render_once(m.target, _postfix_base(m.target)), m.name]
+
+
+func _observable_open(obs: Dictionary, e) -> Array:
+	var lv: String = _observable_lvalue(obs["node"])
+	var t: String = _new_tmp()
+	_hoist("var %s = %s._gate_copy()" % [t, lv])
+	_fn_locals[t] = {"t": obs["struct"], "e": ""}
+	_var_types[t] = obs["struct"]
+	_var_depths[t] = 0
+	var id: GateAST.Ident = GateAST.Ident.new()
+	id.at(obs["node"].line, obs["node"].col)
+	id.name = t
+	return [lv, t, _with_root(e, obs["node"], id)]
+
+
+static func _with_root(e, root, repl):
+	if e == root:
+		return repl
+	if e is GateAST.Member:
+		var m: GateAST.Member = GateAST.Member.new()
+		m.at(e.line, e.col)
+		m.name = (e as GateAST.Member).name
+		m.target = _with_root((e as GateAST.Member).target, root, repl)
+		return m
+	if e is GateAST.Index:
+		var ix: GateAST.Index = GateAST.Index.new()
+		ix.at(e.line, e.col)
+		ix.index = (e as GateAST.Index).index
+		ix.target = _with_root((e as GateAST.Index).target, root, repl)
+		return ix
+	return e
+
+
+func _struct_mutators(sname: String) -> Dictionary:
+	if _mutators.has(sname):
+		return _mutators[sname]
+	_mutators[sname] = {}
+	var st: Dictionary = _struct_of(sname)
+	if st.is_empty() or not st.has("decl"):
+		return {}
+	var funcs: Dictionary = {}
+	for m in (st["decl"] as GateAST.ClassDecl).members:
+		if m is GateAST.FuncDecl and not (m as GateAST.FuncDecl).is_static:
+			funcs[(m as GateAST.FuncDecl).name] = m
+	var out: Dictionary = {}
+	var changed: bool = true
+	while changed:
+		changed = false
+		for fname in funcs:
+			var fd: GateAST.FuncDecl = funcs[fname]
+			if not out.has(fname) and _mutates(fd.body, st,
+					GateChecker.local_names(fd.params, fd.body), out):
+				out[fname] = true
+				changed = true
+	_mutators[sname] = out
+	return out
+
+
+func _mutates(node, st: Dictionary, locals: Dictionary, mut: Dictionary) -> bool:
+	if node is Array:
+		for x in node:
+			if _mutates(x, st, locals, mut):
+				return true
+		return false
+	if node == null or not (node is Object) or (node as Object).get_script() == null:
+		return false
+	var targets: Array = []
+	if node is GateAST.AssignStmt:
+		targets.append((node as GateAST.AssignStmt).target)
+	elif node is GateAST.MultiAssign and not (node as GateAST.MultiAssign).destructure:
+		targets.append_array((node as GateAST.MultiAssign).targets)
+	for t in targets:
+		var root = t
+		while root is GateAST.Member or root is GateAST.Index:
+			root = root.target
+		if root is GateAST.SelfExpr or (root is GateAST.Ident
+				and (st["fields"] as Array).has((root as GateAST.Ident).name)
+				and not locals.has((root as GateAST.Ident).name)):
+			return true
+	if node is GateAST.Call:
+		var callee = (node as GateAST.Call).callee
+		if callee is GateAST.Ident and mut.has((callee as GateAST.Ident).name) \
+				and not locals.has((callee as GateAST.Ident).name):
+			return true
+		if callee is GateAST.Member:
+			var cm: GateAST.Member = callee
+			if cm.target is GateAST.SelfExpr and mut.has(cm.name):
+				return true
+			if cm.target is GateAST.Ident and not locals.has((cm.target as GateAST.Ident).name):
+				var at: int = (st["fields"] as Array).find((cm.target as GateAST.Ident).name)
+				if at >= 0 and _struct_mutators(String(st["types"][at])).has(cm.name):
+					return true
+	for prop in (node as Object).get_property_list():
+		var pn: String = prop["name"]
+		if pn in ["script", "Built-in script", "RefCounted", "Object"]:
+			continue
+		var v = (node as Object).get(pn)
+		if (v is Array or (v is Object and v != null)) and _mutates(v, st, locals, mut):
+			return true
+	return false
+
+
+func _observable_call_root(c: GateAST.Call) -> Dictionary:
+	if not (c.callee is GateAST.Member) or (c.callee as GateAST.Member).safe:
+		return {}
+	var cm: GateAST.Member = c.callee
+	var obs: Dictionary = _observable_root_of(cm)
+	if obs.is_empty():
+		return {}
+	var recv_t: String = _static_type_of(cm.target)
+	if recv_t == "" or not _struct_mutators(recv_t).has(cm.name):
+		return {}
+	return obs
+
+
+func _namespace_qualifier(n: String) -> String:
+	if _scope_class == "." or _fn_locals.has(n) or _class_declares(_scope_class, n):
+		return ""
+	var q: String = String(_class_parent.get(_scope_class, "."))
+	while q != ".":
+		var names: Dictionary = _names_of_scope(q)
+		if names.has(n):
+			var cd = _class_decls.get(q)
+			if cd == null or (cd as GateAST.ClassDecl).form != "namespace":
+				return ""
+			for m in (cd as GateAST.ClassDecl).members:
+				if (m is GateAST.FuncDecl and (m as GateAST.FuncDecl).name == n) \
+						or (m is GateAST.VarDecl and (m as GateAST.VarDecl).name == n
+							and not (m as GateAST.VarDecl).is_const):
+					return q
+			return ""
+		if _class_declares(q, n):
+			return ""
+		q = String(_class_parent.get(q, "."))
+	return ""
+
+
+static func _as_ident(m: GateAST.Member) -> GateAST.Ident:
+	var id: GateAST.Ident = GateAST.Ident.new()
+	id.at(m.line, m.col)
+	id.name = m.name
+	return id
+
+
+func _soa_field_tref(e) -> GateAST.TypeRef:
+	if not (e is GateAST.Member) or (e as GateAST.Member).safe:
+		return null
+	var m: GateAST.Member = e
+	var sname: String = ""
+	if m.target is GateAST.Ident and _soa_cursors.has((m.target as GateAST.Ident).name):
+		sname = String(_soa_cursors[(m.target as GateAST.Ident).name]["soa"])
+	elif m.target is GateAST.Index:
+		sname = _soa_name((m.target as GateAST.Index).target)
+	if sname == "":
+		return null
+	var st: Dictionary = _struct_of(String(_soa[sname]["struct"]))
+	var fi: int = (st.get("fields", []) as Array).find(m.name)
+	return (st["typerefs"] as Array)[fi] if fi >= 0 else null
+
+
+func _structs_visible() -> bool:
+	return _struct_user and not _in_gate_helper
+
+
+func _may_hold_struct(e) -> bool:
+	if e is GateAST.Ident:
+		var n: String = (e as GateAST.Ident).name
+		if _scalar_repl.has(n) or _soa.has(n) or _soa_cursors.has(n):
+			return false
+		if _fn_locals.has(n):
+			var tr = (_fn_locals[n] as Dictionary).get("tr", null)
+			if tr != null:
+				return _unknown_tref(tr)
+			return not _never_holds_struct(n, {})
+		var ft: GateAST.TypeRef = _member_tref(_scope_class, n, false)
+		if ft != null:
+			return _unknown_tref(ft)
+		return _declares_value(_scope_class, n)
+	if e is GateAST.Member:
+		var m: GateAST.Member = e
+		var root = m.target
+		while root is GateAST.Member:
+			root = (root as GateAST.Member).target
+		if root is GateAST.Ident and not _may_be_value(root as GateAST.Ident) \
+				and not (root is GateAST.Ident and _fn_locals.has((root as GateAST.Ident).name)):
+			if m.target is GateAST.Ident or _class_path(m.target):
+				return false
+		var ot: String = _static_type_of(m.target)
+		var cot: String = GateTypes.canonical(ot)
+		if cot != "" and cot != "Variant" and GateTypes.BUILTIN.has(cot):
+			return false   # a builtin's own property, `Vector2i.y`, is a number
+		if ot != "":
+			var ft = _field_types.get("%s.%s" % [ot.get_slice(".", ot.get_slice_count(".") - 1), m.name])
+			if ft == null:
+				ft = _struct_field_tref(ot, m.name)
+			if ft != null:
+				return _unknown_tref(ft)
+		return true
+	if e is GateAST.Index:
+		var it: String = GateTypes.canonical(_static_type_of((e as GateAST.Index).target))
+		if it == "":
+			it = GateTypes.canonical(_declared_type_of((e as GateAST.Index).target))
+		return not (it.begins_with("Packed") and it.ends_with("Array")) and it != "String"
+	if e is GateAST.AwaitExpr:
+		return true
+	if e is GateAST.Call:
+		return _call_may_hold_struct(e)
+	return false
+
+
+func _class_path(e) -> bool:
+	if e is GateAST.Ident:
+		var n: String = (e as GateAST.Ident).name
+		return (not _may_be_value(e) and (_local_types.has(n) or _extern_origin.has(n)
+			or n.begins_with("__gate_dep_") or n.begins_with("___gate_dep_") or ClassDB.class_exists(n)))
+	if e is GateAST.Member:
+		var n2: String = (e as GateAST.Member).name
+		return _class_path((e as GateAST.Member).target) and n2.length() > 0 and n2[0] == n2[0].to_upper()
+	return false
+
+
+static func _unknown_tref(t: GateAST.TypeRef) -> bool:
+	return (t.array_depth == 0 and not t.is_dict() and not t.is_tuple()
+		and (t.is_union() or GateTypes.canonical(t.name) == "Variant"))
+
+
+func _may_be_value(id: GateAST.Ident) -> bool:
+	return _fn_locals.has(id.name) or _declares_value(_scope_class, id.name)
+
+
+func _declares_value(key: String, n: String) -> bool:
+	var q: String = key
+	var seen: Dictionary = {}
+	while q != "" and not seen.has(q):
+		seen[q] = true
+		if (_class_fields.get(q, {}) as Dictionary).has(n):
+			return true
+		if not (q == "." or _class_decls.has(q)):
+			return false
+		var b: Dictionary = _base_of(q)
+		q = String(b["key"]) if String(b["kind"]) == "local" else ""
+	return false
+
+
+func _call_may_hold_struct(c: GateAST.Call) -> bool:
+	if _gate_callee(c) != null:
+		return false
+	if c.callee is GateAST.Ident:
+		var n: String = (c.callee as GateAST.Ident).name
+		if not _struct_of(n).is_empty() or CTOR_SHORTHAND.has(n) or GateTypes.BUILTIN.has(n) \
+				or _local_types.has(n) or ClassDB.class_exists(n):
+			return false
+		var base: String = _engine_base_of(_scope_class)
+		return base != "" and ClassDB.class_has_method(base, n) and _engine_may_return_struct(base, n)
+	if c.callee is GateAST.Member:
+		var cm: GateAST.Member = c.callee
+		if cm.name == "new" or cm.name.begins_with("_gate_") or _gate_lambda_call(c) \
+				or (not _struct_of(cm.name).is_empty() and _is_namespace_ref(cm.target)):
+			return false
+		if cm.target is GateAST.Ident and not _may_be_value(cm.target as GateAST.Ident) \
+				and ClassDB.class_exists((cm.target as GateAST.Ident).name):
+			var eng: String = (cm.target as GateAST.Ident).name
+			return not ClassDB.class_has_method(eng, cm.name) or _engine_may_return_struct(eng, cm.name)
+		if _builtin_scalar_method(cm):
+			return false
+		var owner: String = GateTypes.canonical(_static_type_of(cm.target))
+		if owner != "" and ClassDB.class_exists(owner) and ClassDB.class_has_method(owner, cm.name):
+			return _engine_may_return_struct(owner, cm.name)
+	return true
+
+
+func _iter_unknown(it) -> bool:
+	if it is GateAST.Literal or it is GateAST.Binary or it is GateAST.Unary:
+		return false
+	if it is GateAST.Call:
+		var c: GateAST.Call = it
+		if c.callee is GateAST.Ident and (c.callee as GateAST.Ident).name == "range":
+			return false
+		if c.callee is GateAST.Member and _builtin_scalar_method(c.callee):
+			return false
+	var st: String = GateTypes.canonical(_static_type_of(it))
+	if st in ["int", "float", "String", "StringName", "bool"]:
+		return false
+	var tr: GateAST.TypeRef = _value_tref(it)
+	return tr == null or _unknown_tref(tr) or (GateTypes.canonical(tr.name) in ["Array", "Dictionary"]
+		and tr.array_depth == 0 and tr.generic_args.is_empty() and not tr.is_dict())
+
+
+func _builtin_scalar_method(cm: GateAST.Member) -> bool:
+	return cm.name in ["size", "is_empty", "find", "rfind", "count", "has", "hash", "bsearch",
+		"length", "to_int", "to_float", "is_valid_int", "begins_with", "ends_with", "contains",
+		"substr", "replace", "to_lower", "to_upper", "strip_edges", "split", "join", "has_all",
+		"is_typed", "is_read_only", "is_same_typed"]
+
+
+func _engine_may_return_struct(cls: String, method: String) -> bool:
+	for mi in ClassDB.class_get_method_list(cls):
+		if String(mi["name"]) != method:
+			continue
+		var ret: Dictionary = mi.get("return", {})
+		var rt: int = int(ret.get("type", TYPE_NIL))
+		if rt == TYPE_NIL:
+			return int(ret.get("usage", 0)) & PROPERTY_USAGE_NIL_IS_VARIANT != 0
+		if rt != TYPE_OBJECT:
+			return false
+		var rc: String = String(ret.get("class_name", ""))
+		return rc == "" or rc == "Object" or rc == "RefCounted"
+	return true
+
+
+func _engine_base_of(key: String) -> String:
+	var q: String = key
+	var seen: Dictionary = {}
+	while q != "" and not seen.has(q):
+		seen[q] = true
+		var b: Dictionary = _base_of(q) if (q == "." or _class_decls.has(q)) else {"kind": "none"}
+		match String(b["kind"]):
+			"local":
+				q = String(b["key"])
+			"ext":
+				return String(b["name"]) if ClassDB.class_exists(String(b["name"])) else ""
+			"none":
+				return "RefCounted"
+			_:
+				return ""
+	return ""
+
+
+func _gate_callee(c: GateAST.Call) -> GateAST.FuncDecl:
+	var owner: String = ""
+	var name: String = ""
+	if c.callee is GateAST.Ident:
+		name = (c.callee as GateAST.Ident).name
+		if _fn_locals.has(name):
+			return null
+		owner = _scope_class
+	elif c.callee is GateAST.Member:
+		var cm: GateAST.Member = c.callee
+		name = cm.name
+		if cm.target is GateAST.SelfExpr:
+			owner = _scope_class
+		elif cm.target is GateAST.Ident and (cm.target as GateAST.Ident).name == "super":
+			var b: Dictionary = _base_of(_scope_class) if (_scope_class == "." or _class_decls.has(_scope_class)) else {"kind": "none"}
+			owner = String(b["key"]) if String(b["kind"]) == "local" else ""
+		elif cm.target is GateAST.Ident and not _may_be_value(cm.target as GateAST.Ident) \
+				and _resolve_class(_scope_class, (cm.target as GateAST.Ident).name) != "":
+			owner = _resolve_class(_scope_class, (cm.target as GateAST.Ident).name)
+		else:
+			owner = _declared_type_of(cm.target)
+			if owner == "" and _static_type_of(cm.target) != "":
+				owner = _name_key(_scope_class, _static_type_of(cm.target))
+			var sst: Dictionary = _struct_of(owner)
+			if not sst.is_empty() and sst.has("decl"):
+				return _pick_overload((sst["decl"] as GateAST.ClassDecl).members, name, c.args.size())
+	if owner == "" or name == "":
+		return null
+	var q: String = owner
+	var seen: Dictionary = {}
+	while q != "" and not seen.has(q):
+		seen[q] = true
+		var fns: Array = (_class_funcs.get(q, {}) as Dictionary).get(name, [])
+		if not fns.is_empty():
+			return _pick_overload(fns, name, c.args.size())
+		if not (q == "." or _class_decls.has(q)):
+			if _reg_classes.has(q):
+				return _pick_overload((_reg_classes[q] as GateAST.ClassDecl).members, name, c.args.size())
+			return null
+		var b2: Dictionary = _base_of(q)
+		if String(b2["kind"]) == "local":
+			q = String(b2["key"])
+		elif String(b2["kind"]) == "ext" and _reg_classes.has(String(b2["name"])):
+			q = String(b2["name"])
+		else:
+			return null
+	return null
+
+
+static func _pick_overload(members: Array, name: String, argc: int) -> GateAST.FuncDecl:
+	for m in members:
+		if not (m is GateAST.FuncDecl) or (m as GateAST.FuncDecl).name != name:
+			continue
+		var fd: GateAST.FuncDecl = m
+		var required: int = 0
+		for p in fd.params:
+			if (p as GateAST.Param).default == null and not (p as GateAST.Param).is_rest:
+				required += 1
+		if argc >= required and (argc <= fd.params.size() or (not fd.params.is_empty()
+				and (fd.params[fd.params.size() - 1] as GateAST.Param).is_rest)):
+			return fd
+	return null
+
+
+static func _copies_first(stmts: Array, n: String) -> bool:
+	for k in mini(stmts.size(), 8):
+		var s = stmts[k]
+		var v = null
+		if s is GateAST.AssignStmt and (s as GateAST.AssignStmt).target is GateAST.Ident \
+				and ((s as GateAST.AssignStmt).target as GateAST.Ident).name == n:
+			v = (s as GateAST.AssignStmt).value
+		elif s is GateAST.VarDecl:
+			v = (s as GateAST.VarDecl).value
+		if v != null and _gate_helper_on(v, n):
+			return true
+	return false
+
+
+static func _gate_helper_on(v, n: String) -> bool:
+	var read: Dictionary = {}
+	GateChecker.idents_in(v, read)
+	if not read.has(n):
+		return false
+	var found: Array = [false]
+	_find_gate_call(v, found)
+	return found[0]
+
+
+static func _find_gate_call(e, found: Array) -> void:
+	if e == null or found[0] or not (e is Object) or (e as Object).get_script() == null:
+		return
+	if e is GateAST.Member and (e as GateAST.Member).name.begins_with("_gate_"):
+		found[0] = true
+		return
+	for prop in (e as Object).get_property_list():
+		var pn: String = prop["name"]
+		if pn in ["script", "Built-in script", "RefCounted", "Object"]:
+			continue
+		var x = (e as Object).get(pn)
+		if x is Array:
+			for y in x:
+				_find_gate_call(y, found)
+		elif x is Object:
+			_find_gate_call(x, found)
+
+
+func _would_copy(pp: GateAST.Param) -> bool:
+	if pp.is_rest or _in_gate_helper:
+		return false
+	var t: GateAST.TypeRef = pp.type
+	if t == null or (t.array_depth == 0 and not t.is_union() and not t.is_tuple() and not t.is_dict()
+			and GateTypes.canonical(t.name) == "Variant"):
+		return _structs_visible()
+	if t.array_depth != 0 or t.is_dict() or t.is_tuple():
+		return false
+	if t.is_union():
+		for m in t.union_members:
+			if (m as GateAST.TypeRef).array_depth == 0 and _is_value_class((m as GateAST.TypeRef).name):
+				return true
+		return false
+	return _is_value_class(t.name)
+
+
+func _entry_copy(pp: GateAST.Param) -> String:
+	if pp.is_rest:
+		return ""
+	var c: String = _copied(pp.name, pp.type)
+	return "" if c == pp.name else "%s = %s" % [pp.name, c]
+
+
+func _arg_text(c: GateAST.Call, fd: GateAST.FuncDecl, i: int) -> String:
+	return _copy_value(c.args[i]) if _arg_copies(c, fd, i) else _expr(c.args[i])
+
+
+func _arg_copies(c: GateAST.Call, fd: GateAST.FuncDecl, i: int) -> bool:
+	if fd == null and i > 0 and c.callee is GateAST.Member \
+			and ASKS_KEY_ONLY.has((c.callee as GateAST.Member).name):
+		return true   # the value it adds is stored
+	if fd == null and _keeps_no_arg(c):
+		return false
+	if fd == null or i >= fd.params.size() or not _would_copy(fd.params[i]):
+		return true
+	for j in range(i + 1, c.args.size()):
+		if not _runs_no_code(c.args[j]):
+			return true
+	return c.callee is GateAST.Member and not _runs_no_code((c.callee as GateAST.Member).target)
+
+
+const ASKS_ONLY := {"get": true, "has": true, "erase": true, "find_key": true,
+	"get_or_add": true, "has_all": true, "count": true, "find": true, "rfind": true}
+const ASKS_KEY_ONLY := {"get_or_add": true}
+
+
+func _keeps_no_arg(c: GateAST.Call) -> bool:
+	if c.callee is GateAST.Member:
+		if ASKS_ONLY.has((c.callee as GateAST.Member).name):
+			return true   # a key or a value looked for, never a value stored
+		return (c.callee as GateAST.Member).name.begins_with("_gate_") or _gate_lambda_call(c)
+	if c.callee is GateAST.Ident:
+		var n: String = (c.callee as GateAST.Ident).name
+		return ((GateInfer.PURE_GLOBALS.has(n) or INSPECT_ONLY.has(n)) and not _declared_funcs.has(n)
+			and not _may_be_value(c.callee as GateAST.Ident) and _structs_visible())
+	return false
+
+
+const INSPECT_ONLY := {"is_same": true, "var_to_bytes": true, "var_to_bytes_with_objects": true,
+	"inst_to_dict": true, "print_verbose": true}
+
+
+static func _gate_lambda_call(c: GateAST.Call) -> bool:
+	return (c.callee is GateAST.Member and (c.callee as GateAST.Member).name == "call"
+		and _gate_lambda((c.callee as GateAST.Member).target))
+
+
+static func _gate_lambda(e) -> bool:
+	if not (e is GateAST.Lambda) or (e as GateAST.Lambda).params.size() != 1 \
+			or ((e as GateAST.Lambda).params[0] as GateAST.Param).name != "__v":
+		return false
+	var found: Array = [false]
+	_find_gate_call(e, found)
+	return found[0]
+
+
+func _runs_no_code(e) -> bool:
+	if e == null or e is GateAST.Literal or e is GateAST.Ident or e is GateAST.SelfExpr \
+			or e is GateAST.Lambda:
+		return true
+	if e is GateAST.Member:
+		return _runs_no_code((e as GateAST.Member).target)
+	if e is GateAST.Index:
+		return _runs_no_code((e as GateAST.Index).target) and _runs_no_code((e as GateAST.Index).index)
+	if e is GateAST.Unary:
+		return _runs_no_code((e as GateAST.Unary).operand)
+	if e is GateAST.Binary:
+		return (_binary_lowering(e) == "" and _runs_no_code((e as GateAST.Binary).left)
+			and _runs_no_code((e as GateAST.Binary).right))
+	if e is GateAST.ArrayLit:
+		for el in (e as GateAST.ArrayLit).elements:
+			if not _runs_no_code(el):
+				return false
+		return true
+	return false
+
+
+func _is_value_class(n: String) -> bool:
+	var st: Dictionary = _struct_of(n)
+	return not st.is_empty() and st["lowering"] != "vector"
+
+
+func _copied(text: String, tr: GateAST.TypeRef) -> String:
+	if tr == null or (tr.array_depth == 0 and not tr.is_union() and not tr.is_tuple()
+			and not tr.is_dict() and GateTypes.canonical(tr.name) == "Variant"):
+		return _guarded_copy(text) if _structs_visible() else text
+	if tr.array_depth != 0 or tr.is_dict() or tr.is_tuple():
+		return text
+	if tr.is_union():
+		var tests: PackedStringArray = PackedStringArray()
+		for m in tr.union_members:
+			var mt: GateAST.TypeRef = m
+			if mt.array_depth == 0 and _is_value_class(mt.name):
+				var bare: GateAST.TypeRef = GateAST.TypeRef.new()
+				bare.name = mt.name
+				tests.append("%s is %s" % [text, _map_type(bare)])
+		if tests.is_empty():
+			return text
+		return "(%s._gate_copy() if %s else %s)" % [text, " or ".join(tests), text]
+	if not _is_value_class(tr.name):
+		return text
+	if tr.nullable:
+		return "(%s._gate_copy() if %s != null else null)" % [text, text]
+	return "%s._gate_copy()" % text
 
 
 func _emit_postfix_spine(e) -> String:
@@ -443,11 +1484,35 @@ func _paren_below(e, floor_prec: int) -> String:
 
 
 func _emit_binary(b: GateAST.Binary) -> String:
-	var lt: String = _static_type_of(b.left)
-	if lt != "" and _struct_ops.has(lt):
-		var ops: Dictionary = _struct_ops[lt]
-		if ops.has(b.op):
-			return "%s.%s(%s)" % [_expr(b.left), ops[b.op], _expr(b.right)]
+	var sops: Dictionary = _ops_of(_static_type_of(b.left))
+	var low: String = _binary_lowering(b)
+	if low != "" and (sops.has(b.op) or b.op == "!=" and sops.has("==")):
+		var derived_ne: bool = not sops.has(b.op)
+		var mname: String = String(sops["=="] if derived_ne else sops[b.op])
+		var sp: PackedStringArray = _ordered([b.left, b.right],
+			func(i: int) -> String: return _postfix_base(b.left) if i == 0 else _expr(b.right))
+		var left: String = sp[0]
+		if not _stable(b.left, left) and not _stable(b.right, sp[1]):
+			var ctx: String = _no_hoist_ctx()
+			if ctx == "":
+				var t: String = _new_tmp()
+				_hoist("var %s = %s" % [t, left])
+				left = t
+			elif ctx != "const":
+				var lam: String = "(func(__l): return __l.%s(%s)).call(%s)" % [mname, sp[1], left]
+				return ("not " + lam) if derived_ne else lam
+		var call: String = "%s.%s(%s)" % [left, mname, sp[1]]
+		return ("not " + call) if derived_ne else call
+	if low != "" and (b.op == "in" or b.op == "not in"):
+		var ip: PackedStringArray = _ordered([b.left, b.right],
+			func(i: int) -> String: return _expr(b.left) if i == 0 else _expr(b.right))
+		var found: String = "%s(%s, %s, 0, 1) >= 0" % [_in_struct_text(b), ip[1], ip[0]]
+		return found if b.op == "in" else "not (%s)" % found
+	if low != "":
+		var ep: PackedStringArray = _ordered([b.left, b.right],
+			func(i: int) -> String: return _expr(b.left) if i == 0 else _expr(b.right))
+		var eq: String = "%s(%s, %s)" % [_eqv_text(b), ep[0], ep[1]]
+		return eq if b.op == "==" else "not " + eq
 	var op: String = b.op
 	if op == "not in":
 		return "not (%s in %s)" % [_expr(b.left), _expr(b.right)]
@@ -570,16 +1635,45 @@ func _emit_is(ie: GateAST.IsExpr) -> String:
 func _check_struct_arity(name: String, st: Dictionary, c: GateAST.Call) -> void:
 	var n_fields: int = (st["fields"] as Array).size()
 	var given: int = c.args.size()
-	var ok: bool = given <= n_fields
-	if st["lowering"] == "vector" and given != 0:
-		ok = given == n_fields
-	if ok:
+	if given <= n_fields and _defaults_cover(st, given):
 		return
 	diagnostics.error(
 		"struct '%s' has %d field(s) but %d argument(s) were given"
 			% [name, n_fields, given], c.line, c.col,
 		"the constructor takes one value per field, in declaration order: %s."
 			% ", ".join(PackedStringArray(st["fields"])))
+
+
+func _partial_vector_ctor(c: GateAST.Call) -> Dictionary:
+	var sname: String = ""
+	var st: Dictionary = {}
+	if c.callee is GateAST.Ident:
+		sname = (c.callee as GateAST.Ident).name
+		if CTOR_SHORTHAND.has(sname) and not _shorthand_taken(sname) and not GateTypes.shadowed.has(sname):
+			return {}
+		st = _ctor_struct_of(sname)
+	elif c.callee is GateAST.Member and not (c.callee as GateAST.Member).safe:
+		sname = (c.callee as GateAST.Member).name
+		if not _is_namespace_ref((c.callee as GateAST.Member).target):
+			return {}
+		st = _struct_of(sname)
+	if st.is_empty() or st["lowering"] != "vector" or c.args.is_empty() \
+			or c.args.size() >= (st["fields"] as Array).size() or not _defaults_cover(st, c.args.size()):
+		return {}
+	return {"name": sname, "st": st}
+
+
+func _defaults_cover(st: Dictionary, given: int) -> bool:
+	if given == 0:
+		return true
+	var trefs: Array = st.get("typerefs", [])
+	for fi in range(given, (st["fields"] as Array).size()):
+		var tr = trefs[fi] if fi < trefs.size() else null
+		if tr != null and (tr as GateAST.TypeRef).nullable:
+			continue   # `T?` defaults to null
+		if _default_kind(st, fi) == "none":
+			return false
+	return true
 
 
 func _emit_call(c: GateAST.Call) -> String:
@@ -597,12 +1691,95 @@ func _emit_call(c: GateAST.Call) -> String:
 		var cm: GateAST.Member = c.callee
 		var sname: String = _soa_name(cm.target)
 		if sname != "":
-			return _emit_soa_call(sname, cm, c)
+			var soa_text: String = _emit_soa_call(sname, cm, c)
+			if soa_text == "" and c != _stmt_expr:
+				diagnostics.error("'%s.%s()' changes the @soa array '%s' and has no value"
+						% [sname, cm.name, sname], c.line, c.col,
+					"@soa keeps each field in its own array, so this is several calls, not one "
+					+ "value. Write it as its own statement.")
+				return "null"
+			return soa_text
 
-	var args: PackedStringArray = PackedStringArray()
-	for a in c.args:
-		args.append(_copy_value(a))
+	var search: String = _struct_search(c)
+	if search != "":
+		return search
 
+	if c.callee is GateAST.Member and (c.callee as GateAST.Member).safe:
+		var scm: GateAST.Member = c.callee
+		var ssn: String = _observable_prop(scm.target)
+		if ssn != "" and _struct_mutators(ssn).has(scm.name):
+			if _no_hoist_ctx() != "":
+				diagnostics.error("this changes the @observable '%s' in place, which needs statements"
+						% _observable_lvalue(scm.target), c.line, c.col,
+					"the call runs on a copy that is then assigned back, so the signal fires. "
+					+ "Make the call inside a function.")
+				return "null"
+			var slv: String = _observable_lvalue(scm.target)
+			var sres: String = _new_tmp()
+			var st: String = _new_tmp()
+			_fn_locals[st] = {"t": ssn, "e": ""}
+			_var_types[st] = ssn
+			var srecv: GateAST.Member = GateAST.Member.new()
+			srecv.at(scm.line, scm.col)
+			srecv.name = scm.name
+			var sid: GateAST.Ident = GateAST.Ident.new()
+			sid.at(scm.line, scm.col)
+			sid.name = st
+			srecv.target = sid
+			var soc: GateAST.Call = GateAST.Call.new()
+			soc.at(c.line, c.col)
+			soc.callee = srecv
+			soc.args = c.args
+			var saved_sp: PackedStringArray = _pending
+			_pending = PackedStringArray()
+			var stext: String = _emit_call(soc)
+			var inner: PackedStringArray = _pending
+			_pending = saved_sp
+			_hoist("var %s = null" % sres)
+			_hoist("if %s != null:" % slv)
+			_hoist("\tvar %s = %s._gate_copy()" % [st, slv])
+			for h in inner:
+				_hoist("\t" + h)
+			_hoist("\t%s = %s" % [sres, stext])
+			_hoist("\t%s = %s" % [slv, st])
+			return sres
+
+	var obs: Dictionary = _observable_call_root(c)
+	if not obs.is_empty():
+		if _no_hoist_ctx() != "":
+			diagnostics.error("this changes the @observable '%s' in place, which needs statements"
+					% _observable_lvalue(obs["node"]), c.line, c.col,
+				"the call runs on a copy that is then assigned back, so the signal fires. "
+				+ "Make the call inside a function.")
+			return "null"
+		var first_args: Array = _args_first(c)
+		var opened: Array = _observable_open(obs, c.callee)
+		var oc: GateAST.Call = GateAST.Call.new()
+		oc.at(c.line, c.col)
+		oc.callee = opened[2]
+		oc.args = first_args
+		var r: String = _new_tmp()
+		_hoist("var %s = %s" % [r, _emit_call(oc)])
+		_hoist("%s = %s" % [opened[0], opened[1]])
+		return r
+
+	var init_form: Dictionary = _init_call_form(c)
+	if not init_form.is_empty():
+		return _emit_init_call(c, init_form)
+	var inst_form: Dictionary = _instantiate_form(c)
+	if not inst_form.is_empty():
+		return _emit_instantiate_init(inst_form)
+	_warn_init_traps(c)
+
+	var callee_fd: GateAST.FuncDecl = _gate_callee(c)
+	if c.callee is GateAST.Member and (c.callee as GateAST.Member).safe and _no_hoist_ctx() != "":
+		var im: GateAST.Member = c.callee
+		var iargs: PackedStringArray = PackedStringArray()
+		for ai in c.args.size():
+			iargs.append(_lazy_part(c.args[ai], _arg_copies(c, callee_fd, ai)))
+		return _safe_inplace(im.target, _postfix_base(im.target), ".%s(%s)"
+			% [_method_emit_name(im.target, im.name, c.args.size(), im.member_class),
+				", ".join(iargs)])
 	if c.callee is GateAST.Member and (c.callee as GateAST.Member).safe:
 		var sm: GateAST.Member = c.callee
 		var recv: String = _render_once(sm.target, _postfix_base(sm.target))
@@ -635,19 +1812,38 @@ func _emit_call(c: GateAST.Call) -> String:
 		if not st.is_empty():
 			_check_struct_arity(n, st, c)
 			if st["lowering"] == "vector":
-				return "%s(%s)" % [st["vector"], ", ".join(args)]
+				if args.is_empty():
+					return _build_struct(st, "", [], [], c)
+				return "%s(%s)" % [st["vector"], ", ".join(_vec_args(st, args))]
 			var salias: String = _extern_alias(n)
 			if salias != "":
 				return "%s.%s.new(%s)" % [salias, n, ", ".join(args)]
 			return "%s.new(%s)" % [n, ", ".join(args)]
 
+	if c.callee is GateAST.Member and (c.callee as GateAST.Member).name == "new":
+		var nm: GateAST.Member = c.callee
+		var nref: String = _class_ref_text(nm.target)
+		var nst: Dictionary = _struct_of(nref) if nref != "" else {}
+		if not nst.is_empty() and not _fn_locals.has(nref.get_slice(".", 0)):
+			if nst["lowering"] == "vector" or c.args.size() > (nst["fields"] as Array).size():
+				_check_struct_arity(nref, nst, c)
+			if nst["lowering"] == "vector":
+				if args.is_empty():
+					return _build_struct(nst, "", [], [], c)
+				return "%s(%s)" % [nst["vector"], ", ".join(_vec_args(nst, args))]
+
 	if c.callee is GateAST.Member:
 		var qm: GateAST.Member = c.callee
-		var qst: Dictionary = _struct_of(qm.name)
+		var qpath: String = _class_ref_text(qm)
+		var qst: Dictionary = _struct_of(qpath) if qpath != "" else {}
+		if qst.is_empty():
+			qst = _struct_of(qm.name)
 		if not qst.is_empty() and _is_namespace_ref(qm.target):
 			_check_struct_arity(qm.name, qst, c)
 			if qst["lowering"] == "vector":
-				return "%s(%s)" % [qst["vector"], ", ".join(args)]
+				if args.is_empty():
+					return _build_struct(qst, "", [], [], c)
+				return "%s(%s)" % [qst["vector"], ", ".join(_vec_args(qst, args))]
 			return "%s.%s.new(%s)" % [_expr(qm.target), qm.name, ", ".join(args)]
 
 	if c.callee is GateAST.Ident:
@@ -934,14 +2130,495 @@ func _default_refs(st: Dictionary, i: int) -> Array:
 			out.append(fields[j])
 	return out
 
-	return "%s(%s)" % [_postfix_base(c.callee), ", ".join(args)]
+
+func _default_helper(st: Dictionary, i: int) -> String:
+	var taken: Dictionary = {}
+	for f in st["fields"]:
+		taken[f] = true
+	for m in st.get("methods", {}):
+		taken[m] = true
+	for k in st.get("consts", {}):
+		taken[k] = true
+	var n: String = "_gate_default_%s" % st["fields"][i]
+	while taken.has(n):
+		n = "_" + n
+	return n
+
+
+func _render_default(st: Dictionary, i: int, comps: Dictionary, ctor: String, at_node,
+		comp_prec: Dictionary = {}) -> String:
+	var kind: String = _default_kind(st, i)
+	var tr = (st["typerefs"] as Array)[i]
+	if kind == "none":
+		return _default_for(tr, false) if tr != null else "null"
+	if kind == "helper":
+		var args: PackedStringArray = PackedStringArray()
+		for r in _default_refs(st, i):
+			args.append(String(comps[r]))
+		return "%s.%s(%s)" % [ctor, _default_helper(st, i), ", ".join(args)]
+	var d = (st["defaults"] as Array)[i]
+	var qualified: Dictionary = {}
+	if kind == "site":
+		var read: Dictionary = {}
+		GateChecker.idents_in(d, read, true)
+		for n in read:
+			if (st["fields"] as Array).has(n):
+				continue
+			var r: Dictionary = _site_name(st, String(n))
+			if r.has("text"):
+				qualified[n] = r["text"]
+			elif r.has("why"):
+				var line: int = at_node.line if at_node != null else d.line
+				var col: int = at_node.col if at_node != null else d.col
+				diagnostics.error("struct '%s' fills in '%s' with a default that reads '%s', %s"
+						% [st["name"], st["fields"][i], n, r["why"]], line, col,
+					"a struct lowered to %s has no scope of its own, so its defaults are written "
+						% st["vector"] + "out where it is built. %s, or pass '%s'."
+						% [r["fix"], st["fields"][i]])
+				return "null"
+	var saved: Dictionary = _ident_renames
+	var saved_prec: Dictionary = _rename_prec
+	_ident_renames = qualified
+	_rename_prec = {}
+	for f in comps:
+		_ident_renames[f] = comps[f]
+		if comp_prec.has(f):
+			_rename_prec[f] = comp_prec[f]   # `b * 2` with b = `a + 1` needs parentheses
+	var text: String = _expr(d) if st["lowering"] == "vector" else _copy_value(d)
+	_ident_renames = saved
+	_rename_prec = saved_prec
+	return text
+
+
+func _site_name(st: Dictionary, n: String) -> Dictionary:
+	var found_top: bool = false
+	if String(st.get("scope", "")) != "":
+		var q: String = st["scope"]
+		while true:
+			var names: Dictionary = _names_of_scope(q)
+			if names.has(n):
+				if names[n] == "instance":
+					return _instance_member(n)
+				if q != ".":
+					return {"text": "%s.%s" % [q, n]}
+				found_top = true
+				break
+			if q == ".":
+				break
+			q = String(_class_parent.get(q, "."))
+	else:
+		var origin: String = String(_reg_origin.get(st["name"], ""))
+		var chain: Array = _extern_container(st["decl"])
+		for k in range(chain.size() - 1, -1, -1):
+			var ccd: GateAST.ClassDecl = chain[k][1]
+			var cn: Dictionary = GateChecker.scope_names(ccd.members, ccd.form == "namespace")
+			if cn.has(n):
+				if cn[n] == "instance":
+					return _instance_member(n)
+				return {"text": "%s.%s.%s" % [_origin_alias(origin), chain[k][0], n]}
+		var mn: Dictionary = _reg_module_names.get(origin, {})
+		if mn.has(n):
+			if mn[n] == "instance":
+				return _instance_member(n)
+			return {"text": "%s.%s" % [_origin_alias(origin), n]}
+	if _fn_locals.has(n):
+		return {"why": "but a local named '%s' hides it here" % n, "fix": "Rename the local"}
+	var s: String = _scope_class
+	while s != "." and s != "":
+		if _class_declares(s, n):
+			var short: String = s.get_slice(".", s.get_slice_count(".") - 1)
+			return {"why": "but '%s' declares its own '%s'" % [short, n],
+				"fix": "Nothing reaches the '%s' it means from inside '%s'. Rename one" % [n, short]}
+		s = String(_class_parent.get(s, "."))
+	if not found_top and _names_of_scope(".").has(n):
+		return {"why": "but this file declares its own '%s'" % n, "fix": "Rename it"}
+	return {}
+
+
+func _class_declares(key: String, n: String) -> bool:
+	var q: String = key
+	var seen: Dictionary = {}
+	while q != "" and q != "." and not seen.has(q):
+		seen[q] = true
+		if _names_of_scope(q).has(n):
+			return true
+		var b: Dictionary = _base_of(q)
+		q = String(b["key"]) if String(b["kind"]) == "local" else ""
+	return false
+
+
+func _name_in_scope(n: String) -> bool:
+	if n == "" or not ((n[0] >= "a" and n[0] <= "z") or n[0] == "_"):
+		return true   # a constant or a class, a global one such as KEY_A included
+	if _fn_locals.has(n):
+		return true
+	if (GateInfer.GLOBAL_FUNCTIONS.has(n) or GateTypes.BUILTIN.has(n) or ClassDB.class_exists(n)
+			or Engine.has_singleton(n) or ProjectSettings.has_setting("autoload/" + n)
+			or _reg_script_classes.has(n) or _reg_classes.has(n)):
+		return true
+	var s: String = _scope_class
+	var outer: Dictionary = {}
+	while s != "" and not outer.has(s):
+		outer[s] = true
+		var q: String = s
+		var seen: Dictionary = {}
+		while q != "" and not seen.has(q):
+			seen[q] = true
+			if _names_of_scope(q).has(n):
+				return true
+			var b: Dictionary = _base_of(q) if (q == "." or _class_decls.has(q)) else {"kind": "ext", "name": q}
+			match String(b["kind"]):
+				"local":
+					q = String(b["key"])
+				"ext":
+					var ext: String = String(b["name"])
+					if not _ext_declares(ext, n):
+						break
+					return true
+				"none":
+					if _ext_declares("RefCounted", n):
+						return true
+					break
+				_:
+					return true   # a base by path: GATE cannot see what it declares
+		if s == ".":
+			break
+		s = String(_class_parent.get(s, "."))
+	return false
+
+
+func _ext_declares(cls: String, n: String) -> bool:
+	var c: String = cls
+	for _guard in 64:
+		if c == "":
+			return false
+		if ClassDB.class_exists(c):
+			if (ClassDB.class_has_method(c, n) or ClassDB.class_has_signal(c, n)
+					or ClassDB.class_has_integer_constant(c, n) or ClassDB.class_has_enum(c, n)):
+				return true
+			for p in ClassDB.class_get_property_list(c):
+				if String(p["name"]) == n:
+					return true
+			return false
+		if not _reg_classes.has(c):
+			return true
+		if GateChecker.scope_names((_reg_classes[c] as GateAST.ClassDecl).members, false).has(n):
+			return true
+		c = String(_reg_bases.get(c, "RefCounted"))
+	return true
+
+
+func _instance_member(n: String) -> Dictionary:
+	return {"why": "which belongs to an instance",
+		"fix": "It is built without an instance to read '%s' from. Make '%s' a const or static" % [n, n]}
+
+
+func _names_of_scope(key: String) -> Dictionary:
+	if not _scope_names.has(key):
+		if key == ".":
+			_scope_names[key] = GateChecker.scope_names(_module_members, false)
+		elif _class_decls.has(key) and _class_decls[key] != null:
+			var cd: GateAST.ClassDecl = _class_decls[key]
+			_scope_names[key] = GateChecker.scope_names(cd.members, cd.form == "namespace")
+		else:
+			_scope_names[key] = {}
+	return _scope_names[key]
+
+
+func _extern_container(cd: GateAST.ClassDecl) -> Array:
+	for table in [_reg_namespaces, _reg_classes]:
+		for top in table:
+			if not _extern_origin.has(top):
+				continue
+			var path: Array = _container_path(table[top], cd, String(top))
+			if not path.is_empty():
+				return path
+	return []
+
+
+func _container_path(outer: GateAST.ClassDecl, cd: GateAST.ClassDecl, prefix: String) -> Array:
+	for m in outer.members:
+		if m == cd:
+			return [[prefix, outer]]
+		if m is GateAST.ClassDecl:
+			var inner: Array = _container_path(m, cd, "%s.%s" % [prefix, (m as GateAST.ClassDecl).name])
+			if not inner.is_empty():
+				return [[prefix, outer]] + inner
+	return []
+
+
+func _build_struct(st: Dictionary, ctor: String, keys: Array, values: Array, at_node) -> String:
+	var fields: Array = st["fields"]
+	var is_vec: bool = st["lowering"] == "vector"
+	var ctx: String = _no_hoist_ctx()
+	var slot: Dictionary = {}
+	var last: int = -1
+	var in_order: bool = true
+	for i in keys.size():
+		var at: int = fields.find(keys[i])
+		if at < last:
+			in_order = false
+		slot[at] = i
+		last = maxi(last, at)
+	var upto: int = fields.size() - 1 if is_vec else last
+	var read: Dictionary = {}
+	var gaps_run_code: bool = false
+	for fi0 in range(upto + 1):
+		if not slot.has(fi0) and _default_kind(st, fi0) == "instance":
+			return _build_keyed(st, ctor, keys, values, slot, in_order)
+	for fi in range(upto + 1):
+		if slot.has(fi):
+			continue
+		var kind: String = _default_kind(st, fi)
+		if kind == "helper" or kind == "site":
+			gaps_run_code = true
+		for r in _default_refs(st, fi):
+			read[fields.find(r)] = true
+	var texts: PackedStringArray = _ordered(values, func(i: int) -> String:
+		return _expr(values[i]) if is_vec else _copy_value(values[i]))
+	var params: PackedStringArray = PackedStringArray()
+	var args: PackedStringArray = PackedStringArray()
+	var comps: Dictionary = {}
+	var cprec: Dictionary = {}
+	for i in keys.size():
+		var fi: int = fields.find(keys[i])
+		cprec[keys[i]] = _prec_of(values[i])
+		if (ctx != "const" and not _stable(values[i], texts[i])
+				and (not in_order or read.has(fi) or gaps_run_code)):
+			if ctx == "":
+				var t: String = _new_tmp()
+				_hoist("var %s = %s" % [t, texts[i]])
+				texts[i] = t
+			else:
+				params.append("__a%d" % params.size())
+				args.append(texts[i])
+				texts[i] = params[params.size() - 1]
+			cprec[keys[i]] = PREC_ATOM
+		comps[keys[i]] = texts[i]
+	var parts: PackedStringArray = PackedStringArray()
+	for fi in range(upto + 1):
+		var fname: String = fields[fi]
+		if not comps.has(fname):
+			var dt: String = _render_default(st, fi, comps, ctor, at_node, cprec)
+			var kind: String = _default_kind(st, fi)
+			cprec[fname] = (_prec_of((st["defaults"] as Array)[fi]) if kind == "inline" or kind == "site"
+				else PREC_ATOM)
+			var pure: bool = kind == "inline" or (kind == "none"
+				and _struct_of(String(st["types"][fi])).is_empty())
+			if read.has(fi) and not pure and ctx != "const":
+				if ctx == "":
+					var t2: String = _new_tmp()
+					_hoist("var %s = %s" % [t2, dt])
+					dt = t2
+					cprec[fname] = PREC_ATOM
+				else:
+					var l: int = at_node.line if at_node != null else 0
+					var c: int = at_node.col if at_node != null else 0
+					diagnostics.error("building this '%s' needs a temporary, and %s has nowhere to put one"
+							% [st["name"], "a field initialiser" if ctx == "field" else "this place"], l, c,
+						"the default of a later field reads '%s', whose default is not a constant. " % fname
+						+ "Build the value inside a function, or pass '%s'." % fname)
+			comps[fname] = dt
+		parts.append(comps[fname])
+	var built: String = ("%s(%s)" % [st["vector"], ", ".join(_vec_args(st, parts))] if is_vec
+		else "%s.new(%s)" % [ctor, ", ".join(parts)])
+	if params.is_empty():
+		return built
+	return "(func(%s): return %s).call(%s)" % [", ".join(params), built, ", ".join(args)]
+
+
+func _has_instance_default(st: Dictionary) -> bool:
+	for i in (st["fields"] as Array).size():
+		if _default_kind(st, i) == "instance":
+			return true
+	return false
+
+
+func _keyed_builder(st: Dictionary) -> String:
+	var n: String = "_gate_keyed"
+	while (st["fields"] as Array).has(n) or (st.get("methods", {}) as Dictionary).has(n) \
+			or (st.get("consts", {}) as Dictionary).has(n):
+		n = "_" + n
+	return n
+
+
+func _build_keyed(st: Dictionary, ctor: String, keys: Array, values: Array,
+		slot: Dictionary, in_order: bool) -> String:
+	var fields: Array = st["fields"]
+	var ctx: String = _no_hoist_ctx()
+	var texts: PackedStringArray = _ordered(values, func(i: int) -> String: return _copy_value(values[i]))
+	var params: PackedStringArray = PackedStringArray()
+	var args: PackedStringArray = PackedStringArray()
+	for i in keys.size():
+		if in_order or ctx == "const" or _stable(values[i], texts[i]):
+			continue
+		if ctx == "":
+			var t: String = _new_tmp()
+			_hoist("var %s = %s" % [t, texts[i]])
+			texts[i] = t
+		else:
+			params.append("__a%d" % params.size())
+			args.append(texts[i])
+			texts[i] = params[params.size() - 1]
+	var given: int = 0
+	var parts: PackedStringArray = PackedStringArray()
+	for fi in fields.size():
+		if slot.has(fi):
+			given |= 1 << fi
+			parts.append(texts[int(slot[fi])])
+		else:
+			parts.append(_placeholder_for((st["typerefs"] as Array)[fi]))
+	var built: String = "%s.%s(%d, %s)" % [ctor, _keyed_builder(st), given, ", ".join(parts)]
+	if params.is_empty():
+		return built
+	return "(func(%s): return %s).call(%s)" % [", ".join(params), built, ", ".join(args)]
+
+
+func _placeholder_for(tr) -> String:
+	if tr == null or (tr as GateAST.TypeRef).nullable or (tr as GateAST.TypeRef).is_union():
+		return "null"
+	var t: GateAST.TypeRef = tr
+	var fst: Dictionary = _struct_of(t.name) if t.array_depth == 0 and not t.is_dict() else {}
+	if not fst.is_empty():
+		return "null" if fst["lowering"] != "vector" else "%s()" % fst["vector"]
+	return _default_for(t, false)
+
+
+func _lower_construct(construct: String, cast: String, keys: Array, values: Array,
+		temp_type: String = "") -> String:
+	if _no_hoist_ctx() != "":
+		_init_helper_scopes[_scope_class] = true
+		var parts: PackedStringArray = PackedStringArray()
+		for i in keys.size():
+			parts.append("\"%s\": %s" % [keys[i], _copy_value(values[i])])
+		return "(__gate_init(%s, {%s}) as %s)" % [construct, ", ".join(parts), cast]
+	var t: String = _new_tmp()
+	if temp_type == "":
+		_hoist("var %s := %s" % [t, construct])
+	else:
+		_hoist("var %s: %s = %s" % [t, temp_type, construct])
+	for i in keys.size():
+		_hoist("%s.%s = %s" % [t, keys[i], _copy_value(values[i])])
+	return t
+
+
+func _instantiate_form(c: GateAST.Call) -> Dictionary:
+	if not (c.callee is GateAST.Member) or c.args.size() != 1 or not (c.args[0] is GateAST.DictLit):
+		return {}
+	var cm: GateAST.Member = c.callee
+	if cm.safe or cm.name != "instantiate":
+		return {}
+	var dl: GateAST.DictLit = c.args[0]
+	for i in dl.keys.size():
+		if not (dl.keys[i] is GateAST.Ident) or i >= dl.values.size() or dl.values[i] == null:
+			return {}
+	if GateTypes.canonical(_declared_type_of(cm.target)) != "PackedScene":
+		return {}
+	return {"recv": cm.target, "dict": dl}
+
+
+func _emit_instantiate_init(form: Dictionary) -> String:
+	var dl: GateAST.DictLit = form["dict"]
+	var keys: Array = []
+	var values: Array = []
+	var ok: bool = _init_keys_distinct(dl)
+	var root: String = _declared_scene_root(form["recv"])
+	for i in dl.keys.size():
+		var kid: GateAST.Ident = dl.keys[i]
+		if i < dl.lua_keys.size() and dl.lua_keys[i]:
+			diagnostics.error("initializer keys are written name: value", kid.line, kid.col,
+				"write `{ %s: ... }`." % kid.name)
+			ok = false
+			continue
+		if root != "" and _class_has_property(_scope_class, root, kid.name) == 0:
+			diagnostics.error("'%s' has no property '%s'" % [root, kid.name], kid.line, kid.col,
+				"the scene is declared PackedScene<%s>, so its root is a %s." % [root, root])
+			ok = false
+			continue
+		keys.append(kid.name if root == "" else _member_name(root, kid.name))
+		values.append(dl.values[i])
+	if not ok:
+		return "null"
+	var construct: String = "%s.instantiate()" % _postfix_base(form["recv"])
+	var root_text: String = _type_text_of_key(root)
+	if root_text == "":
+		root_text = "Node"
+	return _lower_construct(construct, root_text, keys, values, root_text)
+
+
+func _declared_scene_root(e) -> String:
+	if e is GateAST.Expr and (e as GateAST.Expr).flow_type != null:
+		return _name_key(_scope_class, _scene_root_name((e as GateAST.Expr).flow_type))
+	var info: Dictionary = {}
+	if e is GateAST.Ident:
+		var n: String = (e as GateAST.Ident).name
+		info = (_fn_locals[n] as Dictionary) if _fn_locals.has(n) else _field_info(_scope_class, n)
+	elif e is GateAST.Member and not (e as GateAST.Member).safe:
+		var m: GateAST.Member = e
+		var owner: String = _scope_class if m.target is GateAST.SelfExpr else _declared_type_of(m.target)
+		if owner != "":
+			info = _field_info(owner, m.name)
+	return String(info.get("g", ""))
+
+
+func _warn_init_traps(c: GateAST.Call) -> void:
+	if c.args.size() != 1 or not (c.args[0] is GateAST.DictLit) or not (c.callee is GateAST.Member):
+		return
+	var cm: GateAST.Member = c.callee
+	if cm.safe:
+		return
+	var dl: GateAST.DictLit = c.args[0]
+	if cm.name == "new":
+		var cls: String = _class_ref_text(cm.target)
+		if (cls == "" or dl.keys.is_empty() or (cm.target is GateAST.Ident and _fn_locals.has(cls))
+				or _ctor_takes_params(_scope_class, cls) != 1):
+			return
+		for j in dl.keys.size():
+			var bk = dl.keys[j]
+			if not (bk is GateAST.Ident) or (j < dl.lua_keys.size() and dl.lua_keys[j]):
+				continue
+			var bn: String = (bk as GateAST.Ident).name
+			var prop: int = _class_has_property(_scope_class, cls, bn)
+			if prop == -1 or _name_in_scope(bn):
+				continue
+			diagnostics.error("'%s' names nothing here, so `{ %s: ... }` is not a dictionary GDScript can "
+					% [bn, bn] + "pass to %s._init" % cls, bk.line, bk.col,
+				("%s._init takes a parameter, so the dictionary is its argument, as in GDScript, "
+					% cls + "and a bare key is a variable. Write `{ \"%s\": ... }` to pass that key"
+					% bn)
+				+ ((", or drop _init's parameter (or assign `%s` after `%s.new()`) to set the property."
+					% [bn, cls]) if prop == 1 else "."))
+			return
+		for i in dl.keys.size():
+			var k = dl.keys[i]
+			if not (k is GateAST.Ident) or (i < dl.lua_keys.size() and dl.lua_keys[i]):
+				return
+			if _class_has_property(_scope_class, cls, (k as GateAST.Ident).name) != 1:
+				return
+		diagnostics.warn(
+			"this passes the dictionary to %s._init; property initialisation needs a "
+				% cls + "constructor with no parameters", c.line, c.col,
+			"the keys name %s's properties, but its _init takes a parameter, so " % cls
+			+ "GDScript hands it the dictionary instead. Drop the parameter to set "
+			+ "the properties, or write the assignments out.")
+	elif cm.name == "instantiate":
+		if cm.target is GateAST.SelfExpr or _declared_funcs.has("instantiate"):
+			return
+		var rt: String = GateTypes.canonical(_static_type_of(cm.target))
+		if rt != "" and rt != "PackedScene":
+			return
+		diagnostics.warn("type the scene PackedScene<T> to initialise its properties",
+			c.line, c.col,
+			"without a static type this stays an ordinary call. If it is a scene, "
+			+ "that passes the dictionary to instantiate(), which expects an edit "
+			+ "state, and fails when it runs.")
 
 
 func _is_namespace_ref(e) -> bool:
 	if not (e is GateAST.Ident):
 		return false
 	var n: String = (e as GateAST.Ident).name
-	return not _var_types.has(n)
+	return not _var_types.has(n) and not _fn_locals.has(n) and not _declares_value(_scope_class, n)
 
 
 func _emit_soa_call(sname: String, cm: GateAST.Member, c: GateAST.Call) -> String:
@@ -967,7 +2644,7 @@ func _emit_soa_call(sname: String, cm: GateAST.Member, c: GateAST.Call) -> Strin
 			if c.args.is_empty():
 				diagnostics.error("append() needs a value", c.line, c.col)
 				return "null"
-			var v: String = _expr(c.args[0])
+			var v: String = _copy_value(c.args[0])
 			var tv: String = _new_tmp()
 			_hoist("var %s = %s" % [tv, v])
 			for i in arrays.size():
@@ -1039,10 +2716,96 @@ func _discards_safe_call(l: GateAST.Lambda) -> bool:
 	return c.callee is GateAST.Member and (c.callee as GateAST.Member).safe
 
 
+func _capture_copies(l: GateAST.Lambda) -> Dictionary:
+	var out: Dictionary = {}
+	if _fn_locals.is_empty() or _no_hoist_ctx() != "":
+		return out
+	var read: Dictionary = {}
+	GateChecker.idents_in(l.body, read)
+	var inner: Dictionary = GateChecker.local_names(l.params, l.body)
+	for n in read:
+		if inner.has(n) or not _fn_locals.has(n) or _ident_renames.has(n) or _soa_cursors.has(n):
+			continue
+		if _tmp_names.has(n) or (String(n).begins_with("__g") and String(n).substr(3, 1).is_valid_int()):
+			continue   # GATE's own copy, made for this capture
+		var id: GateAST.Ident = GateAST.Ident.new()
+		id.at(l.line, l.col)
+		id.name = String(n)
+		var saved_p: PackedStringArray = _pending
+		_pending = PackedStringArray()
+		var ctext: String = _copy_value(id)
+		var extra: PackedStringArray = _pending
+		_pending = saved_p
+		if ctext == String(n) and extra.is_empty():
+			continue
+		for h in extra:
+			_hoist(h)
+		var t: String = _new_tmp()
+		_hoist("var %s = %s" % [t, ctext])
+		out[String(n)] = t
+	return out
+
+
 func _emit_lambda(l: GateAST.Lambda) -> String:
+	if not _soa_cursors.is_empty():
+		var read: Dictionary = {}
+		GateChecker.idents_in(l.body, read)
+		for cn in read:
+			if _soa_cursors.has(cn):
+				diagnostics.error("'%s' is a value read from the @soa array '%s' and cannot be captured"
+						% [cn, _soa_cursors[cn]["soa"]], l.line, l.col,
+					"the lambda would read the columns when it runs, not the value it saw. Read "
+					+ "the field into a local first, or keep the index and read `%s[i].field`."
+						% _soa_cursors[cn]["soa"])
+				return "null"
+	var captures: Dictionary = _capture_copies(l)
+	var saved_locals: Dictionary = _fn_locals.duplicate()
+	var saved_types: Dictionary = _var_types.duplicate()
+	var saved_depths: Dictionary = _var_depths.duplicate()
+	var saved_dicts: Dictionary = _var_dict_values.duplicate()
+	var saved_in_body: bool = _in_func_body
+	var saved_no_hoist: String = _no_hoist
+	var saved_renames: Dictionary = _ident_renames
+	if not captures.is_empty():
+		_ident_renames = _ident_renames.duplicate()
+		_ident_renames.merge(captures, true)
+	_in_func_body = true
+	_no_hoist = ""
+	for p in l.params:
+		var pp: GateAST.Param = p
+		if _ident_renames.has(pp.name):
+			_ident_renames = _ident_renames.duplicate()
+			_ident_renames.erase(pp.name)
+		_fn_locals[pp.name] = _decl_info(_scope_class, pp.type)
+		_shadow_name(pp.name)
+		if pp.type != null:
+			_var_types[pp.name] = pp.type.name
+			_var_depths[pp.name] = pp.type.array_depth
+	var saved_helper: bool = _in_gate_helper
+	_in_gate_helper = saved_helper or _gate_lambda(l)
+	var outer_pending: PackedStringArray = _pending   # the captures' copies: made with the lambda, outside it
+	_pending = PackedStringArray()
+	var out: String = _emit_lambda_inner(l, _coll_depth)
+	_pending = outer_pending + _pending
+	_in_gate_helper = saved_helper
+	_ident_renames = saved_renames
+	_in_func_body = saved_in_body
+	_no_hoist = saved_no_hoist
+	_fn_locals = saved_locals
+	_var_types = saved_types
+	_var_depths = saved_depths
+	_var_dict_values = saved_dicts
+	return out
+
+
+func _emit_lambda_inner(l: GateAST.Lambda, outer: int) -> String:
 	var head: String = "func%s(%s)" % [(" " + l.name) if l.name != "" else "", _params(l.params)]
 	if l.return_type != null:
 		head += " -> " + _map_type(l.return_type)
+	var entry: PackedStringArray = PackedStringArray()
+	for p in l.params:
+		if _would_copy(p) and not _copies_first(l.body, (p as GateAST.Param).name):
+			entry.append(_entry_copy(p))
 	if l.body.size() == 1 and l.body[0] is GateAST.ReturnStmt:
 		var r: GateAST.ReturnStmt = l.body[0]
 		if r.value == null:
@@ -1050,7 +2813,7 @@ func _emit_lambda(l: GateAST.Lambda) -> String:
 		var saved_pending: PackedStringArray = _pending
 		_pending = PackedStringArray()
 		var rv: String = _copy_value(r.value)
-		var hoisted: PackedStringArray = _pending
+		var hoisted: PackedStringArray = entry + _pending
 		_pending = saved_pending
 		if hoisted.is_empty():
 			return "%s: return %s" % [head, rv]
@@ -1060,7 +2823,7 @@ func _emit_lambda(l: GateAST.Lambda) -> String:
 		var saved_pending2: PackedStringArray = _pending
 		_pending = PackedStringArray()
 		var ex: String = _expr((l.body[0] as GateAST.ExprStmt).expr)
-		var hoisted2: PackedStringArray = _pending
+		var hoisted2: PackedStringArray = entry + _pending
 		_pending = saved_pending2
 		var last: String = ex
 		if l.return_type != null and l.return_type.name != "void":
@@ -1073,7 +2836,9 @@ func _emit_lambda(l: GateAST.Lambda) -> String:
 	var saved_indent: int = _indent
 	_out = []
 	_map = []
-	_indent = saved_indent + _coll_depth + 1
+	_indent = saved_indent + outer + 1
+	for ec2 in entry:
+		_line(ec2, l.line)
 	for s in l.body:
 		_emit_statement(s)
 	var body_lines: PackedStringArray = _out

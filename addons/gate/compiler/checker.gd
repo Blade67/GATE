@@ -43,6 +43,8 @@ func check(mod: GateAST.Module, diags: GateDiagnostics, registry = null) -> void
 			if not classes.has(k): classes[k] = registry.classes[k]
 	for m in mod.members:
 		_process(m)
+	_verify_overrides_in(mod.members, mod.extends_type, [])
+	_check_struct_consts(mod.members)
 	_process_overloads(mod.members)
 	_link_inherited_overloads(mod.members, mod.extends_type)
 	_check_generated_names(mod.members, false, mod.extends_type)
@@ -1680,9 +1682,7 @@ func _check_soa_names(vd: GateAST.VarDecl, taken: Dictionary) -> void:
 	if vd.type == null or not structs.has(vd.type.name):
 		return
 	var sd: GateAST.ClassDecl = structs[vd.type.name]
-	for f in sd.members:
-		if not (f is GateAST.VarDecl):
-			continue
+	for f in struct_fields(sd):
 		var generated: String = "%s_%s" % [vd.name, (f as GateAST.VarDecl).name]
 		if taken.has(generated):
 			diagnostics.error("@soa on '%s' needs the name '%s', which is already %s"
@@ -1870,61 +1870,146 @@ func _params_sig(params: Array) -> String:
 	return ", ".join(parts)
 
 
-func _verify_overrides(cd: GateAST.ClassDecl) -> void:
+static func _note_declared(members: Array, owner: String, names: Dictionary) -> void:
+	var here: Dictionary = declared_members(members)
+	for n in here:
+		if not names.has(n):
+			names[n] = "%s in '%s'" % [here[n], owner]
+	var renamed: Dictionary = priv_renames(members)
+	for pn in renamed:
+		if not names.has(pn):
+			names[pn] = "the emitted name of priv '%s' in '%s'" % [renamed[pn], owner]
+
+
+static func struct_fields(cd: GateAST.ClassDecl) -> Array:
+	var out: Array = []
 	for m in cd.members:
-		if not (m is GateAST.FuncDecl):
+		if m is GateAST.VarDecl and not (m as GateAST.VarDecl).is_const \
+				and not (m as GateAST.VarDecl).is_static:
+			out.append(m)
+	return out
+
+
+static func struct_needs_class(cd: GateAST.ClassDecl) -> bool:
+	for m in cd.members:
+		if m is GateAST.FuncDecl:
+			return true
+		if m is GateAST.VarDecl and ((m as GateAST.VarDecl).is_const or (m as GateAST.VarDecl).is_static):
+			return true
+	return false
+
+
+static func scope_names(members: Array, all_static: bool) -> Dictionary:
+	var out: Dictionary = {}
+	for m in members:
+		if m is GateAST.VarDecl:
+			var vd: GateAST.VarDecl = m
+			out[vd.name] = "static" if (all_static or vd.is_const or vd.is_static) else "instance"
+		elif m is GateAST.FuncDecl:
+			out[(m as GateAST.FuncDecl).name] = "static" if (all_static
+				or (m as GateAST.FuncDecl).is_static) else "instance"
+		elif m is GateAST.SignalDecl:
+			out[(m as GateAST.SignalDecl).name] = "instance"
+		elif m is GateAST.ClassDecl:
+			out[(m as GateAST.ClassDecl).name] = "static"
+		elif m is GateAST.EnumDecl:
+			var ed: GateAST.EnumDecl = m
+			if ed.name != "":
+				out[ed.name] = "static"
+			else:
+				for k in ed.keys:
+					out[String(k)] = "static"
+	return out
+
+
+static func idents_in(e, out: Dictionary, skip_lambdas: bool = false) -> void:
+	if e == null:
+		return
+	if e is Array:
+		for x in e:
+			idents_in(x, out, skip_lambdas)
+		return
+	if not (e is Object) or (e as Object).get_script() == null:
+		return
+	if e is GateAST.Ident:
+		out[(e as GateAST.Ident).name] = true
+		return
+	if e is GateAST.Lambda and skip_lambdas:
+		return
+	if e is GateAST.TypeRef:
+		return
+	for prop in (e as Object).get_property_list():
+		var pn: String = prop["name"]
+		if pn in ["script", "Built-in script", "RefCounted", "Object"]:
 			continue
-		var fd: GateAST.FuncDecl = m
-		if not fd.is_override:
-			continue
-		if fd.name.begins_with(ENGINE_PREFIX):
-			continue
-		var found: bool = false
-		if cd.extends_type != null and classes.has(cd.extends_type.name):
-			var parent: GateAST.ClassDecl = classes[cd.extends_type.name]
-			for pm in parent.members:
-				if pm is GateAST.FuncDecl and (pm as GateAST.FuncDecl).name == fd.name:
-					found = true
-					if (pm as GateAST.FuncDecl).is_final:
-						diagnostics.error(
-							"cannot override '%s': it is declared final in '%s'" % [fd.name, parent.name],
-							fd.line, fd.col)
-					break
-		elif cd.extends_type != null:
-			found = true
-		if not found and cd.extends_type != null:
-			diagnostics.error(
-				"'%s' is marked override but '%s' declares no such method" % [fd.name, cd.extends_type.name],
-				fd.line, fd.col,
-				"check the spelling, or remove `override`")
+		var v = (e as Object).get(pn)
+		if v is Array or (v is Object and v != null and (v as Object).get_script() != null):
+			idents_in(v, out, skip_lambdas)
 
 
 func _check_struct(cd: GateAST.ClassDecl) -> void:
 	var field_types: Array = []
-	var fields: Array = []
-	for m in cd.members:
-		if m is GateAST.VarDecl:
-			var vd: GateAST.VarDecl = m
-			fields.append(vd)
-			if vd.type != null:
-				field_types.append(vd.type.name)
-			else:
-				field_types.append("Variant")
-		elif m is GateAST.FuncDecl:
-			pass
-		elif m is GateAST.CommentStmt:
-			pass
+	var fields: Array = struct_fields(cd)
+	for f in fields:
+		var vd: GateAST.VarDecl = f
+		field_types.append(GateTypes.struct_field_kind(vd.type))
 
 	if fields.is_empty():
 		diagnostics.error("struct '%s' has no fields" % cd.name, cd.line, cd.col)
 		cd.lowering = "class"
 		return
 
-	var has_methods: bool = false
-	for m2 in cd.members:
-		if m2 is GateAST.FuncDecl:
-			has_methods = true
+	for i in fields.size():
+		var fv: GateAST.VarDecl = fields[i]
+		if fv.value == null:
+			continue
+		var read: Dictionary = {}
+		idents_in(fv.value, read, true)
+		for j in range(i, fields.size()):
+			var later: String = (fields[j] as GateAST.VarDecl).name
+			if not read.has(later):
+				continue
+			diagnostics.error("the default of '%s' reads '%s', %s" % [fv.name, later,
+					"its own field" if j == i else "which is declared after it"],
+				fv.line, fv.col,
+				"a default is filled in when the field is omitted, and may read only the "
+				+ "fields declared before it")
 			break
+
+	for f3 in fields:
+		var av: GateAST.VarDecl = f3
+		if av.setter != "" or av.getter != "" or av.inline_accessors != "":
+			diagnostics.error("struct field '%s' has an accessor; use a method instead" % av.name,
+				av.line, av.col,
+				"a struct's fields are copied, built and scalar-replaced as plain values, so a "
+				+ "getter or setter would run at times you did not write, or not at all. Write a "
+				+ "method such as `set_%s(v)`." % av.name)
+	for rm in cd.members:
+		var rname: String = String(rm.name) if ("name" in rm) else ""
+		if not (rname in ["_gate_copy", "_gate_eq"]):
+			continue
+		if rm is GateAST.FuncDecl or rm is GateAST.VarDecl:
+			diagnostics.error("struct '%s' declares '%s', which GATE writes for every struct"
+					% [cd.name, rname], rm.line, rm.col,
+				"a copy and an equality are called on values whose type is not known, so the "
+				+ "names cannot move. Rename this member; `_gate_deep`, `_gate_value`, "
+				+ "`_gate_index` and `_gate_eqv` are renamed around instead.")
+	for m in cd.members:
+		if m is GateAST.FuncDecl and (m as GateAST.FuncDecl).name == "_init":
+			diagnostics.error("struct '%s' declares _init, but a struct's constructor is built from its fields"
+					% cd.name, (m as GateAST.FuncDecl).line, (m as GateAST.FuncDecl).col,
+				"`%s(...)` takes one value per field and fills the rest from their defaults. " % cd.name
+				+ "Give the fields defaults instead, or declare a `class` to write your own _init.")
+	for f2 in fields:
+		var through: String = _struct_cycle(cd.name, f2, {})
+		if through != "":
+			diagnostics.error("struct '%s' contains itself through '%s', so it can never be built"
+					% [cd.name, through], (f2 as GateAST.VarDecl).line, (f2 as GateAST.VarDecl).col,
+				"a struct holds its fields by value. Make the field nullable (`%s? %s`) or an array."
+					% [(f2 as GateAST.VarDecl).type.name, (f2 as GateAST.VarDecl).name])
+			break
+
+	var has_methods: bool = struct_needs_class(cd)
 
 	var low: Dictionary = GateTypes.struct_lowering(field_types)
 	if low["kind"] == "vector" and not has_methods:
@@ -1937,7 +2022,10 @@ func _check_struct(cd: GateAST.ClassDecl) -> void:
 		cd.lowering = "class"
 		var why: String = "it has %d fields" % fields.size()
 		if has_methods:
-			why = "it declares methods"
+			why = "it declares constants or statics"
+			for m in cd.members:
+				if m is GateAST.FuncDecl:
+					why = "it declares methods"
 		elif fields.size() >= 2 and fields.size() <= 4:
 			why = "its fields are not all the same numeric type"
 		diagnostics.info(
@@ -1946,6 +2034,63 @@ func _check_struct(cd: GateAST.ClassDecl) -> void:
 			cd.line, cd.col,
 			"structs of 2-4 same-typed int/float fields lower to Vector2/3/4 and copy for free. "
 			+ "This one allocates on each copy - use `class` if you want reference semantics.")
+
+
+func _struct_cycle(target: String, f, seen: Dictionary) -> String:
+	var vd: GateAST.VarDecl = f
+	var t: GateAST.TypeRef = vd.type
+	if t == null or t.nullable or t.array_depth != 0 or t.is_dict() or t.is_union() or t.is_tuple():
+		return ""
+	var n: String = t.name.get_slice(".", t.name.get_slice_count(".") - 1)
+	if n == target:
+		return vd.name
+	if seen.has(n) or not structs.has(n):
+		return ""
+	seen[n] = true
+	for inner in struct_fields(structs[n]):
+		var rest: String = _struct_cycle(target, inner, seen)
+		if rest != "":
+			return "%s.%s" % [vd.name, rest]
+	return ""
+
+
+func _check_struct_consts(nodes: Array) -> void:
+	for n in nodes:
+		if n is GateAST.ClassDecl:
+			_check_struct_consts((n as GateAST.ClassDecl).members)
+		elif n is GateAST.FuncDecl:
+			_check_struct_consts((n as GateAST.FuncDecl).body)
+		elif n is GateAST.VarDecl and (n as GateAST.VarDecl).is_const:
+			var vd: GateAST.VarDecl = n
+			var sn: String = _const_struct_named(vd)
+			if sn != "" and struct_decl(sn) != null and struct_decl(sn).lowering == "class":
+				diagnostics.error("'%s' holds a struct lowered to a class, which cannot be a const"
+						% vd.name, vd.line, vd.col,
+					"GDScript constants cannot hold objects. Use `static var %s`, or a struct " % vd.name
+					+ "of 2-4 same-typed numbers, which lowers to a Vector and can be a const.")
+		elif n is GateAST.Stmt:
+			for sub in _blocks_of(n):
+				_check_struct_consts(sub)
+
+
+static func _blocks_of(s) -> Array:
+	if s is GateAST.IfStmt:
+		var out: Array = [(s as GateAST.IfStmt).then_body, (s as GateAST.IfStmt).else_body]
+		for pair in (s as GateAST.IfStmt).elifs:
+			out.append(pair[1])
+		return out
+	if s is GateAST.ForStmt:
+		return [(s as GateAST.ForStmt).body]
+	if s is GateAST.WhileStmt:
+		return [(s as GateAST.WhileStmt).body]
+	if s is GateAST.MatchStmt:
+		var arms: Array = []
+		for br in (s as GateAST.MatchStmt).branches:
+			arms.append(br[2])
+		return arms
+	if s is GateAST.AnnotatedStmt and (s as GateAST.AnnotatedStmt).stmt != null:
+		return [[(s as GateAST.AnnotatedStmt).stmt]]
+	return []
 
 
 func _check_namespace(cd: GateAST.ClassDecl) -> void:

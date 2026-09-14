@@ -269,10 +269,33 @@ var b = a                # a copy, not an alias
 A struct of two to four same-typed `int` or `float` fields lowers to `Vector2/3/4` and
 copies for free. Anything else - more fields, mixed types, a method - lowers to a generated
 class, and GATE inserts a copy wherever the value is bound to a new location: assignment,
-argument passing, `return`, and stores into an array or dictionary.
+`return`, loop variables, and stores into an array or dictionary. A struct parameter copies
+on entry, so a function reached through a signal, `map` or `bind` gets its own copy too, and
+a lambda copies the structs it captures when it is created. A struct passed to an engine call,
+such as `emit` or `bind`, is copied where it is passed. In a file that uses class-lowered
+structs, a value whose type GATE cannot see is copied at run time if it turns out to be one.
+A copy owns its own arrays, dictionaries and nested structs.
 
-A struct is constructed by calling its name. Fields with an initialiser may be omitted.
-Structs take methods and operator overloads.
+`==` and `!=` compare fields. An `operator ==` of your own replaces that, and `!=` then
+negates it unless you define it too. A struct may be given wherever its Vector is expected,
+which is how engine APIs take one; a Vector may not be assigned into a struct, since it says
+nothing about which struct it is. A struct that lowers to a class cannot be a dictionary
+key: a dictionary finds an object key by identity, so an equal copy would miss it. Key by a
+field, or use a struct that lowers to a Vector. A struct field cannot have a getter or a
+setter; use a method.
+
+A struct is constructed by calling its name, positionally or with `{ field: value }`.
+Positionally, the trailing fields may be left out where each has a default, or is an object
+field declared `T?`, whose default is null. The keyed form also takes any field of a value
+type. `S()` with no arguments at all builds every field from its default, and a field
+without one from its type's own default. A default runs once, and may read the fields
+before it. An object-typed field with no default must be given, or declared `T?`. Structs
+take methods, operator overloads and constants.
+
+A field of a Vector-lowered struct is read through the Vector's own component, so GATE has
+to know what a container holds: a declared `S[]`, a parameter, a loop variable, or a literal
+that builds one struct is enough. Through an untyped container built later, `arr[0].c` is
+left as written and fails at run time.
 
 ```gdscript
 struct Vec3f:
@@ -294,8 +317,13 @@ struct Vec3f:
 ```
 
 `append`, `size`, `is_empty`, `clear`, `swarm[i].field` and `for p in swarm` are rewritten
-to operate on the parallel arrays. Inside the loop `p` is a value, not a reference, and
-storing it beyond the iteration is a compile error.
+to operate on the parallel arrays. Inside the loop `p` is a value, not a reference: writing
+`p.x`, capturing `p` in a lambda or storing it beyond the iteration is a compile error,
+because none of them would reach the arrays. Write `swarm[i].x` instead.
+
+An `@soa` array cannot be reached through an instance either. `other.swarm` is not one value,
+so it is a compile error: give the class a method that answers what the caller needs, or drop
+the `@soa`.
 
 ## Interfaces, traits and namespaces
 
@@ -431,11 +459,13 @@ arguments are a compile error.
 
 | annotation | effect |
 |---|---|
-| `@observable` | emits `on_<name>_changed(value)` and a getter/setter pair that fires it |
+| `@observable` | emits `on_<name>_changed(value)` and a getter/setter pair that fires it, also when part of a struct it holds changes |
 | `@soa` | stores an array of structs as one array per field |
 | `@packed` | asks for the `Packed*` lowering where it is not automatic |
 
-GDScript's own annotations pass through unchanged.
+GDScript's own annotations pass through unchanged. `@export` on a struct that lowers to a
+class is a compile error: that class is a `RefCounted`, and Godot exports only Resources and
+Nodes. A Vector-lowered struct exports as its Vector.
 
 ## Complete example
 

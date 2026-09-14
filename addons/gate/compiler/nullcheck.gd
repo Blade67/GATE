@@ -2918,6 +2918,115 @@ func _candidates(c: GateAST.Call, narrowed: bool = false) -> Array:
 	return []
 
 
+func _check_store_call(c: GateAST.Call) -> void:
+	var fd: GateAST.FuncDecl = null
+	if c.callee is GateAST.Member:
+		var m: GateAST.Member = c.callee
+		if m.safe or not (m.target is GateAST.Ident):
+			return
+		var n: String = (m.target as GateAST.Ident).name
+		if n == "super":
+			fd = _pick_arity(infer.method_candidates(String(infer.bases.get(_cls, "")), m.name),
+				c.args.size())
+		elif _local_names.has(n) or _field_names.has(n) or not infer.has_class(n):
+			return
+		elif m.name != "new":
+			fd = _pick_arity(infer.method_candidates(n, m.name), c.args.size())
+		else:
+			fd = _pick_arity(infer.method_candidates(n, "_init"), c.args.size())
+			if fd == null:
+				_check_field_init(c, n, infer.struct_names.get(n, null))
+				return
+	elif c.callee is GateAST.Ident:
+		var sn: String = (c.callee as GateAST.Ident).name
+		var sd = infer.struct_names.get(sn, null)
+		if sd == null or _local_names.has(sn):
+			return
+		if not _check_field_init(c, sn, sd):
+			_check_struct_args(c, sd)
+		return
+	if fd == null:
+		return
+	for i in mini(c.args.size(), fd.params.size()):
+		var param: GateAST.Param = fd.params[i]
+		if param.type != null and GateChecker.is_gate_only_type(param.type):
+			c.args[i] = _check_gate_value(param.type, c.args[i],
+				"'%s' parameter '%s'" % [fd.name, param.name], c.line, c.col)
+
+
+func _check_struct_args(c: GateAST.Call, sd: GateAST.ClassDecl) -> void:
+	var at: int = 0
+	for f in sd.members:
+		if not (f is GateAST.VarDecl) or (f as GateAST.VarDecl).is_const or (f as GateAST.VarDecl).is_static:
+			continue
+		var vd: GateAST.VarDecl = f
+		var what: String = "'%s.%s'" % [sd.name, vd.name]
+		if at >= c.args.size():
+			_require_default(vd, what, c.line, c.col)
+		elif vd.type != null and GateChecker.is_gate_only_type(vd.type):
+			c.args[at] = _check_gate_value(vd.type, c.args[at], what, c.line, c.col)
+		elif vd.type != null and vd.type.strict:
+			_check_plain_value(vd.type, c.args[at], what, c.line, c.col)
+		at += 1
+
+
+## A field left out takes its default; with none written, an object's is null.
+func _require_struct_default(vd: GateAST.VarDecl) -> void:
+	if vd.type == null or vd.type.nullable or vd.type.array_depth != 0:
+		return
+	var n: String = GateTypes.canonical(vd.type.name)
+	if infer.struct_names.has(n.get_slice(".", n.get_slice_count(".") - 1)):
+		_require_default(vd, "'%s'" % vd.name, vd.line, vd.col)
+
+
+func _require_default(vd: GateAST.VarDecl, what: String, line: int, col: int, depth: int = 0) -> void:
+	if vd.value != null or vd.type == null or vd.type.nullable or not vd.type.strict:
+		return
+	var t: GateAST.TypeRef = vd.type
+	if t.array_depth != 0 or t.is_dict() or t.is_set() or GateChecker.is_gate_only_type(t):
+		return
+	var n: String = GateTypes.canonical(t.name)
+	var sd = infer.struct_names.get(n.get_slice(".", n.get_slice_count(".") - 1), null)
+	if sd is GateAST.ClassDecl:
+		if depth < 8:
+			for f in GateChecker.struct_fields(sd):
+				_require_default(f, "'%s.%s'" % [(sd as GateAST.ClassDecl).name, (f as GateAST.VarDecl).name],
+					line, col, depth + 1)
+		return
+	if GateTypes.BUILTIN.has(n):
+		return
+	if not (ClassDB.class_exists(n) or infer.has_class(n)):
+		return
+	_err("%s has no default, and a %s is never null" % [what, t.describe()], line, col,
+		"pass a value for it, give the field a default, or declare it `%s?`" % t.describe())
+
+
+func _check_field_init(c: GateAST.Call, cls: String, sd) -> bool:
+	if c.args.size() != 1 or not (c.args[0] is GateAST.DictLit):
+		return false
+	var dl: GateAST.DictLit = c.args[0]
+	var types: Dictionary = {}
+	var holds_dict: bool = false
+	if sd is GateAST.ClassDecl:
+		var first: bool = true
+		for f in (sd as GateAST.ClassDecl).members:
+			if f is GateAST.VarDecl and not (f as GateAST.VarDecl).is_const \
+					and not (f as GateAST.VarDecl).is_static:
+				var vd: GateAST.VarDecl = f
+				if first:
+					holds_dict = vd.type == null or vd.type.is_dict() \
+						or GateTypes.canonical(vd.type.name) in ["Variant", "Dictionary"]
+				first = false
+				types[vd.name] = vd.type
+	for i in dl.keys.size():
+		if not (dl.keys[i] is GateAST.Ident) or i >= dl.values.size() or dl.values[i] == null \
+				or (i < dl.lua_keys.size() and dl.lua_keys[i]):
+			return false
+		if holds_dict and not types.has((dl.keys[i] as GateAST.Ident).name):
+			return false
+	return not (holds_dict and dl.keys.is_empty())
+
+
 func _accepts(fd: GateAST.FuncDecl, given: int) -> bool:
 	var required: int = 0
 	var has_rest: bool = false
@@ -2935,6 +3044,13 @@ func _check_call_site(c: GateAST.Call) -> void:
 		cands = _candidates(c, true)
 		via_narrowing = true
 	if cands.is_empty():
+		if _gate_types:
+			_check_store_call(c)
+		elif c.callee is GateAST.Ident:
+			var sn: String = (c.callee as GateAST.Ident).name
+			var sd = infer.struct_names.get(sn, null)
+			if sd is GateAST.ClassDecl and not _local_names.has(sn) and not _check_field_init(c, sn, sd):
+				_check_struct_args(c, sd)
 		return
 	var given: int = c.args.size()
 	var fd: GateAST.FuncDecl = null

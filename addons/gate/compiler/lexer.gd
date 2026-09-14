@@ -98,7 +98,7 @@ func _push(t: int, v: String, line: int = -1, col: int = -1) -> Token:
 	return tok
 
 
-func tokenize(src: String, diags: GateDiagnostics) -> Array[Token]:
+func tokenize(src: String, diags: GateDiagnostics, first_line: int = 1) -> Array[Token]:
 	diagnostics = diags
 	tokens = []
 	if src.length() > 0 and src.unicode_at(0) == 0xFEFF:
@@ -106,7 +106,7 @@ func tokenize(src: String, diags: GateDiagnostics) -> Array[Token]:
 	_src = src
 	_n = src.length()
 	_i = 0
-	_line = 1
+	_line = first_line
 	_line_start = 0
 	_indents = [0]
 	_depth = 0

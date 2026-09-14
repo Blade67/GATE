@@ -12,6 +12,7 @@ var replaceable: Dictionary = {}
 var _cand: Dictionary = {}
 
 var _shadowed: Dictionary = {}      ## name -> true
+var _declared: Dictionary = {}      ## local name -> how many times the body declares it
 var _owner = null
 
 
@@ -23,7 +24,11 @@ func analyse(body: Array, owner, params: Array = []) -> Dictionary:
 	for prm in params:
 		if "name" in prm:
 			_shadowed[String(prm.name)] = true
+	_declared = {}
 	_collect(body)
+	for n in _declared:
+		if int(_declared[n]) > 1:
+			_cand.erase(n)   # one name, two locals: the replaced fields would be read for both
 	if _cand.is_empty():
 		return replaceable
 	_check(body)
@@ -44,16 +49,33 @@ func _collect_stmt(s) -> void:
 		return
 	if s is GateAST.VarDecl:
 		var vd: GateAST.VarDecl = s
+		_declare(vd.name)
 		var sname: String = _struct_ctor_name(vd.value)
 		if (sname != "" and not vd.is_const and vd.type == null and not vd.inferred
 				and vd.setter == "" and vd.inline_accessors == ""):
-			if _cand.has(vd.name):
-				_cand.erase(vd.name)   # declared twice: not worth reasoning about
-			else:
-				_cand[vd.name] = sname
+			_cand[vd.name] = sname
 		return
+	if s is GateAST.ForStmt:
+		for vn in (s as GateAST.ForStmt).var_names:
+			_declare(String(vn))
+	elif s is GateAST.MultiAssign and (s as GateAST.MultiAssign).destructure:
+		for t in (s as GateAST.MultiAssign).targets:
+			if t is GateAST.Ident:
+				_declare((t as GateAST.Ident).name)
+	elif s is GateAST.MatchStmt:
+		for br in (s as GateAST.MatchStmt).branches:
+			for pat in br[0]:
+				if pat is GateAST.TypePattern:
+					_declare((pat as GateAST.TypePattern).bind_name)
+				elif pat is GateAST.RawExpr:
+					for bn in _owner._pattern_binds((pat as GateAST.RawExpr).text):
+						_declare(String(bn))
 	for sub in _child_blocks(s):
 		_collect(sub)
+
+
+func _declare(n: String) -> void:
+	_declared[n] = int(_declared.get(n, 0)) + 1
 
 
 func _struct_ctor_name(e) -> String:
@@ -67,9 +89,14 @@ func _struct_ctor_name(e) -> String:
 		return ""
 	if _shadowed.has(n):
 		return ""
-	var st: Dictionary = _owner._struct_of(n)
+	var st: Dictionary = _owner._ctor_struct_of(n)
 	if st.is_empty() or st["lowering"] == "vector":
 		return ""
+	if not _owner._init_call_form(c).is_empty():
+		return ""
+	for i in range(c.args.size(), (st["fields"] as Array).size()):
+		if _owner._default_kind(st, i) == "instance":
+			return ""   # only the struct's own _init can compute this default
 	return n
 
 

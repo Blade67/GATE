@@ -262,13 +262,10 @@ func _collect(members: Array, path: String) -> void:
 
 func _compute_struct_lowering(cd: GateAST.ClassDecl) -> void:
 	var field_types: Array = []
-	var has_methods: bool = false
-	for m in cd.members:
-		if m is GateAST.VarDecl:
-			var vd: GateAST.VarDecl = m
-			field_types.append(vd.type.name if vd.type != null else "Variant")
-		elif m is GateAST.FuncDecl:
-			has_methods = true
+	var has_methods: bool = GateChecker.struct_needs_class(cd)
+	for f in GateChecker.struct_fields(cd):
+		var vd: GateAST.VarDecl = f
+		field_types.append(GateTypes.struct_field_kind(vd.type))
 	var low: Dictionary = GateTypes.struct_lowering(field_types)
 	if low["kind"] == "vector" and not has_methods:
 		cd.lowering = "vector"

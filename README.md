@@ -121,8 +121,8 @@ not.
 ### Structs
 
 `struct` has value semantics, `class` has reference semantics. A struct of two to four
-same-typed numbers becomes a `Vector2/3/4` and costs nothing; anything else becomes a class
-and GATE inserts the copies that keep it a value.
+same-typed `int` or `float` fields becomes a `Vector2/3/4` and costs nothing; anything else
+becomes a class and GATE inserts the copies that keep it a value.
 
 ##### Example
 ```gdscript

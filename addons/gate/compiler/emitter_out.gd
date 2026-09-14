@@ -24,6 +24,7 @@ var _coll_depth: int = 0
 
 
 func set_source(src: String) -> void:
+	_src_text = src
 	_blank_before.clear()
 	var lines: PackedStringArray = src.split("\n")
 	for i in range(lines.size()):
@@ -102,10 +103,13 @@ var _var_types: Dictionary = {}
 var _var_depths: Dictionary = {}
 
 var _struct_ops: Dictionary = {}
+var _class_op_fds: Dictionary = {}   ## class name -> {operator symbol: FuncDecl}, for a class's operators
 
 var _soa: Dictionary = {}
 
 var _soa_cursors: Dictionary = {}
+var _soa_fields: Dictionary = {}   ## "class key#field" -> the field is an @soa array
+var _stmt_expr = null   ## the expression being emitted as a whole statement
 
 var _external_structs: Dictionary = {}
 
@@ -153,8 +157,62 @@ var _in_func_body: bool = false
 
 var _scalar_repl: Dictionary = {}
 var _scalar_names: Dictionary = {}
+var _ident_renames: Dictionary = {}     ## a struct default's field name -> the text holding its value
+var _bare_fields: bool = false          ## emitting a struct's fields, which _init fills in
 
 var _preload_targets: Dictionary = {}
+
+var _fn_locals: Dictionary = {}
+var _tmp_names: Dictionary = {}
+var _plain_fields: Dictionary = {}
+
+var _class_decls: Dictionary = {}       ## key -> ClassDecl (null for ".")
+var _class_parent: Dictionary = {}      ## key -> enclosing key
+var _class_base: Dictionary = {}        ## key -> extends TypeRef, or null
+var _class_funcs: Dictionary = {}       ## key -> {name: [FuncDecl]}
+var _class_fields: Dictionary = {}      ## key -> {field: true}, constants excluded
+var _class_field_types: Dictionary = {} ## "key#field" -> TypeRef
+var _class_inits: Dictionary = {}       ## key -> _init parameter count, -1 if none
+var _class_priv: Dictionary = {}        ## key -> {name: true} for `priv` members
+var _observable_fields: Dictionary = {} ## "key#field" -> the @observable field's type name
+var _mutators: Dictionary = {}          ## struct name -> {method: true} for methods that assign a field
+var _scope_class: String = "."
+var _mono_scope: String = ""            ## the generic's key while one of its instantiations emits
+var _self_class_name: String = ""
+
+var _assigned_names = null
+var _cur_fn_body = null
+
+var _swizzle_exempt = null
+
+var _reg_classes: Dictionary = {}
+var _reg_whole = null         ## the registry, for another file's class_name
+var _reg_bases: Dictionary = {}
+var _reg_script_classes: Dictionary = {}
+var _reg_origin: Dictionary = {}
+var _reg_namespaces: Dictionary = {}
+var _reg_module_names: Dictionary = {}
+var _module_members: Array = []
+var _scope_names: Dictionary = {}       ## class key -> GateChecker.scope_names of its body
+var _engine_props: Dictionary = {}
+var _engine_prop_cache: Dictionary = {}
+var _func_reach: Dictionary = {}        ## "scope|name" -> whether a bare call reaches a function
+
+var _init_helper_scopes: Dictionary = {}
+
+var _no_hoist: String = ""
+
+var _in_lvalue: int = 0
+
+var _key_errors: Dictionary = {}   ## "line:col" of a struct-key error already reported
+var _copy_arms_node = null     ## a ternary whose arms are each bound as a copy
+var _in_gate_helper: bool = false   ## inside a generated _gate_ function: it copies for itself
+var _struct_user: bool = false   ## this file declares or names a class-lowered struct
+var _src_text: String = ""
+var _fn_params: Dictionary = {}   ## parameters of the function being emitted
+var _demangled: Dictionary = {}   ## another file's generic instance name -> the use it came from
+var _null_locals: Dictionary = {}   ## untyped locals set from a value that may be null
+var _rename_prec: Dictionary = {}   ## a renamed name -> the precedence of the text it stands for
 
 ## The first line of every generated file. The builder refuses to overwrite a `.gd`
 ## that does not carry it, so keep it first and keep its prefix stable.

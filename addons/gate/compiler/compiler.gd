@@ -53,6 +53,7 @@ func compile(src_in: String, path: String, registry = null) -> Result:
 	checker.check(mod, diags, registry)
 
 	if not diags.has_errors():
+		GateInject.run(mod, diags, checker.super_calls, checker.traits)
 		var nullcheck: GateNullCheck = GateNullCheck.new()
 		nullcheck.check(mod, diags, registry)
 
