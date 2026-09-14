@@ -2999,3 +2999,211 @@ func _check_call_site(c: GateAST.Call) -> void:
 				c.line, c.col,
 				"guard it first, or declare the parameter `%s? %s`"
 					% [param.type.describe(), param.name])
+
+
+var _overloads_seen: Dictionary = {}
+
+
+func _overloaded_names() -> Dictionary:
+	if _overloads_seen.is_empty():
+		_overloads_seen["#built"] = true
+		for key in infer.methods:
+			for f in infer.methods[key]:
+				if (f as GateAST.FuncDecl).mangled_name != "":
+					_overloads_seen[(f as GateAST.FuncDecl).name] = true
+	return _overloads_seen
+
+
+func _note_overload_receiver(c: GateAST.Call) -> void:
+	if _quiet > 0 or not (c.callee is GateAST.Member) or (c.callee as GateAST.Member).safe:
+		return
+	var m: GateAST.Member = c.callee
+	if not (m.target is GateAST.Expr):
+		return
+	var rt: GateAST.TypeRef = _type_of(m.target)
+	if rt == null or rt.array_depth > 0 or rt.is_dict() or rt.is_union() or rt.is_tuple() \
+			or rt.is_func_type or rt.name == "":
+		return
+	if _overloaded_names().has(m.name):
+		(m.target as GateAST.Expr).flow_type = rt
+
+
+func _note_flow_type(e) -> void:
+	if not (e is GateAST.Expr) or _quiet > 0:
+		return
+	var node: GateAST.Expr = e
+	var ft: GateAST.TypeRef = _type_of(e)
+	node.flow_type = ft if _flow_informative(ft) and _flow_worth_noting(e, ft) else null
+	node.narrowed_vector = ""
+	var p: String = _path_of(e)
+	if node.flow_type == null and ft != null and p != "" and _narrowed.has(p) and ft.array_depth == 0 \
+			and not ft.is_union() and not ft.nullable \
+			and GateTypes.canonical(ft.name) in ["Vector2", "Vector2i", "Vector3", "Vector3i", "Vector4", "Vector4i"]:
+		node.narrowed_vector = GateTypes.canonical(ft.name)
+
+
+func _flow_informative(t: GateAST.TypeRef) -> bool:
+	if t == null:
+		return false
+	if t.is_union() or t.is_tuple() or t.is_func_type:
+		return true
+	return t.name != "" and not (GateTypes.canonical(t.name) in ["Variant", "void"])
+
+
+func _flow_worth_noting(e, ft: GateAST.TypeRef) -> bool:
+	var p: String = "" if _narrowed.is_empty() else _path_of(e)
+	if p != "" and _narrowed.has(p):
+		var st: GateAST.TypeRef = _static_type_of(e)
+		if _same_type(ft, st):
+			return false
+		return not (_flow_plain_reachable(ft) and not _flow_gate_shaped(st))
+	if _flow_gate_shaped(ft):
+		return true
+	var src: GateAST.TypeRef = null
+	if e is GateAST.Index:
+		src = _type_of((e as GateAST.Index).target)
+	elif e is GateAST.Member:
+		src = _type_of((e as GateAST.Member).target)
+	elif e is GateAST.Call and (e as GateAST.Call).callee is GateAST.Member:
+		src = _type_of(((e as GateAST.Call).callee as GateAST.Member).target)
+	return _flow_gate_shaped(src)
+
+
+func _flow_gate_shaped(t: GateAST.TypeRef) -> bool:
+	if t == null:
+		return false
+	if GateChecker.is_gate_only_type(t) or t.nullable or _struct_names.has(t.name):
+		return true
+	return not t.generic_args.is_empty() \
+		and not (GateTypes.canonical(t.name) in ["Array", "Dictionary"])
+
+
+func _flow_plain_reachable(t: GateAST.TypeRef) -> bool:
+	if t == null or t.array_depth > 0 or t.is_dict() or _struct_names.has(t.name):
+		return false
+	var n: String = GateTypes.canonical(t.name)
+	return GateTypes.BUILTIN.has(n) or ClassDB.class_exists(n)
+
+
+func _check_init_values(c: GateAST.Call) -> void:
+	if c.args.size() != 1 or not (c.args[0] is GateAST.DictLit):
+		return
+	var dl: GateAST.DictLit = c.args[0]
+	for i in dl.keys.size():
+		if not (dl.keys[i] is GateAST.Ident) or i >= dl.values.size() or dl.values[i] == null \
+				or (i < dl.lua_keys.size() and dl.lua_keys[i]):
+			return
+	var owner: String = _init_owner(c)
+	if owner == "":
+		return
+	var sd = infer.struct_names.get(owner, null)
+	if sd is GateAST.ClassDecl:
+		var given: Dictionary = {}
+		for k in dl.keys:
+			given[(k as GateAST.Ident).name] = true
+		for f in (sd as GateAST.ClassDecl).members:
+			if f is GateAST.VarDecl and not (f as GateAST.VarDecl).is_const \
+					and not (f as GateAST.VarDecl).is_static and not given.has((f as GateAST.VarDecl).name):
+				_require_default(f, "'%s.%s'" % [owner, (f as GateAST.VarDecl).name], c.line, c.col)
+	for i in dl.keys.size():
+		var key: String = (dl.keys[i] as GateAST.Ident).name
+		var pt: GateAST.TypeRef = infer.field_type(owner, key)
+		if pt == null:
+			pt = _engine_prop_type(owner, key)
+		if pt == null:
+			continue
+		var v = dl.values[i]
+		var what: String = "'%s.%s'" % [owner, key]
+		if GateChecker.is_gate_only_type(pt):
+			dl.values[i] = _check_value_against(pt, v, what, v.line, v.col)
+		elif _check_compat(pt, v, what, v.line, v.col):
+			_check_plain_value(pt, v, what, v.line, v.col)
+
+
+func _check_field_init_values(value) -> void:
+	if not (value is GateAST.Call):
+		return
+	var saved_names: Dictionary = _local_names
+	_local_names = {}
+	_check_init_values(value)
+	_local_names = saved_names
+
+
+func _init_owner(c: GateAST.Call) -> String:
+	if c.callee is GateAST.Ident:
+		var sn: String = (c.callee as GateAST.Ident).name
+		return sn if _struct_names.has(sn) and not _local_names.has(sn) else ""
+	if not (c.callee is GateAST.Member) or (c.callee as GateAST.Member).safe:
+		return ""
+	var cm: GateAST.Member = c.callee
+	if cm.name == "instantiate":
+		var rt: GateAST.TypeRef = _type_of(cm.target)
+		if rt == null or rt.array_depth != 0 or rt.generic_args.size() != 1 \
+				or GateTypes.canonical(rt.name) != "PackedScene":
+			return ""
+		return (rt.generic_args[0] as GateAST.TypeRef).name
+	if cm.name != "new" or not (cm.target is GateAST.Ident):
+		return ""
+	var ref: String = (cm.target as GateAST.Ident).name
+	if (cm.target as GateAST.Ident).generic_base != "":
+		ref = (cm.target as GateAST.Ident).generic_base
+	if _local_names.has(ref) or _struct_names.has(ref):
+		return ""
+	return ref if _init_takes_nothing(ref) else ""
+
+
+func _init_takes_nothing(ref: String) -> bool:
+	var seen: Dictionary = {}
+	var c: String = ref
+	while c != "" and not seen.has(c):
+		seen[c] = true
+		if ClassDB.class_exists(c):
+			return true
+		for f in infer.methods.get("%s._init" % c, []):
+			if not (f as GateAST.FuncDecl).params.is_empty():
+				return false
+		if not infer.bases.has(c):
+			return infer.fields.has(c) or infer.methods.has("%s._init" % c) \
+				or _known_class(c)
+		c = String(infer.bases[c])
+		if c.begins_with("res://") or c.contains("\""):
+			return false
+	return false
+
+
+func _known_class(c: String) -> bool:
+	for k in infer.fields:
+		if String(k).begins_with(c + "."):
+			return true
+	return false
+
+
+func _engine_prop_type(cls: String, key: String) -> GateAST.TypeRef:
+	var c: String = cls
+	var seen: Dictionary = {}
+	while c != "" and not seen.has(c) and not ClassDB.class_exists(c):
+		seen[c] = true
+		c = String(infer.bases.get(c, ""))
+	if c == "" or not ClassDB.class_exists(c):
+		return null
+	for p in ClassDB.class_get_property_list(c):
+		if String(p["name"]) != key:
+			continue
+		var ty: int = int(p.get("type", TYPE_NIL))
+		var t: GateAST.TypeRef = GateAST.TypeRef.new()
+		if ty == TYPE_OBJECT:
+			t.name = String(p.get("class_name", ""))
+			t.nullable = true
+		else:
+			t.name = String(_INIT_VALUE_TYPES.get(ty, ""))
+		return t if t.name != "" else null
+	return null
+
+
+const _INIT_VALUE_TYPES := {
+	TYPE_BOOL: "bool", TYPE_INT: "int", TYPE_FLOAT: "float", TYPE_STRING: "String",
+	TYPE_STRING_NAME: "StringName", TYPE_NODE_PATH: "NodePath", TYPE_VECTOR2: "Vector2",
+	TYPE_VECTOR2I: "Vector2i", TYPE_VECTOR3: "Vector3", TYPE_VECTOR3I: "Vector3i",
+	TYPE_VECTOR4: "Vector4", TYPE_VECTOR4I: "Vector4i", TYPE_COLOR: "Color",
+}
+

@@ -44,6 +44,24 @@ func set_registry(reg, self_path: String) -> void:
 	_self_path = self_path
 	if reg == null:
 		return
+	_reg_classes = reg.classes
+	_reg_whole = reg
+	_reg_bases = reg.bases
+	# another file's class_name script builds like its classes: `Enemy.new({ hp: 1 })`
+	if "script_class_decls" in reg and not reg.script_class_decls.is_empty():
+		_reg_classes = reg.classes.duplicate()
+		_reg_bases = reg.bases.duplicate()
+		for cn in reg.script_class_decls:
+			if not _reg_classes.has(cn) and String(reg.script_class_names.get(cn, "")) != self_path:
+				var scd: GateAST.ClassDecl = reg.script_class_decls[cn]
+				_reg_classes[cn] = scd
+				if scd.extends_type != null and not _reg_bases.has(cn):
+					_reg_bases[cn] = scd.extends_type.name
+	_reg_script_classes = reg.script_class_names
+	_reg_origin = reg.origin
+	_reg_namespaces = reg.namespaces
+	if "module_names" in reg:
+		_reg_module_names = reg.module_names
 	for table in [reg.classes, reg.namespaces, reg.structs]:
 		for name in table:
 			if not reg.top_level.has(name):

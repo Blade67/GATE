@@ -44,8 +44,9 @@ func check(mod: GateAST.Module, diags: GateDiagnostics, registry = null) -> void
 	for m in mod.members:
 		_process(m)
 	_process_overloads(mod.members)
-	_link_inherited_overloads(mod.members)
-	_check_generated_names(mod.members, false)
+	_link_inherited_overloads(mod.members, mod.extends_type)
+	_check_generated_names(mod.members, false, mod.extends_type)
+	_check_file_helpers(mod)
 	_check_type_names(mod.members, {})
 	_tp_enums = {}
 	_tp_collect_enums(mod.members)
@@ -1471,27 +1472,171 @@ func _verify_type_name(t: GateAST.TypeRef, known: Dictionary) -> void:
 	diagnostics.error("unknown type '%s'" % n, t.line, t.col, hint)
 
 
-func _check_generated_names(members: Array, in_struct: bool) -> void:
-	var names: Dictionary = {}
-	var signals: Dictionary = {}
+static func declared_members(members: Array) -> Dictionary:
+	var out: Dictionary = {}
 	for m in members:
-		if m is GateAST.VarDecl:
-			names[(m as GateAST.VarDecl).name] = true
-		elif m is GateAST.SignalDecl:
-			signals[(m as GateAST.SignalDecl).name] = true
+		var s = m
+		if s is GateAST.AnnotatedStmt:
+			s = (s as GateAST.AnnotatedStmt).stmt
+		if s is GateAST.VarDecl:
+			out[(s as GateAST.VarDecl).name] = "a constant" if (s as GateAST.VarDecl).is_const \
+				else "a variable"
+		elif s is GateAST.FuncDecl:
+			out[(s as GateAST.FuncDecl).name] = "a function"
+		elif s is GateAST.SignalDecl:
+			out[(s as GateAST.SignalDecl).name] = "a signal"
+		elif s is GateAST.EnumDecl:
+			var ed: GateAST.EnumDecl = s
+			if ed.name != "":
+				out[ed.name] = "an enum"
+			else:
+				for k in ed.keys:
+					out[String(k)] = "an enum key"
+		elif s is GateAST.ClassDecl:
+			out[(s as GateAST.ClassDecl).name] = "a %s" % (s as GateAST.ClassDecl).form
+		elif s is GateAST.TypeAliasDecl:
+			out[(s as GateAST.TypeAliasDecl).name] = "a type alias"
+	return out
+
+
+func _check_generated_names(members: Array, in_struct: bool, ext_t: GateAST.TypeRef) -> void:
+	var declared: Dictionary = declared_members(members)
+	var taken: Dictionary = {}
+	for n in declared:
+		taken[n] = "%s in this scope" % declared[n]
+	var anc: Dictionary = _ancestry(ext_t)
+	for n2 in anc["names"]:
+		if not taken.has(n2):
+			taken[n2] = anc["names"][n2]
+	var engine: String = anc["engine"]
+	if engine != "":
+		for mn in _engine_funcs(engine):
+			if not taken.has(mn):
+				taken[mn] = "a method of %s" % engine
+		for pn in _engine_property_names(engine):
+			if not taken.has(pn):
+				taken[pn] = "a property of %s" % engine
+		for sg in ClassDB.class_get_signal_list(engine):
+			if not taken.has(String(sg["name"])):
+				taken[String(sg["name"])] = "a signal of %s" % engine
 
 	for m in members:
 		if m is GateAST.ClassDecl:
 			var cd: GateAST.ClassDecl = m
-			_check_generated_names(cd.members, cd.form == "struct")
+			_check_generated_names(cd.members, cd.form == "struct", cd.extends_type)
+			_check_lowered_names(cd)
 			continue
+		_check_priv_name(m, taken)
 		if not (m is GateAST.VarDecl):
 			continue
 		var vd: GateAST.VarDecl = m
 		if _annotated(vd, "observable"):
-			_check_observable(vd, names, signals, in_struct)
+			_check_observable(vd, taken, in_struct)
 		elif _annotated(vd, "soa"):
-			_check_soa_names(vd, names)
+			_check_soa_names(vd, taken)
+
+
+static func priv_name(m) -> String:
+	if not (m is GateAST.VarDecl or m is GateAST.FuncDecl):
+		return ""
+	if String(m.visibility) != "priv" or String(m.name).begins_with("_"):
+		return ""
+	return "_" + String(m.name)
+
+
+static func priv_renames(members: Array) -> Dictionary:
+	var out: Dictionary = {}
+	for m in members:
+		var s = m
+		if s is GateAST.AnnotatedStmt:
+			s = (s as GateAST.AnnotatedStmt).stmt
+		var pn: String = priv_name(s)
+		if pn != "":
+			out[pn] = String(s.name)
+	return out
+
+
+func _check_priv_name(m, taken: Dictionary) -> void:
+	var s = m
+	if s is GateAST.AnnotatedStmt:
+		s = (s as GateAST.AnnotatedStmt).stmt
+	var emitted: String = priv_name(s)
+	if emitted == "" or not taken.has(emitted):
+		return
+	diagnostics.error("'%s' is priv, so it is emitted as '%s', which is already %s"
+			% [s.name, emitted, taken[emitted]], s.line, s.col,
+		"`priv` prefixes the underscore GDScript uses for a private member. Rename one of them.")
+
+
+func _check_lowered_names(cd: GateAST.ClassDecl) -> void:
+	var declared: Dictionary = declared_members(cd.members)
+	if declared.has("__gate_impl") and (not cd.interface_names.is_empty()
+			or not cd.implements.is_empty()):
+		diagnostics.error(
+			"'%s' declares '__gate_impl', which is the list of interfaces GATE writes" % cd.name,
+			cd.line, cd.col,
+			"a class that implements an interface carries `const __gate_impl`. Rename this one.")
+
+
+func _check_file_helpers(mod: GateAST.Module) -> void:
+	var declared: Dictionary = declared_members(mod.members)
+	var uses: Dictionary = {"iface": false, "init": false}
+	_note_helper_uses(mod.members, uses)
+	if declared.has("__gate_is") and uses["iface"]:
+		diagnostics.error("'__gate_is' is the interface test GATE writes into this file",
+			mod.line, mod.col,
+			"`x is <an interface>` compiles to a call to it, so the name is taken here. "
+			+ "Rename this one.")
+	if declared.has("__gate_init") and uses["init"]:
+		diagnostics.error("'__gate_init' is the object initialiser GATE writes into this file",
+			mod.line, mod.col,
+			"`X.new({ ... })` compiles to a call to it, so the name is taken here. "
+			+ "Rename this one.")
+
+
+func _note_helper_uses(node, uses: Dictionary) -> void:
+	if node is Array:
+		for x in node:
+			_note_helper_uses(x, uses)
+		return
+	if not (node is GateAST.ASTNode):
+		return
+	if node is GateAST.ObjectInit or _keyed_construction(node):
+		uses["init"] = true
+	elif node is GateAST.IsExpr:
+		_note_iface_test((node as GateAST.IsExpr).type, uses)
+	elif node is GateAST.CastExpr:
+		_note_iface_test((node as GateAST.CastExpr).type, uses)
+	elif node is GateAST.TypePattern:
+		_note_iface_test((node as GateAST.TypePattern).type, uses)
+	for pn in _props_of(node):
+		var v = (node as Object).get(pn)
+		if v is Array or v is GateAST.ASTNode:
+			_note_helper_uses(v, uses)
+
+
+static func _keyed_construction(node) -> bool:
+	if not (node is GateAST.Call):
+		return false
+	var c: GateAST.Call = node
+	if not (c.callee is GateAST.Member) or c.args.size() != 1:
+		return false
+	if not ((c.callee as GateAST.Member).name in ["new", "instantiate"]):
+		return false
+	if not (c.args[0] is GateAST.DictLit):
+		return false
+	var dl: GateAST.DictLit = c.args[0]
+	if dl.keys.is_empty():
+		return false
+	for k in dl.keys:
+		if not (k is GateAST.Ident):
+			return false
+	return true
+
+
+func _note_iface_test(t: GateAST.TypeRef, uses: Dictionary) -> void:
+	if t != null and (interfaces.has(t.name) or traits.has(t.name)):
+		uses["iface"] = true
 
 
 func _annotated(vd: GateAST.VarDecl, what: String) -> bool:
@@ -1501,7 +1646,7 @@ func _annotated(vd: GateAST.VarDecl, what: String) -> bool:
 	return false
 
 
-func _check_observable(vd: GateAST.VarDecl, names: Dictionary, signals: Dictionary, in_struct: bool) -> void:
+func _check_observable(vd: GateAST.VarDecl, taken: Dictionary, in_struct: bool) -> void:
 	if in_struct:
 		diagnostics.error("@observable is not available on a struct field", vd.line, vd.col,
 			"a struct lowers to a Vector or to a plain data class, and neither can carry "
@@ -1516,19 +1661,22 @@ func _check_observable(vd: GateAST.VarDecl, names: Dictionary, signals: Dictiona
 			% vd.name, vd.line, vd.col,
 			"@observable generates the getter and setter, so the ones written here would "
 			+ "be discarded. Keep one or the other.")
-	var backing: String = "__" + vd.name
-	if names.has(backing):
-		diagnostics.error("@observable on '%s' needs the name '%s', which is already declared"
-			% [vd.name, backing], vd.line, vd.col,
+	var emitted: String = vd.name
+	if vd.visibility == "priv" and not emitted.begins_with("_"):
+		emitted = "_" + emitted
+	var backing: String = "__" + emitted
+	if taken.has(backing):
+		diagnostics.error("@observable on '%s' needs the name '%s', which is already %s"
+			% [vd.name, backing, taken[backing]], vd.line, vd.col,
 			"@observable keeps the value in a backing field of that name. Rename one of them.")
 	var sig: String = "on_%s_changed" % vd.name
-	if signals.has(sig):
-		diagnostics.error("@observable on '%s' generates signal '%s', which is already declared"
-			% [vd.name, sig], vd.line, vd.col,
-			"remove the hand-written signal - @observable emits this one itself.")
+	if taken.has(sig):
+		diagnostics.error("@observable on '%s' generates signal '%s', which is already %s"
+			% [vd.name, sig, taken[sig]], vd.line, vd.col,
+			"@observable emits that signal itself. Rename one of them.")
 
 
-func _check_soa_names(vd: GateAST.VarDecl, names: Dictionary) -> void:
+func _check_soa_names(vd: GateAST.VarDecl, taken: Dictionary) -> void:
 	if vd.type == null or not structs.has(vd.type.name):
 		return
 	var sd: GateAST.ClassDecl = structs[vd.type.name]
@@ -1536,9 +1684,9 @@ func _check_soa_names(vd: GateAST.VarDecl, names: Dictionary) -> void:
 		if not (f is GateAST.VarDecl):
 			continue
 		var generated: String = "%s_%s" % [vd.name, (f as GateAST.VarDecl).name]
-		if names.has(generated):
-			diagnostics.error("@soa on '%s' needs the name '%s', which is already declared"
-				% [vd.name, generated], vd.line, vd.col,
+		if taken.has(generated):
+			diagnostics.error("@soa on '%s' needs the name '%s', which is already %s"
+				% [vd.name, generated, taken[generated]], vd.line, vd.col,
 				"@soa emits one array per struct field, named `<array>_<field>`. "
 				+ "Rename one of them.")
 

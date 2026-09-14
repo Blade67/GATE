@@ -215,6 +215,30 @@ func _new_tmp() -> String:
 	return ""
 
 
+func _file_tag() -> String:
+	var base: String = ""
+	for ch in String(source_path).get_file().get_basename():
+		base += ch if _is_name_char_out(ch) else "_"
+	return "%s_%x" % [base, String(source_path).hash() & 0xffffff]
+
+
+## For initialisers where nothing can be hoisted. Each class gets its own copy.
+func _emit_init_helper(at: int = 0) -> void:
+	var saved: int = _indent
+	_indent = at
+	_blank_line(1)
+	_line("static func __gate_init(o: Object, props: Dictionary) -> Object:", 1)
+	_indent = at + 1
+	_line("for k in props:", 1)
+	_indent = at + 2
+	_line("o.set(k, props[k])", 1)
+	_indent = at + 1
+	_line("return o", 1)
+	_indent = saved
+
+
+## At the current indent: an inner class cannot call its module's static functions,
+## so every class that tests an interface gets its own copy.
 func _emit_iface_helper() -> void:
 	var saved: int = _indent
 	_indent = 0

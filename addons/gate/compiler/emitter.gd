@@ -72,6 +72,9 @@ func emit(mod: GateAST.Module, diags: GateDiagnostics, path: String) -> Dictiona
 	if _needs_iface_helper:
 		_emit_iface_helper()
 
+	if _init_helper_scopes.has("."):
+		_emit_init_helper()
+
 	var pl: Array = _preload_lines()
 	if not pl.is_empty():
 		pl.append("")
@@ -208,6 +211,9 @@ func _emit_class(cd: GateAST.ClassDecl) -> void:
 	var before: int = _out.size()
 	for m in cd.members:
 		_emit_member(m)
+	_close_class_scope()
+	if _init_helper_scopes.has(_scope_class):
+		_emit_init_helper(_indent)
 	if not _emitted_code_since(before):
 		_line("pass", cd.line)
 	_cur_base = saved_base
@@ -259,6 +265,10 @@ func _emit_namespace(cd: GateAST.ClassDecl) -> void:
 		_in_namespace = not (m is GateAST.ClassDecl)
 		_emit_member(m)
 	_in_namespace = saved_ns
+	_close_class_scope()
+	if _init_helper_scopes.has(_scope_class):
+		_emit_init_helper(_indent)
+	_scope_class = saved_scope
 	if not _emitted_code_since(before):
 		_line("pass", cd.line)
 	_indent -= 1
@@ -861,12 +871,23 @@ func _emit_multi_assign(m: GateAST.MultiAssign) -> void:
 			_line("var %s = %s[%d]" % [name, tmp, i], m.line)
 		return
 
-	var vals: PackedStringArray = PackedStringArray()
-	for v in m.values:
-		vals.append(_copy_value(v))
-	var targets: PackedStringArray = PackedStringArray()
-	for t in m.targets:
-		targets.append(_expr(t))
+	for st in m.targets:
+		if not _soa_cursor_write_ok(st):
+			return
+		if st is GateAST.Member and not _swizzle_of(st).is_empty():
+			diagnostics.error("a swizzle cannot be one of several assignment targets",
+				(st as GateAST.Member).line, (st as GateAST.Member).col,
+				"assign '%s' on its own line." % (st as GateAST.Member).name)
+			return
+		if not _no_swizzle_below(st):
+			return
+	var unpack: bool = m.values.size() == 1 and m.targets.size() > 1
+	if not unpack and m.targets.size() != m.values.size():
+		diagnostics.error("assignment has %d targets but %d values" % [m.targets.size(), m.values.size()],
+			m.line, m.col)
+		return
+	var vals: PackedStringArray = _ordered(m.values,
+		func(i: int) -> String: return _copy_value(m.values[i]))
 	_flush_pending(m.line)
 
 	if m.values.size() == 1 and m.targets.size() > 1:

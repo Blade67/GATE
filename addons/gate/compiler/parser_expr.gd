@@ -458,25 +458,28 @@ func _parse_postfix() -> GateAST.Expr:
 			e = c
 		elif _check_op("{") and e is GateAST.Ident and _is_type_looking((e as GateAST.Ident).name):
 			var t6: GateLexer.Token = _advance()
-			var oi: GateAST.ObjectInit = GateAST.ObjectInit.new()
-			oi.at(t6.line, t6.col)
-			var tr: GateAST.TypeRef = GateAST.TypeRef.new()
-			tr.name = (e as GateAST.Ident).name
-			oi.type = tr
-			_skip_newlines()
-			while not _at_end() and not _check_op("}"):
-				_skip_newlines()
-				if not _check(GateLexer.T.IDENT):
-					break
-				oi.keys.append(_advance().value)
-				_expect_op("=", "in an object initializer")
-				oi.values.append(_parse_expr())
-				_skip_newlines()
-				if not _match_op(","):
-					break
-				_skip_newlines()
-			_expect_op("}", "to close the object initializer")
-			e = oi
+			var cname: String = (e as GateAST.Ident).name
+			var first_key: String = ""
+			var depth: int = 1
+			while not _at_end():
+				var bt: GateLexer.Token = _cur()
+				if bt.type == GateLexer.T.OP and bt.value == "{":
+					depth += 1
+				elif bt.type == GateLexer.T.OP and bt.value == "}":
+					depth -= 1
+					if depth == 0:
+						_advance()
+						break
+				elif first_key == "" and depth == 1 and bt.type == GateLexer.T.IDENT:
+					first_key = bt.value
+				_advance()
+			diagnostics.error(
+				"%s { … } initializers were removed; write %s.new({ %s: … })"
+					% [cname, cname, first_key if first_key != "" else "name"],
+				t6.line, t6.col,
+				"keys are written name: value inside the argument. A struct is built "
+				+ "the same way without .new: %s({ %s: … })."
+					% [cname, first_key if first_key != "" else "name"])
 		else:
 			break
 	return e

@@ -114,6 +114,15 @@ func _expr(e) -> String:
 		if _scalar_names.has(skey):
 			return _scalar_names[skey]
 
+	if e is GateAST.Member and (e as GateAST.Member).target is GateAST.SelfExpr \
+			and _soa.has((e as GateAST.Member).name):
+		return _expr(_as_ident(e))
+
+	if e is GateAST.Member:
+		var sw: Dictionary = _swizzle_of(e)
+		if not sw.is_empty():
+			return _emit_swizzle_read(e, sw)
+
 	if e is GateAST.Member or e is GateAST.Index:
 		var flat: String = _emit_postfix_spine(e)
 		if flat != "":
@@ -252,21 +261,9 @@ func _expr(e) -> String:
 
 	if e is GateAST.ObjectInit:
 		var oi: GateAST.ObjectInit = e
-		var t6: String = _new_tmp()
-		var st: Dictionary = _struct_of(oi.type.name)
-		if not st.is_empty() and st["lowering"] == "vector":
-			var comps: PackedStringArray = PackedStringArray()
-			var fields: Array = st["fields"]
-			for f in fields:
-				var idx2: int = oi.keys.find(f)
-				comps.append(_expr(oi.values[idx2]) if idx2 >= 0 else "0")
-			return "%s(%s)" % [st["vector"], ", ".join(comps)]
 		var oalias: String = _extern_alias(oi.type.name)
 		var octor: String = "%s.%s" % [oalias, oi.type.name] if oalias != "" else oi.type.name
-		_hoist("var %s = %s.new()" % [t6, octor])
-		for i in oi.keys.size():
-			_hoist("%s.%s = %s" % [t6, oi.keys[i], _copy_value(oi.values[i])])
-		return t6
+		return _lower_init(oi.type.name, octor, oi.keys, oi.values, oi)
 
 	if e is GateAST.Lambda:
 		return _emit_lambda(e)
@@ -409,6 +406,8 @@ func _emit_postfix_spine(e) -> String:
 			var m: GateAST.Member = node
 			if m.safe or _soa_name(m.target) != "" or not _vector_struct_of(m.target).is_empty():
 				return ""
+			if not _swizzle_of(m).is_empty():
+				return ""   # a swizzle is not a member access; let _expr rewrite it
 			if m.target is GateAST.Ident and _soa_cursors.has((m.target as GateAST.Ident).name):
 				return ""
 			steps.push_front(node)
@@ -674,7 +673,266 @@ func _emit_call(c: GateAST.Call) -> String:
 			if owner == "" and mem.target is GateAST.Ident and (mem.target as GateAST.Ident).name == "super":
 				owner = _cur_base
 			if owner != "" and _overload_declared_by(mem.name, owner):
-				return "%s.%s(%s)" % [_postfix_base(mem.target), mangled2, ", ".join(args)]
+				return "%s.%s(%s)" % [mrecv, mangled2, ", ".join(args)]
+			if owner == "":
+				diagnostics.warn("'%s' is overloaded, and the type of the value it is called on is "
+						% mem.name + "not known here, so this call cannot pick one", c.line, c.col,
+					"GDScript will look for a method named '%s' itself. Give the value a type, or "
+						% mem.name + "call it on one whose type GATE can see")
+			if recv_node != null:
+				return "%s.%s(%s)" % [mrecv, mem.name, ", ".join(args)]
+
+	if recv_node != null:
+		var cmm: GateAST.Member = c.callee
+		return "%s.%s(%s)" % [recv_text, _member_name(
+			cmm.member_class if cmm.member_class != "" else _owner_key(recv_node),
+			(c.callee as GateAST.Member).name), ", ".join(args)]
+	if c.callee is GateAST.Ident:
+		var fname: String = (c.callee as GateAST.Ident).name
+		if not _struct_of(fname).is_empty() and _ctor_struct_of(fname).is_empty():
+			return "%s(%s)" % [fname, ", ".join(args)]   # a function, not the other file's struct
+	_swizzle_exempt = c.callee
+	var callee: String = _postfix_base(c.callee)
+	_swizzle_exempt = null
+	return "%s(%s)" % [callee, ", ".join(args)]
+
+
+func _args_first(c: GateAST.Call) -> Array:
+	var texts: PackedStringArray = _ordered(c.args,
+		func(i: int) -> String: return _copy_value(c.args[i]))
+	var out: Array = []
+	for i in c.args.size():
+		var text: String = texts[i]
+		if not _stable(c.args[i], text):
+			var t: String = _new_tmp()
+			_hoist("var %s = %s" % [t, text])
+			text = t
+		var r: GateAST.RawExpr = GateAST.RawExpr.new()
+		r.at(c.args[i].line, c.args[i].col)
+		r.text = text
+		out.append(r)
+	return out
+
+
+func _plain_callee(cm: GateAST.Member) -> bool:
+	if cm.safe or _soa_name(cm.target) != "":
+		return false
+	if cm.target is GateAST.Ident and _soa_cursors.has((cm.target as GateAST.Ident).name):
+		return false
+	if cm.target is GateAST.Index and _soa_name((cm.target as GateAST.Index).target) != "":
+		return false
+	if not _vector_struct_of(cm.target).is_empty():
+		return false
+	if cm.target is GateAST.Ident and _scalar_names.has(
+			"%s.%s" % [(cm.target as GateAST.Ident).name, cm.name]):
+		return false
+	if not _struct_of(cm.name).is_empty() and _is_namespace_ref(cm.target):
+		return false
+	return true
+
+
+## `X.new({...})` sets properties only when GDScript would reject the call, i.e. when
+## `_init` takes nothing. Otherwise the dictionary is an argument, as written.
+func _init_call_form(c: GateAST.Call) -> Dictionary:
+	if c.args.size() != 1 or not (c.args[0] is GateAST.DictLit):
+		return {}
+	var dl: GateAST.DictLit = c.args[0]
+	for i in dl.keys.size():
+		if not (dl.keys[i] is GateAST.Ident) or i >= dl.values.size() or dl.values[i] == null:
+			return {}
+	if c.callee is GateAST.Member:
+		var cm: GateAST.Member = c.callee
+		if cm.safe:
+			return {}
+		if cm.name == "new":
+			var ref: String = _class_ref_text(cm.target)
+			var generic: bool = cm.target is GateAST.Ident and (cm.target as GateAST.Ident).generic_base != ""
+			if generic:
+				ref = (cm.target as GateAST.Ident).generic_base
+			if ref == "" or (cm.target is GateAST.Ident and _fn_locals.has(ref)):
+				return {}
+			var nst: Dictionary = _struct_of(ref) if not generic else {}
+			if not nst.is_empty():
+				return {} if _dict_positional(nst, dl) else {"name": ref, "dict": dl, "ctor": _expr(cm.target)}
+			if _ctor_takes_params(_scope_class, ref, generic) != 0:
+				return {}
+			var ctor: String = _expr(cm.target)
+			return {"name": ref, "dict": dl, "ctor": ctor}
+		if not (cm.target is GateAST.Ident):
+			return {}
+		var nst: Dictionary = _struct_of(cm.name)
+		if not nst.is_empty() and _is_namespace_ref(cm.target) and not _dict_positional(nst, dl):
+			return {"name": cm.name, "dict": dl, "ctor": "%s.%s" % [_expr(cm.target), cm.name]}
+		return {}
+	if c.callee is GateAST.Ident:
+		var sn: String = (c.callee as GateAST.Ident).name
+		if CTOR_SHORTHAND.has(sn) and not _shorthand_taken(sn) and not GateTypes.shadowed.has(sn):
+			return {}
+		var st: Dictionary = _ctor_struct_of(sn)
+		if st.is_empty() or _dict_positional(st, dl):
+			return {}
+		var salias: String = _extern_alias(sn)
+		return {"name": sn, "dict": dl, "ctor": "%s.%s" % [salias, sn] if salias != "" else sn}
+	return {}
+
+
+func _dict_positional(st: Dictionary, dl: GateAST.DictLit) -> bool:
+	var types: Array = st["types"]
+	var trefs: Array = st.get("typerefs", [])
+	if types.is_empty():
+		return false
+	var first = trefs[0] if not trefs.is_empty() else null
+	var holds_dict: bool = (String(types[0]) == "Variant"
+		or GateTypes.canonical(String(types[0])) == "Dictionary"
+		or (first != null and (first as GateAST.TypeRef).is_dict()))
+	if not holds_dict:
+		return false
+	if dl.keys.is_empty():
+		return true
+	for k in dl.keys:
+		if not (st["fields"] as Array).has((k as GateAST.Ident).name):
+			return true
+	return false
+
+
+func _emit_init_call(c: GateAST.Call, form: Dictionary) -> String:
+	var dl: GateAST.DictLit = form["dict"]
+	var name: String = form["name"]
+	var st: Dictionary = _struct_of(name)
+	var keys: Array = []
+	var values: Array = []
+	var ok: bool = _init_keys_distinct(dl)
+	for i in dl.keys.size():
+		var kid: GateAST.Ident = dl.keys[i]
+		if i < dl.lua_keys.size() and dl.lua_keys[i]:
+			diagnostics.error("initializer keys are written name: value", kid.line, kid.col,
+				"write `{ %s: ... }`. With `=` it would be a dictionary whose key is the "
+				% kid.name + "string \"%s\"." % kid.name)
+			ok = false
+			continue
+		if not st.is_empty():
+			if not (st["fields"] as Array).has(kid.name):
+				diagnostics.error("struct '%s' has no field '%s'" % [name, kid.name],
+					kid.line, kid.col,
+					"its fields are: %s." % ", ".join(PackedStringArray(st["fields"])))
+				ok = false
+				continue
+		elif _class_has_property(_scope_class, name, kid.name) == 0:
+			diagnostics.error("'%s' has no property '%s'" % [name, kid.name], kid.line, kid.col,
+				"initializer keys name properties of the object being built.")
+			ok = false
+			continue
+		var packed: bool = not st.is_empty() and st["lowering"] == "vector"
+		keys.append(kid.name if packed else _member_name(_name_key(_scope_class, name), kid.name))
+		values.append(dl.values[i])
+	if not ok:
+		return "null"
+	return _lower_init(name, String(form["ctor"]), keys, values, c)
+
+
+func _init_keys_distinct(dl: GateAST.DictLit) -> bool:
+	var seen: Dictionary = {}
+	var ok: bool = true
+	for k in dl.keys:
+		var kid: GateAST.Ident = k
+		if seen.has(kid.name):
+			diagnostics.error("initializer key '%s' is given twice" % kid.name, kid.line, kid.col,
+				"each property can be set once.")
+			ok = false
+		seen[kid.name] = true
+	return ok
+
+
+func _lower_init(name: String, ctor: String, keys: Array, values: Array, at_node = null) -> String:
+	var st: Dictionary = _struct_of(name)
+	if not st.is_empty():
+		return _build_struct(st, ctor, keys, values, at_node)
+	return _lower_construct(ctor + ".new()", ctor, keys, values)
+
+
+func _default_kind(st: Dictionary, i: int) -> String:
+	if not st.has("kinds"):
+		st["kinds"] = {}
+	if (st["kinds"] as Dictionary).has(i):
+		return st["kinds"][i]
+	var d = (st["defaults"] as Array)[i]
+	var kind: String = "none"
+	if d != null:
+		if _portable_default(st, d, i):
+			kind = "inline"
+		elif st["lowering"] == "vector":
+			kind = "site"
+		elif _default_needs_instance(st, d):
+			kind = "instance"
+		else:
+			kind = "helper"
+	st["kinds"][i] = kind
+	return kind
+
+
+func _portable_default(st: Dictionary, e, i: int) -> bool:
+	if e is GateAST.Literal:
+		return true
+	if e is GateAST.Unary:
+		return _portable_default(st, (e as GateAST.Unary).operand, i)
+	if e is GateAST.Binary:
+		return (_portable_default(st, (e as GateAST.Binary).left, i)
+			and _portable_default(st, (e as GateAST.Binary).right, i))
+	if e is GateAST.Ternary:
+		var t: GateAST.Ternary = e
+		return (_portable_default(st, t.cond, i) and _portable_default(st, t.if_true, i)
+			and _portable_default(st, t.if_false, i))
+	if e is GateAST.ArrayLit:
+		for el in (e as GateAST.ArrayLit).elements:
+			if not _portable_default(st, el, i):
+				return false
+		return true
+	if e is GateAST.Ident:
+		var at: int = (st["fields"] as Array).find((e as GateAST.Ident).name)
+		return at >= 0 and at < i and _struct_of(String(st["types"][at])).is_empty()
+	return false
+
+
+func _default_needs_instance(st: Dictionary, e) -> bool:
+	if e == null or not (e is Object) or (e as Object).get_script() == null:
+		return false
+	if (e is GateAST.SelfExpr or e is GateAST.Lambda or e is GateAST.RawExpr
+			or e is GateAST.AwaitExpr):
+		return true
+	if e is GateAST.Ident:
+		var n: String = (e as GateAST.Ident).name
+		var methods: Dictionary = st.get("methods", {})
+		if methods.has(n):
+			return not methods[n]
+		return n == "super" or (not (st["fields"] as Array).has(n)
+			and not (st.get("consts", {}) as Dictionary).has(n)
+			and ClassDB.class_has_method("RefCounted", n))
+	for prop in (e as Object).get_property_list():
+		var pn: String = prop["name"]
+		if pn in ["script", "Built-in script", "RefCounted", "Object"]:
+			continue
+		var v = (e as Object).get(pn)
+		if v is Array:
+			for x in v:
+				if _default_needs_instance(st, x):
+					return true
+		elif v is Object and _default_needs_instance(st, v):
+			return true
+	return false
+
+
+func _default_refs(st: Dictionary, i: int) -> Array:
+	var d = (st["defaults"] as Array)[i]
+	var out: Array = []
+	if d == null:
+		return out
+	var read: Dictionary = {}
+	GateChecker.idents_in(d, read, true)
+	var fields: Array = st["fields"]
+	for j in i:
+		if read.has(fields[j]):
+			out.append(fields[j])
+	return out
 
 	return "%s(%s)" % [_postfix_base(c.callee), ", ".join(args)]
 

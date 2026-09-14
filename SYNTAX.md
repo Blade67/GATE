@@ -362,6 +362,40 @@ for k, v in scores:                     # dictionary key and value
 Comparison is left-associative, as in GDScript: `a == b == c` means `(a == b) == c`. There
 is no comparison chaining, so write `0 < hp and hp < max_hp`.
 
+Where `??`, `?.` or `?[` need part of an expression computed first, anything to its left that
+could run code is computed first too, so evaluation order and count match GDScript.
+
+An expression may nest 180 levels, counting one for every operator, call and member: a flat
+chain of 180 terms, or 90 steps of `a()[0]`. Parentheses nest 48. Both are GATE's limits, not
+GDScript's, and both exist because GATE's passes recurse in GDScript, which stops at 1024
+calls. Past either, the file is refused with one error rather than compiled from a tree the
+passes could not finish walking. Split the expression into named intermediates.
+
+### Swizzling
+
+```gdscript
+vec3 p = Vector3(1, 2, 3)
+vec2 flat = p.xz                # Vector2(p.x, p.z)
+p.xy = Vector2(5, 6)            # writes p.x and p.y
+```
+
+On statically typed vectors only. An untyped `v.xy` is left alone, since it may be a property
+of your own.
+
+### Object initialisers
+
+```gdscript
+var e = scene.instantiate({ position: spawn, hp: 40 })
+var l = Label.new({ text: "Ready" })
+var d = Damage({ amount: 3, source: "fire" })
+```
+
+The object is constructed, then each key is assigned in order. A class whose `_init` takes a
+parameter keeps GDScript's meaning - the dictionary is passed as the argument - and GATE warns
+when its keys name the class's properties. A bare key is then a variable, so one that names
+nothing in scope is an error. Keys are bare names; `{ "text": ... }` is an ordinary
+dictionary.
+
 ## Members and methods
 
 ```gdscript
