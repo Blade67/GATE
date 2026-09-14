@@ -80,6 +80,9 @@ func emit(mod: GateAST.Module, diags: GateDiagnostics, path: String) -> Dictiona
 		if _generics.has(pgt.name):
 			_note_type(pgt)
 	_close_instantiations()
+	_mono_template.clear()
+	for mg in _instantiations:
+		_mono_template[mg] = ((_instantiations[mg] as Array)[0] as GateAST.ClassDecl).name
 
 	for hl in HEADER_LINES:
 		_line((hl as String) % path if (hl as String).contains("%s") else hl, 1)
@@ -217,7 +220,13 @@ func _emit_monomorphised() -> void:
 		var cd: GateAST.ClassDecl = pair[0]
 		_subst = pair[1]
 		_subst_depth = pair[2] if pair.size() > 2 else {}
+		_subst_types = pair[3] if pair.size() > 3 else {}
 		var saved_name: String = cd.name
+		_mono_scope = ""
+		for k in _class_decls:
+			if _class_decls[k] == cd:
+				_mono_scope = String(k)
+				break
 		cd.name = mangled
 		var saved_params: Array = cd.generic_params
 		cd.generic_params = []
@@ -226,6 +235,7 @@ func _emit_monomorphised() -> void:
 		cd.generic_params = saved_params
 		_subst = {}
 		_subst_depth = {}
+		_subst_types = {}
 
 
 func _emit_member(m) -> void:

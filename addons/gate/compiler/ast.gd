@@ -173,6 +173,7 @@ class Literal extends Expr:
 
 class Ident extends Expr:
 	var generic_base: String = ""
+	var generic_type: TypeRef = null   ## `Box<T>` in `Box<T>.new()`, re-mangled per instantiation
 	var name: String = ""
 
 

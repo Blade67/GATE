@@ -375,6 +375,9 @@ Each instantiation is monomorphised into a concrete class, so `Pool<Bullet>` hol
 `Array[Bullet]`. A generic is monomorphised once, in the file that declares it, so
 `is Pool<Bullet>` holds across files. Type arguments cannot cross a dynamic `load()`.
 
+The body is checked again for each instantiation. A problem only one type argument causes,
+such as `x is T` with `T` a union, is reported where that instantiation is written.
+
 ## Operators and expressions
 
 ```gdscript

@@ -274,6 +274,7 @@ func _collect_instantiations(members: Array) -> void:
 	for m in members:
 		if m is GateAST.VarDecl:
 			_note_type((m as GateAST.VarDecl).type)
+			_note_expr((m as GateAST.VarDecl).value)
 		elif m is GateAST.FuncDecl:
 			var fd: GateAST.FuncDecl = m
 			_note_type(fd.return_type)
@@ -292,29 +293,68 @@ func _collect_instantiations(members: Array) -> void:
 			_note_expr((m as GateAST.ReturnStmt).value)
 		elif m is GateAST.IfStmt:
 			var ifs: GateAST.IfStmt = m
+			_note_expr(ifs.cond)
 			_collect_instantiations(ifs.then_body)
 			for pair in ifs.elifs:
+				_note_expr(pair[0])
 				_collect_instantiations(pair[1])
 			_collect_instantiations(ifs.else_body)
 		elif m is GateAST.ForStmt:
+			_note_expr((m as GateAST.ForStmt).iterable)
 			_collect_instantiations((m as GateAST.ForStmt).body)
 		elif m is GateAST.WhileStmt:
+			_note_expr((m as GateAST.WhileStmt).cond)
 			_collect_instantiations((m as GateAST.WhileStmt).body)
+		elif m is GateAST.MatchStmt:
+			for br in (m as GateAST.MatchStmt).branches:
+				_collect_instantiations(br[2])
+		elif m is GateAST.MultiAssign:
+			for v in (m as GateAST.MultiAssign).values:
+				_note_expr(v)
+		elif m is GateAST.AnnotatedStmt:
+			_collect_instantiations([(m as GateAST.AnnotatedStmt).stmt])
 
 
 func _note_expr(e) -> void:
-	if e == null:
+	if e == null or _subst.is_empty():
 		return
 	if e is GateAST.Ident:
-		var n: String = (e as GateAST.Ident).name
-		if n.begins_with("__") and _pending_generic.has(n):
-			pass
+		var gt: GateAST.TypeRef = (e as GateAST.Ident).generic_type
+		if gt != null and not _subst.is_empty():
+			_note_type(gt)
 	elif e is GateAST.Call:
 		_note_expr((e as GateAST.Call).callee)
 		for a in (e as GateAST.Call).args:
 			_note_expr(a)
 	elif e is GateAST.Member:
 		_note_expr((e as GateAST.Member).target)
+	elif e is GateAST.Index:
+		_note_expr((e as GateAST.Index).target)
+		_note_expr((e as GateAST.Index).index)
+	elif e is GateAST.Binary:
+		_note_expr((e as GateAST.Binary).left)
+		_note_expr((e as GateAST.Binary).right)
+	elif e is GateAST.Unary:
+		_note_expr((e as GateAST.Unary).operand)
+	elif e is GateAST.Ternary:
+		_note_expr((e as GateAST.Ternary).cond)
+		_note_expr((e as GateAST.Ternary).if_true)
+		_note_expr((e as GateAST.Ternary).if_false)
+	elif e is GateAST.NullCoalesce:
+		_note_expr((e as GateAST.NullCoalesce).left)
+		_note_expr((e as GateAST.NullCoalesce).right)
+	elif e is GateAST.CastExpr:
+		_note_expr((e as GateAST.CastExpr).operand)
+	elif e is GateAST.AwaitExpr:
+		_note_expr((e as GateAST.AwaitExpr).operand)
+	elif e is GateAST.ArrayLit:
+		for el in (e as GateAST.ArrayLit).elements:
+			_note_expr(el)
+	elif e is GateAST.DictLit:
+		for v in (e as GateAST.DictLit).values:
+			_note_expr(v)
+	elif e is GateAST.Lambda:
+		_collect_instantiations((e as GateAST.Lambda).body)
 
 
 func _substituted(t: GateAST.TypeRef) -> GateAST.TypeRef:
@@ -325,14 +365,88 @@ func _substituted(t: GateAST.TypeRef) -> GateAST.TypeRef:
 	out.array_depth = t.array_depth
 	out.nullable = t.nullable
 	for g in t.generic_args:
-		var g2: GateAST.TypeRef = GateAST.TypeRef.new()
-		g2.name = _subst.get(g.name, g.name)
-		g2.array_depth = g.array_depth
-		g2.nullable = g.nullable
-		for gg in g.generic_args:
-			g2.generic_args.append(gg)
-		out.generic_args.append(g2)
+		out.generic_args.append(_substituted_arg(g))
 	return out
+
+
+func _substituted_arg(g: GateAST.TypeRef) -> GateAST.TypeRef:
+	var shaped: GateAST.TypeRef = _param_shape(g)
+	if shaped != null:
+		return shaped
+	var g2: GateAST.TypeRef = GateAST.TypeRef.new()
+	g2.name = _subst.get(g.name, g.name)
+	g2.array_depth = g.array_depth
+	g2.nullable = g.nullable
+	for gg in g.generic_args:
+		g2.generic_args.append(_substituted_arg(gg))
+	return g2
+
+
+static func _arrayed(n: String, depth: int) -> String:
+	if depth <= 0:
+		return n
+	return "Array[%s]" % n if depth == 1 else "Array[Array]"
+
+
+static func _normalized(t: GateAST.TypeRef) -> GateAST.TypeRef:
+	if t == null:
+		return null
+	if t.is_union():
+		var by_part: Dictionary = {}
+		_collect_union_members(t, by_part)
+		var keys: Array = by_part.keys()
+		keys.sort()
+		var members: Array = []
+		for k in keys:
+			members.append(_normalized(by_part[k]))
+		t.union_members = members
+	for i in t.tuple_elems.size():
+		t.tuple_elems[i] = _normalized(t.tuple_elems[i])
+	for j in t.callable_params.size():
+		t.callable_params[j] = _normalized(t.callable_params[j])
+	t.callable_return = _normalized(t.callable_return)
+	for g in t.generic_args.size():
+		t.generic_args[g] = _normalized(t.generic_args[g])
+	return t
+
+
+static func _collect_union_members(t: GateAST.TypeRef, out: Dictionary) -> void:
+	for m in t.union_members:
+		var mt: GateAST.TypeRef = m
+		if mt.is_union() and mt.array_depth == 0 and not mt.nullable:
+			_collect_union_members(mt, out)
+		else:
+			var key: String = GateParser._mangle_part(mt)
+			if not out.has(key):
+				out[key] = mt
+
+
+static func _is_shape(t: GateAST.TypeRef) -> bool:
+	return t != null and (t.is_union() or t.is_tuple() or t.is_func_type or t.is_dict() or t.is_set())
+
+
+func _param_shape(t: GateAST.TypeRef) -> GateAST.TypeRef:
+	if t == null or not _subst_types.has(t.name):
+		return null
+	var c: GateAST.TypeRef = GateChecker.copy_type(_subst_types[t.name])
+	c.at(t.line, t.col)
+	if t.array_depth > 0:
+		if c.array_depth == 0 and (c.nullable or t.elem_nullable):
+			c.elem_nullable = true
+		c.nullable = t.nullable
+		c.array_depth += t.array_depth
+	else:
+		c.nullable = c.nullable or t.nullable
+	return c
+
+
+func _subst_value(arg: GateAST.TypeRef) -> String:
+	if not arg.generic_args.is_empty() and (_generics.has(arg.name) or _extern_generics.has(arg.name)):
+		var bare: GateAST.TypeRef = GateAST.TypeRef.new()
+		bare.name = arg.name
+		bare.generic_args = arg.generic_args
+		return _map_type_core(bare, false)
+	return arg.name if GateTypes.PACKED.has(arg.name) else GateTypes.canonical(arg.name)
 
 
 func _close_instantiations() -> void:
@@ -342,11 +456,14 @@ func _close_instantiations() -> void:
 			var entry: Array = _instantiations[key]
 			var saved: Dictionary = _subst
 			var saved_depth: Dictionary = _subst_depth
+			var saved_types: Dictionary = _subst_types
 			_subst = entry[1]
 			_subst_depth = entry[2] if entry.size() > 2 else {}
+			_subst_types = entry[3] if entry.size() > 3 else {}
 			_collect_instantiations((entry[0] as GateAST.ClassDecl).members)
 			_subst = saved
 			_subst_depth = saved_depth
+			_subst_types = saved_types
 		if _instantiations.size() == before:
 			return
 
@@ -365,18 +482,16 @@ func _note_type(t: GateAST.TypeRef) -> void:
 			var cd: GateAST.ClassDecl = _generics[t.name]
 			var sub: Dictionary = {}
 			var depths: Dictionary = {}
+			var full: Dictionary = {}
 			for i in cd.generic_params.size():
 				if i < st.generic_args.size():
-					var garg: String = st.generic_args[i].name
-					sub[cd.generic_params[i]] = (garg if GateTypes.PACKED.has(garg)
-						else GateTypes.canonical(garg))
-					depths[cd.generic_params[i]] = st.generic_args[i].array_depth
-			var identity: bool = false
-			for k in sub:
-				if sub[k] == k:
-					identity = true
-			if not identity:
-				_instantiations[mangled] = [cd, sub, depths]
+					var ga: GateAST.TypeRef = st.generic_args[i]
+					sub[cd.generic_params[i]] = _subst_value(ga)
+					depths[cd.generic_params[i]] = ga.array_depth
+					if _is_shape(ga):
+						full[cd.generic_params[i]] = _normalized(GateChecker.copy_type(ga))
+			if not _names_template_param(st):
+				_instantiations[mangled] = [cd, sub, depths, full]
 		else:
 			var prev: Array = _instantiations[mangled]
 			var prev_sub: Dictionary = prev[1]
@@ -386,7 +501,7 @@ func _note_type(t: GateAST.TypeRef) -> void:
 				if i2 >= st.generic_args.size():
 					continue
 				var key: String = cd2.generic_params[i2]
-				if prev_sub.get(key, "") != GateTypes.canonical(st.generic_args[i2].name):
+				if GateTypes.canonical(prev_sub.get(key, "")) != GateTypes.canonical(_subst_value(st.generic_args[i2])):
 					same = false
 			if not same and prev[0] == cd2:
 				diagnostics.error(
@@ -395,6 +510,24 @@ func _note_type(t: GateAST.TypeRef) -> void:
 					"the generated class name joins the type arguments with '_', so "
 					+ "argument names that already contain '_' can collide. Rename one "
 					+ "of the types involved.")
+
+
+func _names_template_param(t: GateAST.TypeRef) -> bool:
+	for g in t.generic_args:
+		var ga: GateAST.TypeRef = g
+		if _is_template_param(ga.name) or _names_template_param(ga):
+			return true
+	return false
+
+
+func _is_template_param(n: String) -> bool:
+	if _local_types.has(n) or _structs.has(n) or _extern_origin.has(n) \
+			or GateTypes.BUILTIN.has(GateTypes.canonical(n)) or ClassDB.class_exists(n):
+		return false
+	for tname in _generics:
+		if (_generics[tname] as GateAST.ClassDecl).generic_params.has(n):
+			return true
+	return false
 
 
 func _generic_name(t: GateAST.TypeRef) -> String:
@@ -612,6 +745,9 @@ func _map_type_core(t: GateAST.TypeRef, packed_hint: bool) -> String:
 		return ""
 	if t.is_path_literal:
 		return t.name
+	var shaped: GateAST.TypeRef = _param_shape(t)
+	if shaped != null:
+		return _map_type(shaped, packed_hint)
 	if _subst.has(t.name) and _subst[t.name] != t.name:
 		var concrete: GateAST.TypeRef = GateAST.TypeRef.new()
 		concrete.name = _subst[t.name]
@@ -620,9 +756,9 @@ func _map_type_core(t: GateAST.TypeRef, packed_hint: bool) -> String:
 		return _map_type(concrete, packed_hint)
 	if not t.generic_args.is_empty() and _extern_generics.has(t.name):
 		var ga: String = _extern_generic_alias(t.name)
-		return "%s.%s" % [ga, _generic_name(_substituted(t))]
+		return _arrayed("%s.%s" % [ga, _generic_name(_substituted(t))], t.array_depth)
 	if not t.generic_args.is_empty() and _generics.has(t.name):
-		return _generic_name(_substituted(t))
+		return _arrayed(_generic_name(_substituted(t)), t.array_depth)
 	if t.is_dict():
 		if t.dict_key != null and t.dict_key.array_depth == 0 and not t.dict_key.nullable:
 			var ks: Dictionary = _struct_of(t.dict_key.name)

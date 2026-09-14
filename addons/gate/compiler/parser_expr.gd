@@ -534,6 +534,13 @@ func _parse_primary() -> GateAST.Expr:
 		kid.at(t.line, t.col); kid.name = t.value
 		return kid
 	if t.type == GateLexer.T.IDENT:
+		if _qualified_generic_ahead():
+			var qual: GateLexer.Token = _advance()   # the namespace or class
+			_advance()                               # '.'
+			t = _cur()
+			_err("a generic is instantiated by its own name, not through '%s'" % qual.value,
+				"write `%s<...>`: a namespace qualifies the plain classes and structs it holds, "
+					% t.value + "but a generic, an interface and a trait take the direct name")
 		if _check_generic_instantiation():
 			_advance()
 			_split_generic_span(_i)
@@ -551,6 +558,7 @@ func _parse_primary() -> GateAST.Expr:
 			gid.at(t.line, t.col)
 			gid.name = mangle_generic(gtype)
 			gid.generic_base = gtype.name
+			gid.generic_type = gtype
 			return gid
 		_advance()
 		var id: GateAST.Ident = GateAST.Ident.new()

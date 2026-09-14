@@ -171,7 +171,27 @@ func _index(members: Array, owner: String) -> void:
 				open_types[cd.name] = true
 			if cd.extends_type != null:
 				bases[cd.name] = cd.extends_type.name
+			if not cd.generic_params.is_empty():
+				generic_params[cd.name] = cd.generic_params
 			_index(cd.members, cd.name)
+
+
+func subst_generic(t: GateAST.TypeRef, recv: GateAST.TypeRef) -> GateAST.TypeRef:
+	if t == null or recv == null or recv.generic_args.is_empty() or not generic_params.has(recv.name):
+		return t
+	var params: Array = generic_params[recv.name]
+	var at: int = params.find(t.name)
+	if at < 0 or at >= recv.generic_args.size():
+		return t
+	var c: GateAST.TypeRef = GateChecker.copy_type(recv.generic_args[at])
+	c.at(t.line, t.col)
+	if t.array_depth > 0:
+		c.elem_nullable = c.elem_nullable or (c.array_depth == 0 and c.nullable) or t.elem_nullable
+		c.nullable = t.nullable
+		c.array_depth += t.array_depth
+	else:
+		c.nullable = c.nullable or t.nullable
+	return c
 
 
 func _lookup(table: Dictionary, cls: String, key_suffix: String):
@@ -552,6 +572,11 @@ func type_of(e, locals: Dictionary) -> GateAST.TypeRef:
 		if c.callee is GateAST.Member:
 			var cm: GateAST.Member = c.callee
 			if cm.name == "new" and cm.target is GateAST.Ident:
+				var gt: GateAST.TypeRef = (cm.target as GateAST.Ident).generic_type
+				if gt != null and generic_params.has(gt.name):
+					var inst_t: GateAST.TypeRef = _named(gt.name)
+					inst_t.generic_args = gt.generic_args
+					return inst_t
 				return _named((cm.target as GateAST.Ident).name)
 			var recv: GateAST.TypeRef = type_of(cm.target, locals)
 			if recv != null and GateTypes.canonical(recv.name) == "Callable":
@@ -569,7 +594,7 @@ func type_of(e, locals: Dictionary) -> GateAST.TypeRef:
 				var cands: Array = method_candidates(recv.name, cm.name)
 				var fd: GateAST.FuncDecl = _pick(cands, c.args.size())
 				if fd != null:
-					return fd.return_type
+					return subst_generic(fd.return_type, recv)
 			return null
 		if c.callee is GateAST.Ident:
 			var fname: String = (c.callee as GateAST.Ident).name

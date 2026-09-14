@@ -12,6 +12,8 @@ var traits: Dictionary = {}       ## name -> ClassDecl
 var structs: Dictionary = {}      ## name -> ClassDecl
 var classes: Dictionary = {}      ## name -> ClassDecl
 
+const GENERIC_RECHECK_LIMIT := 256
+
 const ENGINE_PREFIX := "_"
 
 var _registry: Variant = null

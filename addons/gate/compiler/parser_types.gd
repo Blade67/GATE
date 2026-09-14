@@ -409,26 +409,29 @@ func _is_type_looking(name: String) -> bool:
 	return false
 
 
+func _qualified_generic_ahead() -> bool:
+	if not _peek(1).is_op(".") or _peek(2).type != GateLexer.T.IDENT:
+		return false
+	var open: GateLexer.Token = _peek(3)
+	if not (open.is_op("<") or open.is_op("<<")):
+		return false
+	if not _is_generic_name(_peek(2).value):
+		return false
+	return _generic_after(_i + 3, open.value == "<<")
+
+
 func _check_generic_instantiation() -> bool:
-	if not _peek(1).is_op("<"):
+	var nx: GateLexer.Token = _peek(1)
+	if nx.type != GateLexer.T.OP or not (nx.value == "<" or nx.value == "<<"):
 		return false
-	if not _is_type_looking(_cur().value):
+	return _is_generic_name(_cur().value) and _generic_after(_i + 1, nx.value == "<<")
+
+
+func _generic_after(from: int, strict: bool) -> bool:
+	var close: int = _generic_span_end(from, strict)
+	if close < 0 or close + 2 >= _toks.size():
 		return false
-	var j: int = _i + 1
-	var depth: int = 0
-	while j < _toks.size():
-		var tk: GateLexer.Token = _toks[j]
-		if tk.type == GateLexer.T.OP and tk.value == "<":
-			depth += 1
-		elif tk.type == GateLexer.T.OP and tk.value == ">":
-			depth -= 1
-			if depth == 0:
-				var nxt: GateLexer.Token = _toks[j + 1] if j + 1 < _toks.size() else null
-				return nxt != null and nxt.type == GateLexer.T.OP and nxt.value in [".", "("]
-		elif tk.type == GateLexer.T.NEWLINE:
-			return false
-		j += 1
-	return false
+	return _toks[close + 1].is_op(".") and _is_name_token(_toks[close + 2])
 
 
 const BUILTIN_GENERICS := {"Array": true, "Dictionary": true, "PackedScene": true}

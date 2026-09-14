@@ -115,6 +115,7 @@ var _external_structs: Dictionary = {}
 
 var _generics: Dictionary = {}          ## name -> ClassDecl with generic_params
 
+var _mono_template: Dictionary = {}   ## monomorphised class name -> its template's name
 var _instantiations: Dictionary = {}    ## mangled name -> [ClassDecl, {param: argname}]
 
 var _subst: Dictionary = {}

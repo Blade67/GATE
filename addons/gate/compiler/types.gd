@@ -106,6 +106,16 @@ static func _resolve_core(t: GateAST.TypeRef, diags: GateDiagnostics, packed_hin
 
 	var base: String = canonical(t.name)
 
+	if not t.generic_args.is_empty() and base == "Array" and t.generic_args.size() == 1:
+		return _resolve_core(_arrayed_arg(t), diags, packed_hint)
+	if not t.generic_args.is_empty() and base == "Dictionary" and t.generic_args.size() == 2:
+		var dv: String = _resolve_nested(t.generic_args[1], diags)
+		if dv == "":
+			if diags:
+				diags.warn("nested collection value has no Packed equivalent; inner type left unenforced",
+					t.line, t.col, "GDScript cannot express nested typed collections (proposal #12224)")
+			dv = _outer_only(t.generic_args[1])
+		return "Dictionary[%s, %s]" % [resolve(t.generic_args[0], diags), dv]
 	if not t.generic_args.is_empty() and (base == "Array" or base == "Dictionary"):
 		var parts: PackedStringArray = PackedStringArray()
 		for g in t.generic_args:
@@ -122,13 +132,23 @@ static func _resolve_core(t: GateAST.TypeRef, diags: GateDiagnostics, packed_hin
 					out = packed_for(raw_elem)
 				else:
 					out = "Array[%s]" % elem
-			else:
+			elif level == 1:
 				var inner: String = _packed_of_annotation(out, raw_elem if has_packed(raw_elem)
 					else elem, diags, t)
 				out = "Array[%s]" % inner
+			else:
+				out = "Array[Array]"
 		return out
 
 	return base
+
+
+static func _arrayed_arg(t: GateAST.TypeRef) -> GateAST.TypeRef:
+	var arg: GateAST.TypeRef = GateChecker.copy_type(t.generic_args[0])
+	arg.at(t.line, t.col)
+	arg.array_depth += 1 + t.array_depth
+	arg.nullable = t.nullable
+	return arg
 
 
 static func _resolve_nested(t: GateAST.TypeRef, diags: GateDiagnostics) -> String:
