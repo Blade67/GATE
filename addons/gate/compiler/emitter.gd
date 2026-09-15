@@ -30,6 +30,7 @@ func emit(mod: GateAST.Module, diags: GateDiagnostics, path: String) -> Dictiona
 	_enum_names.clear()
 	_in_namespace = false
 	_warned_narrow = false
+	_warned_packed = false
 
 	_declared_funcs.clear()
 	_func_returns.clear()
@@ -836,9 +837,19 @@ func _emit_fn_body(fd: GateAST.FuncDecl) -> void:
 
 
 func _emit_annotation(a: GateAST.Annotation) -> void:
-	if a.name == "observable":
-		return  # handled by _emit_var
+	if a.name in ["observable", "required", "export_if"]:
+		return  # handled by _emit_var and GateInject; Godot rejects all three
 	_line(_annotation_text(a), a.line)
+
+
+func _export_if_prefix(vd: GateAST.VarDecl) -> String:
+	if not _has_annotation(vd, "export_if"):
+		return ""
+	for a in vd.annotations:
+		var n: String = (a as GateAST.Annotation).name
+		if n != "export_if" and GateInject.is_export(n):
+			return ""
+	return "@export "
 
 
 func _annotation_text(a: GateAST.Annotation) -> String:
@@ -854,7 +865,7 @@ func _inline_annotation_prefix(node) -> String:
 	var out: String = ""
 	for a in node.annotations:
 		var an: GateAST.Annotation = a
-		if an.name in ["observable", "packed", "soa"]:
+		if an.name in ["observable", "packed", "soa", "required", "export_if"]:
 			continue
 		if an.line != node.line:
 			continue
@@ -1201,7 +1212,7 @@ func _emit_var(vd: GateAST.VarDecl) -> void:
 		_emit_scalar_replaced(vd)
 		return
 
-	var decl: String = _inline_annotation_prefix(vd)
+	var decl: String = _inline_annotation_prefix(vd) + _export_if_prefix(vd)
 	if vd.is_const:
 		decl += "const %s" % name
 	else:
@@ -1215,16 +1226,11 @@ func _emit_var(vd: GateAST.VarDecl) -> void:
 	elif infer_this:
 		decl += " :="
 		if value_src != "":
-			var itail: String = ":" if vd.setter != "" else ""
-			if vd.inline_accessors != "":
-				itail = " " + vd.inline_accessors
-			_line(decl + " " + value_src + itail, vd.line)
+			_line(decl + " " + value_src + _accessor_head(vd), vd.line)
 			_emit_accessor_tail(vd)
 			return
 
-	var tail: String = ":" if vd.setter != "" else ""
-	if vd.inline_accessors != "":
-		tail = " " + vd.inline_accessors
+	var tail: String = _accessor_head(vd)
 	if value_src != "":
 		if infer_this and vd.type == null:
 			_line("%s := %s%s" % [decl.trim_suffix(" :="), value_src, tail], vd.line)
@@ -1288,6 +1294,8 @@ func _emit_soa_decl(vd: GateAST.VarDecl) -> void:
 		if not fst.is_empty() and fst["lowering"] == "vector":
 			elem = fst["vector"]
 		var container: String = GateTypes.packed_for(elem)
+		if not _warned_packed and GateTypes.narrows_width(String(types[i])) and container != "":
+			_warn_packed(container, vd.line, vd.col)
 		if container == "":
 			container = "Array[%s]" % elem
 			_line("var %s: %s = []" % [arrays[i], container], vd.line)
@@ -1295,8 +1303,18 @@ func _emit_soa_decl(vd: GateAST.VarDecl) -> void:
 			_line("var %s: %s = %s()" % [arrays[i], container, container], vd.line)
 
 
+func _accessor_head(vd: GateAST.VarDecl) -> String:
+	if vd.inline_accessors != "":
+		return " " + vd.inline_accessors
+	if vd.setter != "" or vd.notify_line > 0:
+		return ":"
+	return ""
+
+
 func _emit_accessor_tail(vd: GateAST.VarDecl) -> void:
 	if vd.setter == "":
+		if vd.notify_line > 0 and vd.inline_accessors == "":
+			_emit_notifying_setter(vd)
 		return
 	var lines: PackedStringArray = vd.setter.split("\n")
 	var base: int = 0
@@ -1457,7 +1475,11 @@ func _emit_observable(vd: GateAST.VarDecl, name: String, value_src: String) -> v
 	if value_src != "":
 		decl += " = " + value_src
 	_line(decl, vd.line)
-	var pub_decl: String = "var %s" % name
+	for a in vd.annotations:
+		var va: GateAST.Annotation = a
+		if va.line != vd.line and not (va.name in ["observable", "packed", "required", "export_if"]):
+			_emit_annotation(va)
+	var pub_decl: String = _inline_annotation_prefix(vd) + _export_if_prefix(vd) + "var %s" % name
 	if tname != "":
 		pub_decl += ": " + tname
 	_line(pub_decl + ":", vd.line)
@@ -1476,6 +1498,8 @@ func _emit_observable(vd: GateAST.VarDecl, name: String, value_src: String) -> v
 		_line("if %s == v: return" % backing, vd.line)
 	_line("%s = v" % backing, vd.line)
 	_line("on_%s_changed.emit(v)" % vd.name, vd.line)
+	if vd.notify_line > 0:
+		_line("notify_property_list_changed()", vd.notify_line)
 	_indent -= 1
 	_line("get:", vd.line)
 	_indent += 1

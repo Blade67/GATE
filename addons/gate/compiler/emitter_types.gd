@@ -735,9 +735,37 @@ func _is_class_struct(t: GateAST.TypeRef) -> bool:
 
 func _map_type(t: GateAST.TypeRef, packed_hint := false) -> String:
 	var mapped: String = _map_type_core(t, packed_hint)
+	if not _warned_packed and t != null:
+		if (mapped.contains("PackedInt32Array") and _names_elem(t, "int")) \
+				or (mapped.contains("PackedFloat32Array") and _names_elem(t, "float")):
+			_warn_packed(mapped, t.line, t.col)
 	if t != null and t.nullable and not GateTypes.is_gd_nullable(mapped):
 		return "Variant"
 	return mapped
+
+
+## Whether `elem` is written as an array's element anywhere in `t`. `i32` and `f32`
+## ask for 32 bits by name, so only `int` and `float` count.
+static func _names_elem(t: GateAST.TypeRef, elem: String) -> bool:
+	if t == null:
+		return false
+	if t.array_depth > 0 and t.name == elem:
+		return true
+	for sub in [t.dict_key, t.dict_value]:
+		if _names_elem(sub, elem):
+			return true
+	for g in t.generic_args:
+		if _names_elem(g, elem):
+			return true
+	return false
+
+
+func _warn_packed(mapped: String, line: int, col: int) -> void:
+	_warned_packed = true
+	diagnostics.warn(
+		"stored as %s, which holds 32-bit values" % mapped, line, col,
+		"GDScript's int and float are 64-bit, so a value past 2^31, or `1e300`, does not "
+		+ "read back. Write `i64` / `f64` to keep the full width. Reported once per file.")
 
 
 func _map_type_core(t: GateAST.TypeRef, packed_hint: bool) -> String:

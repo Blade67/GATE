@@ -66,10 +66,14 @@ prefer it; both compile to the same line.
 
 ```gdscript
 vec2i[] tiles           # Array[Vector2i]
-int[] scores            # PackedInt32Array
+int[] scores            # Array[int]
+@packed int[] ids       # PackedInt32Array
 {str, int} counts       # Dictionary[String, int]
 {str, vec2} spawns      # Dictionary[String, Vector2]
 ```
+
+`T[]` is always an `Array[T]` unless you ask for `@packed`. `x is int[]` is true for either
+form.
 
 The bracket you declare with is the bracket you initialise with: `T[]` takes `[]`,
 `{K, V}` takes `{}`. `{T}` with a single parameter is reserved and not accepted.
@@ -94,16 +98,18 @@ inner arrays in a struct or a class, or leave the type off.
 
 ### Numeric width
 
-`int[]` and `float[]` lower to `PackedInt32Array` and `PackedFloat32Array`, which store
-32-bit values. GDScript's own `int` and `float` are 64-bit, so this is a narrowing, and GATE
-warns once per file when it applies.
+A packed `int` or `float` array, whether from `@packed` or the inner level of a nested
+collection, is a `PackedInt32Array` or `PackedFloat32Array`, which store 32-bit values.
+GDScript's own `int` and `float` are 64-bit, so this is a narrowing, and GATE warns once per
+file when it applies.
 
-Use `i64` or `f64` to keep the full width. The array then lowers to `PackedInt64Array` or
+Use `i64` or `f64` to keep the full width. The packed array is then a `PackedInt64Array` or
 `PackedFloat64Array`, and a struct using them lowers to a class rather than a Vector.
 
 ```gdscript
-float[] samples         # PackedFloat32Array
-f64[] precise           # PackedFloat64Array
+@packed float[] samples # PackedFloat32Array
+@packed f64[] precise   # PackedFloat64Array
+f64[][] grid            # Array[PackedFloat64Array]
 ```
 
 ## Nullable types
@@ -465,6 +471,21 @@ arguments are a compile error.
 | `@observable` | emits `on_<name>_changed(value)` and a getter/setter pair that fires it, also when part of a struct it holds changes |
 | `@soa` | stores an array of structs as one array per field |
 | `@packed` | asks for the `Packed*` lowering where it is not automatic |
+| `@required` | on an exported object property of a Node script: asserts in `_ready` that it was set; debug builds only, and not in the editor |
+| `@export_if(cond)` | shows the exported property in the inspector only while `cond` holds; the script must be `@tool` |
+
+```gdscript
+@tool
+extends Node
+
+@export @required Node2D target
+@export bool use_timer = false
+@export_if(use_timer) float delay = 1.0
+```
+
+`@required` merges its check into your own `_ready` if you have one. `@export_if` generates
+`_validate_property`, or merges into yours, and makes the condition's properties refresh the
+inspector when they change. GATE never adds `@tool` itself.
 
 GDScript's own annotations pass through unchanged. `@export` on a struct that lowers to a
 class is a compile error: that class is a `RefCounted`, and Godot exports only Resources and

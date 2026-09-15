@@ -87,7 +87,7 @@ still works exactly as it does in GDScript.
 int hp = 100            # var hp: int = 100
 str label = "player"    # var label: String = "player"
 vec2i[] tiles           # Array[Vector2i]
-int[] scores            # PackedInt32Array
+int[] scores            # Array[int]
 {str, int} counts       # Dictionary[String, int]
 int[][] grid            # Array[PackedInt32Array] - GDScript rejects nested typed collections
 ```

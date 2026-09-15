@@ -98,6 +98,8 @@ class Registry extends RefCounted:
 
 const IGNORE_DIRS := ["addons", ".godot", ".git", ".import"]
 
+const SYNTHESISED := ["_ready", "_validate_property"]
+
 var registry: Registry = Registry.new()
 
 

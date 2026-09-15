@@ -153,6 +153,7 @@ var _generic_renames: Dictionary = {}
 var _in_namespace: bool = false
 
 var _warned_narrow: bool = false
+var _warned_packed: bool = false
 
 var _in_func_body: bool = false
 
