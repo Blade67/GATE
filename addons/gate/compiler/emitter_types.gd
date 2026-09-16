@@ -1540,12 +1540,1200 @@ func _is_bare_ident(rendered: String) -> bool:
 	return true
 
 
-func _is_simple(e) -> bool:
+func _repeatable(e, rendered: String) -> bool:
+	if e is GateAST.Literal or e is GateAST.SelfExpr:
+		return true
+	if e is GateAST.Member and not (e as GateAST.Member).safe:
+		var fm: GateAST.Member = e
+		if fm.target is GateAST.SelfExpr:
+			if (rendered == "self." + fm.name
+					and _plain_fields.has("%s#%s" % [_scope_class, fm.name])):
+				return true
+		elif fm.target is GateAST.Ident:
+			var tn: String = (fm.target as GateAST.Ident).name
+			if rendered == "%s.%s" % [tn, fm.name] and _repeatable(fm.target, tn):
+				var owner: String = _declared_type_of(fm.target)
+				if owner != "" and _plain_fields.has("%s#%s" % [owner, fm.name]):
+					return true
+	if not _is_bare_ident(rendered):
+		return false
+	if _fn_locals.has(rendered) or _tmp_names.has(rendered):
+		return true
+	return _plain_fields.has("%s#%s" % [_scope_class, rendered])
+
+
+func _stable(e, text: String) -> bool:
+	if _tmp_names.has(text):
+		return true
+	if text.ends_with("._gate_copy()") or text.contains("._gate_copy() if "):
+		return false
+	return _stable_node(e)
+
+
+func _stable_node(e) -> bool:
+	if e is GateAST.Literal or e is GateAST.SelfExpr or e is GateAST.Lambda:
+		return true   # (a lambda expression only builds a Callable)
+	if e is GateAST.Ident:
+		var n: String = (e as GateAST.Ident).name
+		return (_fn_locals.has(n) and not _soa.has(n) and not _soa_cursors.has(n)
+			and _extern_alias(n) == "")
+	if e is GateAST.Unary:
+		return _stable_node((e as GateAST.Unary).operand) and _plain_value(
+			(e as GateAST.Unary).operand)
+	if e is GateAST.Binary:
+		var b: GateAST.Binary = e
+		if _binary_lowering(b) != "":
+			return false   # an overloaded operator is a method call
+		return (_stable_node(b.left) and _stable_node(b.right)
+			and _plain_value(b.left) and _plain_value(b.right))
+	return false
+
+
+const CONTAINER_BUILTINS := ["Array", "Dictionary", "Variant", "Callable", "Signal"]
+
+
+func _plain_value(e) -> bool:
+	if e is GateAST.Literal:
+		return true
+	if e is GateAST.Unary:
+		return _plain_value((e as GateAST.Unary).operand)
+	if e is GateAST.Binary:
+		return _plain_value((e as GateAST.Binary).left) and _plain_value((e as GateAST.Binary).right)
+	if e is GateAST.Ident and _fn_locals.has((e as GateAST.Ident).name):
+		var c: String = GateTypes.canonical(_declared_type_of(e))
+		return GateTypes.BUILTIN.has(c) and not CONTAINER_BUILTINS.has(c)
+	return false
+
+
+func _render_once(e, rendered: String) -> String:
+	if _repeatable(e, rendered):
+		return rendered
+	var ctx: String = _no_hoist_ctx()
+	if ctx == "const" or (ctx != "" and _dev_simple(e)):
+		return rendered
+	if ctx == "param" or ctx == "annotation":
+		diagnostics.error("this needs a temporary, and %s has nowhere to put one"
+				% ("a default parameter value" if ctx == "param" else "an annotation argument"),
+			e.line, e.col,
+			"`??`, `?.` and `?[` after a call evaluate it into a temporary first. "
+			+ "Compute the value in the function body instead.")
+		return rendered
+	var t: String = _new_tmp()
+	var text: String = rendered
+	if _text_prec(e, rendered) < PREC_ATOM and _wrapped(rendered) and not (e is GateAST.Lambda):
+		text = rendered.substr(1, rendered.length() - 2)
+	_hoist("var %s = %s" % [t, text])
+	return t
+
+
+static func _has_safe_step(e) -> bool:
+	var node = e
+	while node is GateAST.Member or node is GateAST.Index:
+		if node.safe:
+			return true
+		node = node.target
+	return false
+
+
+static func _has_null_ops(e) -> bool:
+	if e == null or not (e is GateAST.Expr):
+		return false
+	if e is GateAST.NullCoalesce:
+		return true
+	if (e is GateAST.Member or e is GateAST.Index) and e.safe:
+		return true
+	if e is GateAST.Lambda:
+		return false
+	for part in _sub_exprs(e):
+		if _has_null_ops(part):
+			return true
+	return false
+
+
+static func _sub_exprs(e) -> Array:
+	if e is GateAST.Unary:
+		return [(e as GateAST.Unary).operand]
+	if e is GateAST.Binary:
+		return [(e as GateAST.Binary).left, (e as GateAST.Binary).right]
+	if e is GateAST.NullCoalesce:
+		return [(e as GateAST.NullCoalesce).left, (e as GateAST.NullCoalesce).right]
+	if e is GateAST.Ternary:
+		return [(e as GateAST.Ternary).cond, (e as GateAST.Ternary).if_true, (e as GateAST.Ternary).if_false]
+	if e is GateAST.Member:
+		return [(e as GateAST.Member).target]
+	if e is GateAST.Index:
+		return [(e as GateAST.Index).target, (e as GateAST.Index).index]
+	if e is GateAST.Call:
+		return [(e as GateAST.Call).callee] + (e as GateAST.Call).args
+	if e is GateAST.ArrayLit:
+		return (e as GateAST.ArrayLit).elements
+	if e is GateAST.DictLit:
+		return (e as GateAST.DictLit).keys + (e as GateAST.DictLit).values
+	if e is GateAST.CastExpr:
+		return [(e as GateAST.CastExpr).operand]
+	if e is GateAST.IsExpr:
+		return [(e as GateAST.IsExpr).operand]
+	if e is GateAST.AwaitExpr:
+		return [(e as GateAST.AwaitExpr).operand]
+	if e is GateAST.Widen:
+		return (e as GateAST.Widen).args
+	return []
+
+
+func _may_be_null(e) -> bool:
+	if (e is GateAST.Member or e is GateAST.Index) and _has_safe_step(e):
+		return true
+	if e is GateAST.Call and _has_safe_step((e as GateAST.Call).callee):
+		return true
+	if e is GateAST.Expr and (e as GateAST.Expr).flow_type != null:
+		return (e as GateAST.Expr).flow_type.nullable
+	if e is GateAST.Literal:
+		return (e as GateAST.Literal).kind == "null"
+	if e is GateAST.NullCoalesce:
+		return _may_be_null((e as GateAST.NullCoalesce).right)
+	if e is GateAST.Ternary:
+		return _may_be_null((e as GateAST.Ternary).if_true) or _may_be_null((e as GateAST.Ternary).if_false)
+	if e is GateAST.Binary or e is GateAST.Unary or e is GateAST.IsExpr or e is GateAST.ArrayLit \
+			or e is GateAST.DictLit or e is GateAST.FString or e is GateAST.Lambda:
+		return false
+	var tr: GateAST.TypeRef = _value_tref(e)
+	if tr != null:
+		return tr.nullable
+	var key: String = _declared_type_of(e)
+	if key == "":
+		return true
+	if e is GateAST.Call:
+		var dc: String = GateTypes.canonical(key)
+		return not (GateTypes.BUILTIN.has(dc) and dc != "Variant") \
+			and not ((e as GateAST.Call).callee is GateAST.Member
+				and ((e as GateAST.Call).callee as GateAST.Member).name == "new") \
+			and _ctor_struct_of(String(key)).is_empty()
+	var c: String = GateTypes.canonical(key)
+	return not (GateTypes.BUILTIN.has(c) and c != "Variant")
+
+
+func _type_text_of_key(key: String) -> String:
+	if key == "" or key == "." or key == "Variant":
+		return ""
+	if GateTypes.BUILTIN.has(key) or ClassDB.class_exists(key) or _instantiations.has(key):
+		return key
+	if _class_decls.has(key):
+		var cd: GateAST.ClassDecl = _class_decls[key]
+		if cd.form == "struct":
+			var st: Dictionary = _struct_of(cd.name)
+			if not st.is_empty() and st["lowering"] == "vector":
+				return String(st["vector"])
+		return key if cd.form in ["class", "struct"] and cd.generic_params.is_empty() else ""
+	return ""
+
+
+## Renders operands left to right. When one has to be hoisted, everything to its left
+## that could run code is hoisted first, so the order Godot would use is kept.
+func _ordered(nodes: Array, render_at: Callable) -> PackedStringArray:
+	var out: Array = []   # an Array, not a Packed one: _spill_before edits it in place
+	for i in nodes.size():
+		var before: int = _pending.size()
+		var txt: String = render_at.call(i)
+		if _pending.size() > before and _no_hoist_ctx() == "" and _in_lvalue == 0:
+			_spill_before(nodes, out, i, before)
+		out.append(txt)
+	return PackedStringArray(out)
+
+
+func _spill_before(nodes: Array, out: Array, upto: int, at: int) -> void:
+	var ins: int = at
+	for j in upto:
+		if _stable(nodes[j], out[j]):
+			continue
+		var t: String = _new_tmp()
+		_hoist_at(ins, "var %s = %s" % [t, out[j]])
+		ins += 1
+		out[j] = t
+
+
+func _no_hoist_ctx() -> String:
+	if _no_hoist != "":
+		return _no_hoist
+	return "" if _in_func_body else "field"
+
+
+func _keeps_inplace(e) -> bool:
+	var ctx: String = _no_hoist_ctx()
+	return ctx == "const" or (ctx == "annotation" and _dev_simple(e))
+
+
+func _dev_simple(e) -> bool:
 	if e is GateAST.Ident or e is GateAST.Literal or e is GateAST.SelfExpr:
 		return true
 	if e is GateAST.Member:
-		return not (e as GateAST.Member).safe and _is_simple((e as GateAST.Member).target)
+		return not (e as GateAST.Member).safe and _dev_simple((e as GateAST.Member).target)
 	return false
+
+
+func _index_plain_fields(members: Array, key: String) -> void:
+	if not _class_fields.has(key):
+		_class_fields[key] = {}
+	if not _class_funcs.has(key):
+		_class_funcs[key] = {}
+	_class_inits[key] = _init_param_count(members)
+	if not _class_priv.has(key):
+		_class_priv[key] = {}
+	for m in members:
+		if (m is GateAST.VarDecl or m is GateAST.FuncDecl) and m.visibility == "priv" \
+				and not String(m.name).begins_with("_"):
+			_class_priv[key][String(m.name)] = true
+		if m is GateAST.VarDecl:
+			var vd: GateAST.VarDecl = m
+			if (vd.setter == "" and vd.inline_accessors == "" and vd.getter == ""
+					and not _has_annotation(vd, "observable")):
+				_plain_fields["%s#%s" % [key, vd.name]] = true
+			elif _has_annotation(vd, "observable") and vd.type != null and vd.type.array_depth == 0:
+				_observable_fields["%s#%s" % [key, vd.name]] = vd.type.name
+			if vd.type != null:
+				_class_field_types["%s#%s" % [key, vd.name]] = vd.type
+			elif vd.is_const and _is_scene_preload(vd.value):
+				var scene_t: GateAST.TypeRef = GateAST.TypeRef.new()
+				scene_t.name = "PackedScene"
+				_class_field_types["%s#%s" % [key, vd.name]] = scene_t
+			if not vd.is_const:
+				_class_fields[key][vd.name] = true
+			for sa in vd.annotations:
+				if (sa as GateAST.Annotation).name == "soa":
+					_soa_fields["%s#%s" % [key, vd.name]] = true
+		elif m is GateAST.FuncDecl:
+			var fd: GateAST.FuncDecl = m
+			if not (_class_funcs[key] as Dictionary).has(fd.name):
+				_class_funcs[key][fd.name] = []
+			_class_funcs[key][fd.name].append(fd)
+		elif m is GateAST.ClassDecl:
+			var cd: GateAST.ClassDecl = m
+			var ck: String = _qjoin(key, cd.name)
+			_class_decls[ck] = cd
+			_class_parent[ck] = key
+			_class_base[ck] = cd.extends_type
+			_index_plain_fields(cd.members, ck)
+
+
+func _index_const_vectors(members: Array, key: String) -> void:
+	var saved: String = _scope_class
+	_scope_class = key
+	for m in members:
+		if m is GateAST.VarDecl:
+			var vd: GateAST.VarDecl = m
+			var fk: String = "%s#%s" % [key, vd.name]
+			if not vd.is_const or vd.type != null or vd.value == null or _class_field_types.has(fk):
+				continue
+			var vk: String = GateTypes.canonical(_declared_type_of(vd.value))
+			if SWIZZLE_SIZES.has(vk):
+				var tr: GateAST.TypeRef = GateAST.TypeRef.new()
+				tr.name = vk
+				_class_field_types[fk] = tr
+		elif m is GateAST.ClassDecl:
+			_index_const_vectors((m as GateAST.ClassDecl).members, _qjoin(key, (m as GateAST.ClassDecl).name))
+	_scope_class = saved
+
+
+static func _qjoin(parent: String, name: String) -> String:
+	return name if parent == "." else "%s.%s" % [parent, name]
+
+
+func _method_emit_name(target, name: String, arity: int, owner: String = "") -> String:
+	var mangled: String = _resolve_overload(name, arity)
+	if mangled != "":
+		var owner_t: String = owner
+		if owner_t == "":
+			owner_t = _cur_class if target is GateAST.SelfExpr else _static_type_of(target)
+		if owner_t != "" and _overload_declared_by_chain(name, owner_t):
+			return mangled
+	return _member_name(owner if owner != "" else _owner_key(target), name)
+
+
+func _owner_key(target) -> String:
+	if target is GateAST.SelfExpr:
+		return _scope_class
+	return _declared_type_of(target)
+
+
+func _member_name(owner: String, name: String) -> String:
+	var q: String = owner if (owner == "." or _class_decls.has(owner)) else ""
+	var ext: String = owner if q == "" else ""
+	var seen: Dictionary = {}
+	while q != "" and not seen.has(q):
+		seen[q] = true
+		if (_class_priv.get(q, {}) as Dictionary).has(name):
+			return "_" + name
+		if ((_class_fields.get(q, {}) as Dictionary).has(name)
+				or (_class_funcs.get(q, {}) as Dictionary).has(name)):
+			return name
+		var b: Dictionary = _base_of(q)
+		q = String(b["key"]) if String(b["kind"]) == "local" else ""
+		if String(b["kind"]) == "ext":
+			ext = String(b["name"])
+	for _guard in 64:
+		if ext == "" or seen.has(ext) or not _reg_classes.has(ext):
+			break
+		seen[ext] = true
+		for m in (_reg_classes[ext] as GateAST.ClassDecl).members:
+			if (m is GateAST.VarDecl or m is GateAST.FuncDecl) and m.name == name:
+				return "_" + name if m.visibility == "priv" and not name.begins_with("_") else name
+		ext = String(_reg_bases.get(ext, ""))
+	return name
+
+
+## Resolves a class name the way Godot does, from the inside out.
+func _resolve_class(scope: String, ref: String) -> String:
+	if ref == "" or ref.begins_with("res://") or ref.contains("\"") or ref.contains("'"):
+		return ""
+	var parts: PackedStringArray = ref.split(".")
+	var q: String = ""
+	var s: String = scope
+	for _guard in 64:
+		var cand: String = _qjoin(s, parts[0])
+		if _class_decls.has(cand):
+			q = cand
+			break
+		if s == "." or not _class_parent.has(s):
+			break
+		s = String(_class_parent[s])
+	if q == "":
+		if parts[0] != _self_class_name or _self_class_name == "":
+			return ""
+		q = "."
+	for i in range(1, parts.size()):
+		var nxt: String = _qjoin(q, parts[i])
+		if not _class_decls.has(nxt):
+			return ""
+		q = nxt
+	return q
+
+
+func _base_of(key: String) -> Dictionary:
+	var tr = _class_base.get(key)
+	if tr == null:
+		return {"kind": "none"}
+	var t: GateAST.TypeRef = tr
+	if t.is_path_literal or t.name.begins_with("res://") or t.name.contains("\""):
+		return {"kind": "path"}
+	var q: String = _resolve_class(String(_class_parent.get(key, ".")), t.name)
+	if q != "" and q != key:
+		return {"kind": "local", "key": q}
+	return {"kind": "ext", "name": t.name}
+
+
+func _name_key(scope: String, n: String) -> String:
+	if n == "":
+		return ""
+	if _subst.has(n) and String(_subst[n]) != n:
+		n = String(_subst[n])   # a generic parameter, inside one instantiation
+	var q: String = _resolve_class(scope, n)
+	return q if q != "" else GateTypes.canonical(n)
+
+
+func _decl_info(scope: String, tr) -> Dictionary:
+	if tr == null:
+		return {}
+	return {"t": _name_key(scope, _scalar_type_name(tr)),
+		"e": _name_key(scope, _element_type_name(tr)),
+		"k": _name_key(scope, _key_type_name(tr)),
+		"g": _name_key(scope, _scene_root_name(tr)),
+		"tr": tr, "scope": scope}
+
+
+static func _scene_root_name(tr) -> String:
+	if tr == null:
+		return ""
+	var t: GateAST.TypeRef = tr
+	if t.array_depth != 0 or t.generic_args.size() != 1 or GateTypes.canonical(t.name) != "PackedScene":
+		return ""
+	return _scalar_type_name(t.generic_args[0])
+
+
+static func _key_type_name(tr) -> String:
+	if tr == null:
+		return ""
+	var t: GateAST.TypeRef = tr
+	if t.is_dict():
+		return _scalar_type_name(t.dict_key)
+	if t.array_depth == 0 and t.generic_args.size() == 2 and GateTypes.canonical(t.name) == "Dictionary":
+		return _scalar_type_name(t.generic_args[0])
+	return ""
+
+
+func _declared_tref(e) -> GateAST.TypeRef:
+	if not (e is GateAST.Ident):
+		return null
+	var n: String = (e as GateAST.Ident).name
+	if _fn_locals.has(n):
+		return (_fn_locals[n] as Dictionary).get("tr", null)
+	return _class_field_types.get("%s#%s" % [_scope_class, n], null)
+
+
+func _value_tref(e) -> GateAST.TypeRef:
+	if e is GateAST.Ident:
+		var n: String = (e as GateAST.Ident).name
+		if _fn_locals.has(n):
+			return (_fn_locals[n] as Dictionary).get("tr", null)
+		return _member_tref(_scope_class, n, false)
+	if e is GateAST.Member and not (e as GateAST.Member).safe:
+		var m: GateAST.Member = e
+		if m.target is GateAST.SelfExpr:
+			return _member_tref(_scope_class, m.name, false)
+		var owner: String = _declared_type_of(m.target)
+		if owner == "" and _static_type_of(m.target) != "":
+			owner = _name_key(_scope_class, _static_type_of(m.target))
+		return _member_tref(owner, m.name, false) if owner != "" else null
+	if e is GateAST.Call:
+		var c: GateAST.Call = e
+		if c.callee is GateAST.Ident:
+			return _member_tref(_scope_class, (c.callee as GateAST.Ident).name, true)
+		if c.callee is GateAST.Member and not (c.callee as GateAST.Member).safe:
+			var cm: GateAST.Member = c.callee
+			if cm.target is GateAST.SelfExpr:
+				return _member_tref(_scope_class, cm.name, true)
+			var cowner: String = _declared_type_of(cm.target)
+			return _member_tref(cowner, cm.name, true) if cowner != "" else null
+	return null
+
+
+func _container_tref(e) -> GateAST.TypeRef:
+	if e is GateAST.Call and (e as GateAST.Call).callee is GateAST.Member \
+			and not ((e as GateAST.Call).callee as GateAST.Member).safe:
+		var cm: GateAST.Member = (e as GateAST.Call).callee
+		var rt: GateAST.TypeRef = _container_tref(cm.target)
+		if rt != null:
+			var parts: Array = _dict_parts(rt)
+			if not parts.is_empty():
+				if cm.name == "duplicate":
+					return rt
+				if cm.name == "values" or cm.name == "keys":
+					var el: GateAST.TypeRef = parts[1] if cm.name == "values" else parts[0]
+					if el == null:
+						return null
+					var arr: GateAST.TypeRef = GateChecker.copy_type(el)
+					arr.array_depth += 1
+					if el.nullable:
+						arr.nullable = false
+						arr.elem_nullable = true
+					return arr
+			elif _is_array_tref(rt) and cm.name in ["duplicate", "slice", "filter"]:
+				return rt
+	if e is GateAST.Ternary:
+		var tt: GateAST.Ternary = e
+		var a: GateAST.TypeRef = _container_tref(tt.if_true)
+		var b: GateAST.TypeRef = _container_tref(tt.if_false)
+		if a != null and b != null and a.name == b.name and a.array_depth == b.array_depth:
+			return a
+		return null
+	if e is GateAST.Binary and (e as GateAST.Binary).op == "+":
+		var lt: GateAST.TypeRef = _container_tref((e as GateAST.Binary).left)
+		return lt if _is_array_tref(lt) else null
+	return _value_tref(e)
+
+
+static func _array_elem(t: GateAST.TypeRef) -> GateAST.TypeRef:
+	if t.array_depth > 0:
+		var el: GateAST.TypeRef = GateChecker.copy_type(t)
+		el.array_depth -= 1
+		el.nullable = t.elem_nullable if el.array_depth == 0 else false
+		if el.array_depth == 0:
+			el.elem_nullable = false
+		return el
+	return t.generic_args[0] if t.generic_args.size() == 1 else null
+
+
+static func _is_array_tref(t: GateAST.TypeRef) -> bool:
+	return t != null and (t.array_depth > 0 or (GateTypes.canonical(t.name) == "Array"
+		and t.generic_args.size() == 1 and not t.is_tuple()))
+
+
+func _struct_field_tref(owner: String, field: String) -> GateAST.TypeRef:
+	var st: Dictionary = _struct_of(owner)
+	if st.is_empty() and owner.contains("."):
+		st = _struct_of(owner.get_slice(".", owner.get_slice_count(".") - 1))
+	if st.is_empty():
+		return null
+	var fi: int = (st["fields"] as Array).find(field)
+	return (st["typerefs"] as Array)[fi] if fi >= 0 else null
+
+
+func _instance_tref(t: GateAST.TypeRef, mangled: String) -> GateAST.TypeRef:
+	var entry: Array = _instantiations.get(mangled, [])
+	if t == null or entry.size() < 2 or not (entry[1] as Dictionary).has(t.name):
+		return t
+	var c: GateAST.TypeRef = GateChecker.copy_type(t)
+	c.name = String(entry[1][t.name])
+	if entry.size() > 2:
+		c.array_depth += int((entry[2] as Dictionary).get(t.name, 0))
+	return c
+
+
+func _member_tref(owner: String, name: String, fn: bool) -> GateAST.TypeRef:
+	if _mono_template.has(owner):
+		return _instance_tref(_member_tref(String(_mono_template[owner]), name, fn), owner)
+	var q: String = owner
+	var seen: Dictionary = {}
+	while q != "" and not seen.has(q):
+		seen[q] = true
+		if fn:
+			var fns: Array = (_class_funcs.get(q, {}) as Dictionary).get(name, [])
+			if fns.size() == 1:
+				return (fns[0] as GateAST.FuncDecl).return_type
+			if fns.size() > 1:
+				return null
+		else:
+			var ft = _class_field_types.get("%s#%s" % [q, name])
+			if ft != null:
+				return ft
+			if (_class_fields.get(q, {}) as Dictionary).has(name):
+				return null
+		if not (q == "." or _class_decls.has(q)):
+			return null
+		var b: Dictionary = _base_of(q)
+		q = String(b["key"]) if String(b["kind"]) == "local" else ""
+	return null
+
+
+func _loop_elem_tref(it) -> GateAST.TypeRef:
+	if it is GateAST.Call and (it as GateAST.Call).args.is_empty() \
+			and (it as GateAST.Call).callee is GateAST.Member:
+		var cm: GateAST.Member = (it as GateAST.Call).callee
+		if not cm.safe and (cm.name == "values" or cm.name == "keys"):
+			var parts: Array = _dict_parts(_container_tref(cm.target))
+			if not parts.is_empty():
+				return parts[1] if cm.name == "values" else parts[0]
+	var parts2: Array = _dict_parts(_container_tref(it))
+	if not parts2.is_empty():
+		return parts2[0]
+	return _elem_tref_of(it)
+
+
+func _tuple_tref(tr: GateAST.TypeRef) -> GateAST.TypeRef:
+	if tr == null or tr.array_depth != 0:
+		return null
+	if tr.is_tuple():
+		return tr
+	if not tr.is_union():
+		return null
+	var found: GateAST.TypeRef = null
+	for m in tr.union_members:
+		var mt: GateAST.TypeRef = m
+		if mt.array_depth != 0 or not mt.is_tuple():
+			continue
+		if found != null:
+			return null
+		found = mt
+	return found
+
+
+func _dict_parts(tr: GateAST.TypeRef) -> Array:
+	if tr == null or tr.array_depth != 0:
+		return []
+	if tr.is_dict():
+		return [tr.dict_key, tr.dict_value]
+	if GateTypes.canonical(tr.name) == "Dictionary" and tr.generic_args.size() == 2:
+		return [tr.generic_args[0], tr.generic_args[1]]
+	return []
+
+
+func _elem_tref_of(e, i: int = -1) -> GateAST.TypeRef:
+	var tr: GateAST.TypeRef = _container_tref(e)
+	var tup: GateAST.TypeRef = _tuple_tref(tr)
+	if tup != null:
+		return tup.tuple_elems[i] if i >= 0 and i < tup.tuple_elems.size() else null
+	var n: String = ""
+	if tr != null:
+		if not _dict_parts(tr).is_empty():
+			return _dict_parts(tr)[1]
+		if tr.array_depth == 0 and GateTypes.canonical(tr.name) == "Array" and tr.generic_args.size() == 1:
+			return tr.generic_args[0]
+		if tr.array_depth == 1 and tr.generic_args.is_empty():
+			var el: GateAST.TypeRef = GateChecker.copy_type(tr)
+			el.array_depth = 0
+			el.nullable = tr.elem_nullable
+			el.elem_nullable = false
+			return el
+		n = _element_type_name(tr)
+	elif e is GateAST.Ident:
+		var an: String = (e as GateAST.Ident).name
+		if _var_dict_values.has(an):
+			n = _var_dict_values[an]
+		elif int(_var_depths.get(an, 0)) == 1:
+			n = String(_var_types.get(an, ""))
+		elif not _fn_locals.has(an):
+			n = _field_key(_scope_class, an, true)
+	if n == "":
+		return null
+	var out: GateAST.TypeRef = GateAST.TypeRef.new()
+	out.name = n
+	return out
+
+
+static func _is_scene_preload(e) -> bool:
+	if not (e is GateAST.Call):
+		return false
+	var c: GateAST.Call = e
+	if not (c.callee is GateAST.Ident) or (c.callee as GateAST.Ident).name != "preload":
+		return false
+	if c.args.size() != 1 or not (c.args[0] is GateAST.Literal):
+		return false
+	var lit: GateAST.Literal = c.args[0]
+	if lit.kind != "string":
+		return false
+	var path: String = lit.raw.rstrip("\"'")
+	return path.ends_with(".tscn") or path.ends_with(".scn")
+
+
+static func _init_param_count(members: Array) -> int:
+	for m in members:
+		if m is GateAST.FuncDecl and (m as GateAST.FuncDecl).name == "_init":
+			return (m as GateAST.FuncDecl).params.size()
+	return -1
+
+
+func _ctor_takes_params(scope: String, ref: String, instantiated: bool = false) -> int:
+	var q: String = _resolve_class(scope, ref)
+	var ext: String = ref if q == "" else ""
+	var seen: Dictionary = {}
+	for _guard in 64:
+		if q != "":
+			if seen.has(q):
+				return -1
+			seen[q] = true
+			var cd = _class_decls.get(q)
+			if cd != null and ((cd as GateAST.ClassDecl).form != "class"
+					or (not (cd as GateAST.ClassDecl).generic_params.is_empty() and not instantiated)):
+				return -1
+			instantiated = false
+			var n: int = int(_class_inits.get(q, -1))
+			if n >= 0:
+				return 1 if n > 0 else 0
+			var b: Dictionary = _base_of(q)
+			match String(b["kind"]):
+				"none":
+					return 0   # no extends: RefCounted, whose constructor takes nothing
+				"path":
+					return -1  # a base GATE cannot see may take parameters
+				"local":
+					q = String(b["key"])
+				_:
+					q = ""
+					ext = String(b["name"])
+			continue
+		if (ext == "" or not _struct_of(ext).is_empty() or _generics.has(ext)
+				or _interface_names.has(ext) or _erased_types.has(ext) or seen.has(ext)):
+			return -1
+		seen[ext] = true
+		if _reg_classes.has(ext):
+			var rcd: GateAST.ClassDecl = _reg_classes[ext]
+			if not rcd.generic_params.is_empty():
+				return -1
+			var rn: int = _init_param_count(rcd.members)
+			if rn >= 0:
+				return 1 if rn > 0 else 0
+			var rb: String = String(_reg_bases.get(ext, ""))
+			if rb == "":
+				return 0
+			if rb.begins_with("res://") or rb.contains("\""):
+				return -1
+			ext = rb
+			continue
+		return 0 if ClassDB.class_exists(ext) else -1
+	return -1
+
+
+func _class_has_property(scope: String, ref: String, key: String) -> int:
+	var q: String = _resolve_class(scope, ref)
+	var ext: String = ref if q == "" else ""
+	var seen: Dictionary = {}
+	for _guard in 64:
+		if q != "":
+			if seen.has(q):
+				return -1
+			seen[q] = true
+			if (_class_fields.get(q, {}) as Dictionary).has(key):
+				return 1
+			var b: Dictionary = _base_of(q)
+			match String(b["kind"]):
+				"none":
+					return 1 if _engine_properties("RefCounted").has(key) else 0
+				"path":
+					return -1
+				"local":
+					q = String(b["key"])
+				_:
+					q = ""
+					ext = String(b["name"])
+			continue
+		if ext == "" or seen.has(ext):
+			return -1
+		seen[ext] = true
+		if _reg_classes.has(ext):
+			for mm in (_reg_classes[ext] as GateAST.ClassDecl).members:
+				if mm is GateAST.VarDecl and not (mm as GateAST.VarDecl).is_const \
+						and (mm as GateAST.VarDecl).name == key:
+					return 1
+			var rb: String = String(_reg_bases.get(ext, ""))
+			if rb == "":
+				return 1 if _engine_properties("RefCounted").has(key) else 0
+			if rb.begins_with("res://") or rb.contains("\""):
+				return -1
+			ext = rb
+			continue
+		if ClassDB.class_exists(ext):
+			return 1 if _engine_properties(ext).has(key) else 0
+		var script: String = GateChecker._global_script(ext, _reg_whole)
+		return _script_has_property(script, key) if script != "" else -1
+	return -1
+
+
+func _script_has_property(path: String, key: String) -> int:
+	var p: String = path
+	var seen: Dictionary = {}
+	for _guard in 32:
+		if seen.has(p):
+			return -1
+		seen[p] = true
+		var smod: GateAST.Module = GateChecker.read_script(p)
+		if smod == null:
+			return -1
+		for m in smod.members:
+			if m is GateAST.VarDecl and not (m as GateAST.VarDecl).is_const \
+					and (m as GateAST.VarDecl).name == key:
+				return 1
+		var ext: String = smod.extends_type.name if smod.extends_type != null else "RefCounted"
+		if ext.begins_with("\"") or ext.begins_with("'"):
+			var split: Array = GateChecker.split_extends_path(ext)
+			if String(split[1]) != "":
+				return -1
+			p = String(split[0])
+			if not p.begins_with("res://"):
+				p = smod.path.get_base_dir().path_join(p).simplify_path()
+			continue
+		if ClassDB.class_exists(ext):
+			return 1 if _engine_properties(ext).has(key) else 0
+		p = GateChecker._global_script(ext, _reg_whole)
+		if p == "":
+			return -1
+	return -1
+
+
+func _engine_properties(cls: String) -> Dictionary:
+	if not _engine_props.has(cls):
+		var names: Dictionary = {}
+		for p in ClassDB.class_get_property_list(cls):
+			var usage: int = int(p.get("usage", 0))
+			if usage & (PROPERTY_USAGE_CATEGORY | PROPERTY_USAGE_GROUP | PROPERTY_USAGE_SUBGROUP):
+				continue
+			names[String(p["name"])] = true
+		_engine_props[cls] = names
+	return _engine_props[cls]
+
+
+func _shadow_name(n: String) -> void:
+	_var_types.erase(n)
+	_var_depths.erase(n)
+	_var_dict_values.erase(n)
+
+
+const SWIZZLE_SIZES := {
+	"Vector2": 2, "Vector2i": 2, "Vector3": 3, "Vector3i": 3, "Vector4": 4, "Vector4i": 4,
+}
+
+
+func _field_key(owner: String, name: String, elem: bool = false, key: bool = false) -> String:
+	var info: Dictionary = _field_info(owner, name)
+	return String(info.get("k" if key else ("e" if elem else "t"), ""))
+
+
+func _field_info(owner: String, name: String) -> Dictionary:
+	var q: String = owner if (owner == "." or _class_decls.has(owner)) else ""
+	var ext: String = owner if q == "" else ""
+	var seen: Dictionary = {}
+	for _guard in 64:
+		if q != "":
+			if seen.has(q):
+				return {}
+			seen[q] = true
+			var tr = _class_field_types.get("%s#%s" % [q, name])
+			if tr != null:
+				return _decl_info(q, tr)
+			if (_class_fields.get(q, {}) as Dictionary).has(name):
+				return {}   # declared here, without a type
+			var b: Dictionary = _base_of(q)
+			if String(b["kind"]) == "local":
+				q = String(b["key"])
+				continue
+			if String(b["kind"]) != "ext":
+				return {}
+			q = ""
+			ext = String(b["name"])
+			continue
+		if ext == "" or seen.has(ext):
+			return {}
+		if ClassDB.class_exists(ext):
+			return _engine_prop_info(ext, name)
+		if not _reg_classes.has(ext):
+			return {}
+		seen[ext] = true
+		for mm in (_reg_classes[ext] as GateAST.ClassDecl).members:
+			if mm is GateAST.VarDecl and (mm as GateAST.VarDecl).name == name:
+				var rinfo: Dictionary = {}
+				var rtr = (mm as GateAST.VarDecl).type
+				for part in [["t", _scalar_type_name(rtr)], ["e", _element_type_name(rtr)],
+						["k", _key_type_name(rtr)]]:
+					var rt: String = GateTypes.canonical(String(part[1]))
+					rinfo[part[0]] = rt if GateTypes.BUILTIN.has(rt) or ClassDB.class_exists(rt) else ""
+				return rinfo
+		ext = String(_reg_bases.get(ext, ""))
+	return {}
+
+
+func _engine_prop_info(cls: String, name: String) -> Dictionary:
+	var cache_key: String = "%s#%s" % [cls, name]
+	if _engine_prop_cache.has(cache_key):
+		return _engine_prop_cache[cache_key]
+	var info: Dictionary = {}
+	for p in ClassDB.class_get_property_list(cls):
+		if String(p["name"]) != name:
+			continue
+		var usage: int = int(p.get("usage", 0))
+		if usage & (PROPERTY_USAGE_CATEGORY | PROPERTY_USAGE_GROUP | PROPERTY_USAGE_SUBGROUP):
+			continue
+		var ty: int = int(p.get("type", TYPE_NIL))
+		var tn: String = String(ENGINE_TYPE_NAMES.get(ty, ""))
+		if ty == TYPE_OBJECT and ClassDB.class_exists(String(p.get("class_name", ""))):
+			tn = String(p["class_name"])
+		info = {"t": tn, "e": String(PACKED_ELEMENTS.get(tn, "")), "k": ""}
+		break
+	_engine_prop_cache[cache_key] = info
+	return info
+
+
+const ENGINE_TYPE_NAMES := {
+	TYPE_VECTOR2: "Vector2", TYPE_VECTOR2I: "Vector2i", TYPE_VECTOR3: "Vector3",
+	TYPE_VECTOR3I: "Vector3i", TYPE_VECTOR4: "Vector4", TYPE_VECTOR4I: "Vector4i",
+	TYPE_PACKED_VECTOR2_ARRAY: "PackedVector2Array", TYPE_PACKED_VECTOR3_ARRAY: "PackedVector3Array",
+	TYPE_PACKED_VECTOR4_ARRAY: "PackedVector4Array",
+}
+
+const PACKED_ELEMENTS := {
+	"PackedVector2Array": "Vector2", "PackedVector3Array": "Vector3",
+	"PackedVector4Array": "Vector4",
+}
+
+const VECTOR_CONSTANTS := {
+	"Vector2": ["ZERO", "ONE", "INF", "LEFT", "RIGHT", "UP", "DOWN"],
+	"Vector2i": ["ZERO", "ONE", "MIN", "MAX", "LEFT", "RIGHT", "UP", "DOWN"],
+	"Vector3": ["ZERO", "ONE", "INF", "LEFT", "RIGHT", "UP", "DOWN", "FORWARD", "BACK",
+		"MODEL_LEFT", "MODEL_RIGHT", "MODEL_TOP", "MODEL_BOTTOM", "MODEL_FRONT", "MODEL_REAR"],
+	"Vector3i": ["ZERO", "ONE", "MIN", "MAX", "LEFT", "RIGHT", "UP", "DOWN", "FORWARD", "BACK"],
+	"Vector4": ["ZERO", "ONE", "INF"],
+	"Vector4i": ["ZERO", "ONE", "MIN", "MAX"],
+}
+
+const VECTOR_SELF_METHODS := {
+	"abs": true, "ceil": true, "floor": true, "round": true, "sign": true, "clamp": true,
+	"clampf": true, "clampi": true, "snapped": true, "snappedf": true, "snappedi": true,
+	"min": true, "minf": true, "mini": true, "max": true, "maxf": true, "maxi": true,
+	"posmod": true, "posmodv": true, "lerp": true, "slerp": true, "move_toward": true,
+	"normalized": true, "limit_length": true, "direction_to": true, "bounce": true,
+	"reflect": true, "slide": true, "project": true, "cubic_interpolate": true,
+	"cubic_interpolate_in_time": true, "bezier_interpolate": true, "bezier_derivative": true,
+	"inverse": true, "rotated": true, "orthogonal": true,
+}
+
+
+func _method_key(owner: String, name: String) -> String:
+	var q: String = owner if (owner == "." or _class_decls.has(owner)) else ""
+	var seen: Dictionary = {}
+	while q != "" and not seen.has(q):
+		seen[q] = true
+		var fns: Array = (_class_funcs.get(q, {}) as Dictionary).get(name, [])
+		if fns.size() > 1:
+			return ""
+		if fns.size() == 1:
+			var fd: GateAST.FuncDecl = fns[0]
+			if fd.return_type == null or GateTypes.canonical(fd.return_type.name) == "void":
+				return ""
+			return String(_decl_info(q, fd.return_type)["t"])
+		var b: Dictionary = _base_of(q)
+		q = String(b["key"]) if String(b["kind"]) == "local" else ""
+	return ""
+
+
+static func _scalar_type_name(tr) -> String:
+	if tr == null:
+		return ""
+	var t: GateAST.TypeRef = tr
+	if t.array_depth != 0 or t.is_dict() or t.is_set():
+		return ""
+	if not t.generic_args.is_empty():
+		return t.name if GateTypes.canonical(t.name) == "PackedScene" else ""
+	return t.name
+
+
+static func _element_type_name(tr) -> String:
+	if tr == null:
+		return ""
+	var t: GateAST.TypeRef = tr
+	if t.is_dict():
+		return _scalar_type_name(t.dict_value)
+	if t.array_depth == 1 and t.generic_args.is_empty():
+		return t.name
+	if t.array_depth == 0 and t.generic_args.is_empty() and PACKED_ELEMENTS.has(t.name):
+		return PACKED_ELEMENTS[t.name]
+	if t.array_depth == 0 and t.generic_args.size() == 1 and GateTypes.canonical(t.name) == "Array":
+		return _scalar_type_name(t.generic_args[0])
+	if t.array_depth == 0 and t.generic_args.size() == 2 and GateTypes.canonical(t.name) == "Dictionary":
+		return _scalar_type_name(t.generic_args[1])
+	return ""
+
+
+const VECTOR_CTORS := {
+	"Vector2": true, "Vector2i": true, "Vector3": true, "Vector3i": true,
+	"Vector4": true, "Vector4i": true,
+}
+
+
+func _declared_type_of(e) -> String:
+	if _is_scene_preload(e):
+		return "PackedScene"
+	var fn: String = _flow_name(e)
+	if fn != "":
+		return _name_key(_scope_class, fn)
+	if e is GateAST.Ident:
+		var n: String = (e as GateAST.Ident).name
+		if _soa_cursors.has(n) or _soa.has(n):
+			return ""
+		if _fn_locals.has(n):
+			return String((_fn_locals[n] as Dictionary).get("t", ""))
+		return _field_key(_scope_class, n)
+	if e is GateAST.Member:
+		var m: GateAST.Member = e
+		if m.safe:
+			return ""
+		var sw: Dictionary = _swizzle_of(m)
+		if not sw.is_empty():
+			return _swizzle_result(sw, m.name.length())
+		if m.target is GateAST.SelfExpr:
+			return _field_key(_scope_class, m.name)
+		var soa_field: String = _soa_field_key(m)
+		if soa_field != "":
+			return soa_field
+		if m.target is GateAST.Ident:
+			var rn: String = (m.target as GateAST.Ident).name
+			if (VECTOR_CONSTANTS.has(rn) and not _fn_locals.has(rn) and _field_key(_scope_class, rn) == ""
+					and not GateTypes.shadowed.has(rn) and (VECTOR_CONSTANTS[rn] as Array).has(m.name)):
+				return rn
+			if _scalar_names.has("%s.%s" % [rn, m.name]) and _scalar_repl.has(rn):
+				var rst: Dictionary = _struct_of(String(_scalar_repl[rn]))
+				var fi: int = (rst.get("fields", []) as Array).find(m.name)
+				var rtr: Array = rst.get("typerefs", [])
+				if fi >= 0 and fi < rtr.size():
+					return _name_key(_scope_class, _scalar_type_name(rtr[fi]))
+				return ""
+		var owner: String = _declared_type_of(m.target)
+		return _field_key(owner, m.name) if owner != "" else ""
+	if e is GateAST.Index:
+		return _declared_index_type(e)
+	if e is GateAST.Literal:
+		var lit: GateAST.Literal = e
+		if lit.kind == "number":
+			return "float" if lit.raw.contains(".") or (lit.raw.contains("e") \
+				and not lit.raw.begins_with("0x")) else "int"
+		if lit.kind == "string" and (lit.raw.begins_with("\"") or lit.raw.begins_with("'")):
+			return "String"
+		return "bool" if lit.kind == "bool" else ""
+	if e is GateAST.NullCoalesce:
+		var nl: String = _declared_type_of((e as GateAST.NullCoalesce).left)
+		return nl if nl != "" and nl == _declared_type_of((e as GateAST.NullCoalesce).right) else ""
+	if e is GateAST.Unary:
+		var u: GateAST.Unary = e
+		var ut: String = _declared_type_of(u.operand) if u.op == "-" or u.op == "+" else ""
+		return ut if SWIZZLE_SIZES.has(ut) else ""
+	if e is GateAST.Binary:
+		return _declared_arith_type(e)
+	if e is GateAST.Ternary:
+		var tt: GateAST.Ternary = e
+		var a: String = _declared_type_of(tt.if_true)
+		if a != "" and a == _declared_type_of(tt.if_false):
+			return a
+		return ""
+	if e is GateAST.Call:
+		return _declared_call_type(e)
+	return ""
+
+
+func _declared_index_type(ix: GateAST.Index) -> String:
+	if not ix.safe and ix.target is GateAST.Ident:
+		var slot: Variant = GateChecker.fold_int(ix.index, _const_exprs)
+		var tup: GateAST.TypeRef = _declared_tref(ix.target) if slot != null else null
+		if tup != null and tup.array_depth == 0 and tup.is_tuple():
+			var at: int = int(slot) if int(slot) >= 0 else tup.tuple_elems.size() + int(slot)
+			var et: GateAST.TypeRef = _elem_tref_of(ix.target, at)
+			if et != null and et.array_depth == 0 and not et.is_union():
+				return _name_key(_scope_class, et.name)
+			return ""
+	var depth: int = 0
+	var node = ix
+	while node is GateAST.Index:
+		if (node as GateAST.Index).safe:
+			return ""
+		depth += 1
+		node = (node as GateAST.Index).target
+	var info: Dictionary = {}
+	if node is GateAST.Ident:
+		var an: String = (node as GateAST.Ident).name
+		if _soa.has(an) or _soa_cursors.has(an):
+			return ""
+		info = (_fn_locals[an] as Dictionary) if _fn_locals.has(an) else _field_info(_scope_class, an)
+	elif node is GateAST.Member and not (node as GateAST.Member).safe:
+		var nm: GateAST.Member = node
+		var owner: String = _scope_class if nm.target is GateAST.SelfExpr else _declared_type_of(nm.target)
+		if owner != "":
+			info = _field_info(owner, nm.name)
+	if info.is_empty():
+		return ""
+	if depth == 1:
+		return String(info.get("e", ""))
+	var tr = info.get("tr")
+	if tr == null or (tr as GateAST.TypeRef).array_depth != depth \
+			or not (tr as GateAST.TypeRef).generic_args.is_empty():
+		return ""
+	return _name_key(String(info.get("scope", _scope_class)), (tr as GateAST.TypeRef).name)
+
+
+func _declared_arith_type(b: GateAST.Binary) -> String:
+	if not (b.op in ["+", "-", "*", "/", "%"]):
+		return ""
+	var lt: String = GateTypes.canonical(_declared_type_of(b.left))
+	var rt: String = GateTypes.canonical(_declared_type_of(b.right))
+	if lt == rt and SWIZZLE_SIZES.has(lt):
+		return lt
+	if b.op != "*" and b.op != "/":
+		return ""
+	for pair in [[lt, rt], [rt, lt]]:
+		var vec: String = pair[0]
+		var num: String = pair[1]
+		if b.op == "/" and vec == rt:
+			continue   # a number divided by a vector
+		if SWIZZLE_SIZES.has(vec) and (num == "int" or (num == "float" and not vec.ends_with("i"))):
+			return vec
+	return ""
+
+
+func _soa_field_key(m: GateAST.Member) -> String:
+	var sname: String = ""
+	if m.target is GateAST.Ident and _soa_cursors.has((m.target as GateAST.Ident).name):
+		sname = String(_soa_cursors[(m.target as GateAST.Ident).name]["soa"])
+	elif m.target is GateAST.Index:
+		sname = _soa_name((m.target as GateAST.Index).target)
+	if sname == "":
+		return ""
+	var st: Dictionary = _struct_of(String(_soa[sname]["struct"]))
+	var fi: int = (st.get("fields", []) as Array).find(m.name)
+	var trefs: Array = st.get("typerefs", [])
+	if fi < 0 or fi >= trefs.size():
+		return ""
+	return _name_key(_scope_class, _scalar_type_name(trefs[fi]))
+
+
+func _declared_call_type(c: GateAST.Call) -> String:
+	if c.callee is GateAST.Ident:
+		var cn: String = (c.callee as GateAST.Ident).name
+		if _fn_locals.has(cn):
+			return ""
+		var ctor: String = cn if GateTypes.shadowed.has(cn) else String(CTOR_SHORTHAND.get(cn, cn))
+		if VECTOR_CTORS.has(ctor) and not _shorthand_taken(cn):
+			return ctor
+		if not _ctor_struct_of(cn).is_empty():
+			return _name_key(_scope_class, cn)   # a struct constructor
+		return _method_key(_scope_class, cn)
+	if not (c.callee is GateAST.Member) or (c.callee as GateAST.Member).safe:
+		return ""
+	var cm: GateAST.Member = c.callee
+	if not _struct_of(cm.name).is_empty() and cm.target is GateAST.Ident \
+			and not _var_types.has((cm.target as GateAST.Ident).name) \
+			and not _fn_locals.has((cm.target as GateAST.Ident).name):
+		return _name_key(_scope_class, cm.name)
+	if cm.name == "new":
+		var ref: String = _class_ref_text(cm.target)
+		if ref == "" or (cm.target is GateAST.Ident and _fn_locals.has(ref)):
+			return ""
+		var q: String = _resolve_class(_scope_class, ref)
+		if q != "":
+			return q
+		return ref if ClassDB.class_exists(ref) or _reg_classes.has(ref) else ""
+	if cm.target is GateAST.SelfExpr:
+		return _method_key(_scope_class, cm.name)
+	var owner: String = _declared_type_of(cm.target)
+	if owner == "":
+		return ""
+	var co: String = GateTypes.canonical(owner)
+	if SWIZZLE_SIZES.has(co) and (VECTOR_SELF_METHODS.has(cm.name)
+			or (cm.name == "cross" and co == "Vector3")):
+		return co
+	return _method_key(owner, cm.name)
+
+
+static func _class_ref_text(e) -> String:
+	if e is GateAST.Ident:
+		return (e as GateAST.Ident).name
+	if e is GateAST.Member and not (e as GateAST.Member).safe:
+		var head: String = _class_ref_text((e as GateAST.Member).target)
+		return "" if head == "" else "%s.%s" % [head, (e as GateAST.Member).name]
+	return ""
+
+
+## Only on a statically typed vector: an untyped `v.xy` may be a property of your own.
+func _swizzle_of(m: GateAST.Member) -> Dictionary:
+	if m.safe or m == _swizzle_exempt:
+		return {}
+	var n: String = m.name
+	if n.length() < 2 or n.length() > 4:
+		return {}
+	for i in n.length():
+		if not "xyzw".contains(n[i]):
+			return {}
+	var vt: String = GateTypes.canonical(_declared_type_of(m.target))
+	if not SWIZZLE_SIZES.has(vt) and m.target is GateAST.Expr:
+		vt = (m.target as GateAST.Expr).narrowed_vector   # `if p is Vector3:` on an untyped p
+	if not SWIZZLE_SIZES.has(vt):
+		return {}
+	return {"vector": vt, "size": int(SWIZZLE_SIZES[vt]), "int": vt.ends_with("i")}
+
+
+func _swizzle_in_range(m: GateAST.Member, sw: Dictionary) -> bool:
+	for i in m.name.length():
+		var ch: String = m.name[i]
+		if GateTypes.VECTOR_COMPONENTS.find(ch) >= int(sw["size"]):
+			diagnostics.error("%s has no component '%s'" % [sw["vector"], ch], m.line, m.col,
+				"a %s has %s." % [sw["vector"], ", ".join(PackedStringArray(
+					GateTypes.VECTOR_COMPONENTS.slice(0, int(sw["size"]))))])
+			return false
+	return true
+
+
+static func _swizzle_result(sw: Dictionary, length: int) -> String:
+	return GateTypes.VECTOR_INT[length] if sw["int"] else GateTypes.VECTOR_FLOAT[length]
+
+
+static func _pattern_binds(text: String) -> Array:
+	var out: Array = []
+	var i: int = text.find("var")
+	while i >= 0:
+		var before_ok: bool = i == 0 or not _is_ident_char(text[i - 1])
+		var j: int = i + 3
+		if before_ok and j < text.length() and (text[j] == " " or text[j] == "\t"):
+			while j < text.length() and (text[j] == " " or text[j] == "\t"):
+				j += 1
+			var k: int = j
+			while k < text.length() and _is_ident_char(text[k]):
+				k += 1
+			if k > j:
+				out.append(text.substr(j, k - j))
+		i = text.find("var", i + 3)
+	return out
 
 
 func _annotated_with(annotations: Array, name: String) -> bool:

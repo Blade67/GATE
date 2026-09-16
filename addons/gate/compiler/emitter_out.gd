@@ -278,14 +278,79 @@ func _flush_pending(src_line: int) -> void:
 
 
 func _hoist(text: String) -> void:
-	_pending.append(text)
+	_pending.append(_deeper(text, -_coll_depth) if _coll_depth > 0 else text)
+
+
+func _hoist_at(at: int, text: String) -> void:
+	_pending.insert(at, _deeper(text, -_coll_depth) if _coll_depth > 0 else text)
+
+
+func _rehoist(lines: PackedStringArray) -> void:
+	_pending.append_array(lines)
+
+
+func _hoist_nested(lines: PackedStringArray) -> void:
+	for h in lines:
+		_pending.append("\t" + _deeper(h, 1))
+
+
+func _hoist_in_block(text: String) -> void:
+	_pending.append("\t" + _deeper(text, 1 - _coll_depth))
+
+
+static func _deeper(text: String, by: int) -> String:
+	if by == 0 or not text.contains("\n"):
+		return text
+	var out: String = ""
+	var quote: String = ""
+	var i: int = 0
+	var n: int = text.length()
+	while i < n:
+		var ch: String = text[i]
+		if quote != "":
+			if ch == "\\":
+				out += text.substr(i, 2)
+				i += 2
+				continue
+			if text.substr(i, quote.length()) == quote:
+				out += quote
+				i += quote.length()
+				quote = ""
+				continue
+			out += ch
+			i += 1
+			continue
+		if ch == "#":
+			var eol: int = text.find("\n", i)
+			if eol < 0:
+				eol = n
+			out += text.substr(i, eol - i)
+			i = eol
+			continue
+		if ch == "\"" or ch == "'":
+			quote = ch.repeat(3) if text.substr(i, 3) == ch.repeat(3) else ch
+			out += quote
+			i += quote.length()
+			continue
+		out += ch
+		i += 1
+		if ch == "\n":
+			if by > 0:
+				out += "\t".repeat(by)
+			else:
+				var k: int = 0
+				while k < -by and i < n and text[i] == "\t":
+					i += 1
+					k += 1
+	return out
 
 
 func _new_tmp() -> String:
 	while true:
 		_tmp += 1
-		var n: String = "__g%d" % _tmp
+		var n: String = "__g%d" % _tmp if _in_func_body else "__g%d_%s" % [_tmp, _file_tag()]
 		if not _bound_names.has(n):
+			_tmp_names[n] = true
 			return n
 	return ""
 

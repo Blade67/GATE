@@ -121,13 +121,11 @@ func _expr(e) -> String:
 		var tmp: String = _new_tmp()
 		_hoist("var %s = null" % tmp)
 		_hoist("if %s:" % cond)
-		for h in ap:
-			_hoist("	" + h)
-		_hoist("	%s = %s" % [tmp, av])
+		_hoist_nested(ap)
+		_hoist_in_block("%s = %s" % [tmp, av])
 		_hoist("else:")
-		for h2 in bp:
-			_hoist("	" + h2)
-		_hoist("	%s = %s" % [tmp, bv])
+		_hoist_nested(bp)
+		_hoist_in_block("%s = %s" % [tmp, bv])
 		return tmp
 
 	if e is GateAST.Member and (e as GateAST.Member).target is GateAST.Ident:
@@ -241,11 +239,11 @@ func _expr(e) -> String:
 
 	if e is GateAST.ArrayLit:
 		var al: GateAST.ArrayLit = e
-		var parts: PackedStringArray = PackedStringArray()
 		var lines: PackedInt32Array = PackedInt32Array()
 		_coll_depth += 1
+		var parts: PackedStringArray = _ordered(al.elements,
+			func(i: int) -> String: return _copy_value(al.elements[i]))
 		for el in al.elements:
-			parts.append(_copy_value(el))
 			lines.append((el as GateAST.Expr).line)
 		_coll_depth -= 1
 		return _collection("[", parts, "]", lines)
@@ -255,16 +253,35 @@ func _expr(e) -> String:
 		var parts2: PackedStringArray = PackedStringArray()
 		var lines2: PackedInt32Array = PackedInt32Array()
 		_coll_depth += 1
+		var ops: Array = []
+		var op_value: Array = []
+		for i in dl.keys.size():
+			var v = dl.values[i] if i < dl.values.size() else null
+			var lua: bool = i < dl.lua_keys.size() and dl.lua_keys[i]
+			if not lua:
+				ops.append(dl.keys[i])
+				op_value.append(false)
+			if v != null:
+				ops.append(v)
+				op_value.append(true)
+		var texts: PackedStringArray = _ordered(ops, func(i: int) -> String:
+			if not op_value[i] and _is_value_class(_static_type_of(ops[i])):
+				_struct_key_error(ops[i])
+			return _copy_value(ops[i]) if op_value[i] else _expr(ops[i]))
+		var at: int = 0
 		for i in dl.keys.size():
 			lines2.append((dl.keys[i] as GateAST.Expr).line)
 			var v = dl.values[i] if i < dl.values.size() else null
 			var lua: bool = i < dl.lua_keys.size() and dl.lua_keys[i]
+			var ktext: String = ((dl.keys[i] as GateAST.Ident).name if dl.keys[i] is GateAST.Ident
+				else _expr(dl.keys[i])) if lua else texts[at]
+			if not lua:
+				at += 1
 			if v == null:
-				parts2.append(_expr(dl.keys[i]))
-			elif lua:
-				parts2.append("%s = %s" % [_expr(dl.keys[i]), _copy_value(v)])
-			else:
-				parts2.append("%s: %s" % [_expr(dl.keys[i]), _copy_value(v)])
+				parts2.append(ktext)
+				continue
+			parts2.append(("%s = %s" if lua else "%s: %s") % [ktext, texts[at]])
+			at += 1
 		_coll_depth -= 1
 		return _collection("{", parts2, "}", lines2)
 
@@ -1460,11 +1477,20 @@ func _emit_postfix_spine(e) -> String:
 	if steps.size() < 32:
 		return ""   # short enough for the readable path
 	var out: String = _postfix_base(node)
+	var plain: bool = _stable(node, out)   # nothing read yet that could change
 	for st in steps:
 		if st is GateAST.Member:
 			out += ".%s" % (st as GateAST.Member).name
-		else:
-			out += "[%s]" % _expr((st as GateAST.Index).index)
+			plain = false
+			continue
+		var before: int = _pending.size()
+		var itext: String = _expr((st as GateAST.Index).index)
+		if _pending.size() > before and not plain and _no_hoist_ctx() == "" and _in_lvalue == 0:
+			var t: String = _new_tmp()
+			_hoist_at(before, "var %s = %s" % [t, out])
+			out = t
+		out += "[%s]" % itext
+		plain = false
 	return out
 
 
@@ -1511,16 +1537,20 @@ func _emit_binary(b: GateAST.Binary) -> String:
 		return eq if b.op == "==" else "not " + eq
 	var op: String = b.op
 	if op == "not in":
-		return "not (%s in %s)" % [_expr(b.left), _expr(b.right)]
+		var np: PackedStringArray = _ordered([b.left, b.right],
+			func(i: int) -> String: return _expr(b.left) if i == 0 else _expr(b.right))
+		return "not (%s in %s)" % [np[0], np[1]]
 	var p: int = PREC.get(op, PREC_ATOM)
 	if (op == "and" or op == "or") and b.left is GateAST.Binary and (b.left as GateAST.Binary).op == op:
 		var achain: Array = []
 		var anode = b
 		while anode is GateAST.Binary and (anode as GateAST.Binary).op == op:
-			achain.push_front(anode)
+			achain.append(anode)
 			anode = (anode as GateAST.Binary).left
+		achain.reverse()
 		if achain.size() > 1:
 			var saved_p: PackedStringArray = _pending
+			var diag_mark: int = diagnostics.items.size()
 			_pending = PackedStringArray()
 			var parts: PackedStringArray = PackedStringArray()
 			parts.append(_paren_below((achain[0] as GateAST.Binary).left, p))
@@ -1530,18 +1560,18 @@ func _emit_binary(b: GateAST.Binary) -> String:
 			_pending = saved_p
 			if chain_pending.is_empty():
 				return (" %s " % op).join(parts)
-			for h in chain_pending:
-				_hoist(h)
+			diagnostics.items.resize(diag_mark)
 
 	if op != "and" and op != "or" and b.left is GateAST.Binary:
+		var spine_types: Dictionary = _left_spine_types(b)
 		var chain: Array = []
 		var node = b
 		while node is GateAST.Binary:
 			var nb: GateAST.Binary = node
 			if nb.op == "and" or nb.op == "or" or nb.op == "not in":
 				break
-			var lt2: String = _static_type_of(nb.left)
-			if lt2 != "" and _struct_ops.has(lt2):
+			var lt2: String = String(spine_types.get(nb, ""))
+			if lt2 != "" and not (_ops_of(lt2) as Dictionary).is_empty():
 				break
 			if not (nb.left is GateAST.Binary):
 				break
@@ -1550,39 +1580,46 @@ func _emit_binary(b: GateAST.Binary) -> String:
 				break
 			if child.op == "and" or child.op == "or" or child.op == "not in":
 				break
-			chain.push_front(nb)
+			chain.append(nb)
 			node = child
+		chain.reverse()
 		if chain.size() > 1:
 			var first: GateAST.Binary = chain[0]
-			var out: String = _paren_below(first.left, int(PREC.get(first.op, PREC_ATOM)))
+			var nodes: Array = [first.left]
 			for n in chain:
-				var bn: GateAST.Binary = n
-				var bp: int = PREC.get(bn.op, PREC_ATOM)
-				out += " %s %s" % [bn.op, _paren_below(bn.right, bp + 1)]
+				nodes.append((n as GateAST.Binary).right)
+			var texts: PackedStringArray = _ordered(nodes, func(i: int) -> String:
+				if i == 0:
+					return _paren_below(first.left, int(PREC.get(first.op, PREC_ATOM)))
+				var bn: GateAST.Binary = chain[i - 1]
+				return _paren_below(bn.right, int(PREC.get(bn.op, PREC_ATOM)) + 1))
+			var out: String = texts[0]
+			for i in chain.size():
+				out += " %s %s" % [(chain[i] as GateAST.Binary).op, texts[i + 1]]
 			return out
-	var lhs: String = _paren_below(b.left, p)
 	if op == "and" or op == "or":
+		var lhs: String = _paren_below(b.left, p)
 		var saved: PackedStringArray = _pending
 		_pending = PackedStringArray()
-		var r: String = _paren_below(b.right, p + 1)
+		var r: String = _lazy_part(b.right, false, p + 1) if _lazy_ctx() else _paren_below(b.right, p + 1)
 		var rhs_pending: PackedStringArray = _pending
 		_pending = saved
 		if rhs_pending.is_empty():
 			return "%s %s %s" % [lhs, op, r]
-		return _guarded_operand(op, lhs, rhs_pending, r)
-	var rhs: String = _paren_below(b.right, p + 1)
-	return "%s %s %s" % [lhs, op, rhs]
+		return _guarded_operand(op, b.left, lhs, rhs_pending, r)
+	var pair: PackedStringArray = _ordered([b.left, b.right], func(i: int) -> String:
+		return _paren_below(b.left, p) if i == 0 else _paren_below(b.right, p + 1))
+	return "%s %s %s" % [pair[0], op, pair[1]]
 
 
-func _guarded_operand(op: String, lhs: String, rhs_pending: PackedStringArray, rhs: String) -> String:
+func _guarded_operand(op: String, left, lhs: String, rhs_pending: PackedStringArray, rhs: String) -> String:
 	var t: String = _new_tmp()
 	var seed: String = "false" if op == "and" else "true"
-	var cond: String = lhs if op == "and" else "not (%s)" % lhs
+	var cond: String = lhs if op == "and" else _not_text(left, lhs)
 	_hoist("var %s = %s" % [t, seed])
 	_hoist("if %s:" % cond)
-	for h in rhs_pending:
-		_hoist("	" + h)
-	_hoist("	%s = %s" % [t, rhs])
+	_hoist_nested(rhs_pending)
+	_hoist_in_block("%s = %s %s" % [t, "true and" if op == "and" else "false or", rhs])
 	return t
 
 
@@ -1807,6 +1844,36 @@ func _emit_call(c: GateAST.Call) -> String:
 		_hoist_in_block("%s = %s.%s(%s)" % [sres, recv, sname, ", ".join(sargs)])
 		return sres
 
+	if (c.callee is GateAST.Ident and (c.callee as GateAST.Ident).name == "assert"
+			and not _declared_funcs.has("assert") and _no_hoist_ctx() == ""):
+		var saved_nh: String = _no_hoist
+		_no_hoist = "assert"
+		var aargs: PackedStringArray = PackedStringArray()
+		for aa in c.args:
+			aargs.append(_copy_value(aa))
+		_no_hoist = saved_nh
+		return "assert(%s)" % ", ".join(aargs)
+
+	var stored: String = _struct_store(c)
+	if stored != "":
+		return stored
+
+	var vpart: Dictionary = _partial_vector_ctor(c)
+	if not vpart.is_empty():
+		var vfields: Array = (vpart["st"] as Dictionary)["fields"]
+		return _build_struct(vpart["st"], "", vfields.slice(0, c.args.size()), c.args, c)
+
+	var recv_node = null
+	if c.callee is GateAST.Member and _plain_callee(c.callee):
+		recv_node = (c.callee as GateAST.Member).target
+	var parts: Array = c.args.duplicate()
+	if recv_node != null:
+		parts.append(recv_node)
+	var texts: PackedStringArray = _ordered(parts, func(i: int) -> String:
+		return _arg_text(c, callee_fd, i) if i < c.args.size() else _postfix_base(recv_node))
+	var args: PackedStringArray = texts.slice(0, c.args.size())
+	var recv_text: String = texts[c.args.size()] if recv_node != null else ""
+
 	if c.callee is GateAST.Ident:
 		var n: String = (c.callee as GateAST.Ident).name
 		if CTOR_SHORTHAND.has(n) and not _shorthand_taken(n) and not GateTypes.shadowed.has(n):
@@ -1862,13 +1929,14 @@ func _emit_call(c: GateAST.Call) -> String:
 				return "%s.%s(%s)" % [recv_text if recv_node != null else _postfix_base(mem.target),
 					mangled2, ", ".join(args)]
 		if mangled2 != "":
+			var mrecv: String = recv_text if recv_node != null else _postfix_base(mem.target)
 			if mem.target is GateAST.SelfExpr:
 				if _overload_declared_by_chain(mem.name, _cur_class):
-					return "%s.%s(%s)" % [_postfix_base(mem.target), mangled2, ", ".join(args)]
-				return "%s.%s(%s)" % [_postfix_base(mem.target), mem.name, ", ".join(args)]
+					return "%s.%s(%s)" % [mrecv, mangled2, ", ".join(args)]
+				return "%s.%s(%s)" % [mrecv, mem.name, ", ".join(args)]
 			var owner: String = _static_type_of(mem.target)
 			if owner != "" and _overload_declared_by_chain(mem.name, owner):
-				return "%s.%s(%s)" % [_postfix_base(mem.target), mangled2, ", ".join(args)]
+				return "%s.%s(%s)" % [mrecv, mangled2, ", ".join(args)]
 			if owner == "" and mem.target is GateAST.Ident:
 				var tn: String = (mem.target as GateAST.Ident).name
 				if _local_types.has(tn) or not _struct_of(tn).is_empty():
@@ -2667,13 +2735,14 @@ func _emit_soa_call(sname: String, cm: GateAST.Member, c: GateAST.Call) -> Strin
 
 func _emit_fstring(fs: GateAST.FString) -> String:
 	var fmt: String = ""
-	var args: PackedStringArray = PackedStringArray()
+	var exprs: Array = []
 	for part in fs.parts:
 		if part is String:
 			fmt += (part as String).replace("%", "%%")
 		else:
 			fmt += "%s"
-			args.append(_expr(part))
+			exprs.append(part)
+	var args: PackedStringArray = _ordered(exprs, func(i: int) -> String: return _expr(exprs[i]))
 	var q: String = fs.quote if fs.quote != "" else "\""
 	if args.is_empty():
 		return q + fmt + q
@@ -2682,12 +2751,12 @@ func _emit_fstring(fs: GateAST.FString) -> String:
 	return "%s%s%s %% [%s]" % [q, fmt, q, ", ".join(args)]
 
 
-func _lambda_block(head: String, hoisted: PackedStringArray, last: String) -> String:
-	var pad: String = "	".repeat(_indent + 1)
+func _lambda_block(head: String, hoisted: PackedStringArray, last: String, outer: int) -> String:
+	var pad: String = "	".repeat(_indent + outer + 1)
 	var lines: PackedStringArray = PackedStringArray()
 	for h in hoisted:
-		lines.append(pad + h)
-	lines.append(pad + last)
+		lines.append(pad + _deeper(h, outer + 1))
+	lines.append(pad + _deeper(last, 1))
 	return head + ":\n" + "\n".join(lines)
 
 const MAX_COLLECTION_WIDTH := 96
@@ -2824,7 +2893,7 @@ func _emit_lambda_inner(l: GateAST.Lambda, outer: int) -> String:
 		_pending = saved_pending
 		if hoisted.is_empty():
 			return "%s: return %s" % [head, rv]
-		return _lambda_block(head, hoisted, "return " + rv)
+		return _lambda_block(head, hoisted, "return " + rv, outer)
 	elif (l.body.size() == 1 and l.body[0] is GateAST.ExprStmt
 			and not _discards_safe_call(l)):
 		var saved_pending2: PackedStringArray = _pending
@@ -2837,7 +2906,7 @@ func _emit_lambda_inner(l: GateAST.Lambda, outer: int) -> String:
 			last = "return " + ex
 		if hoisted2.is_empty():
 			return "%s: %s" % [head, last]
-		return _lambda_block(head, hoisted2, last)
+		return _lambda_block(head, hoisted2, last, outer)
 	var saved_out: PackedStringArray = _out
 	var saved_map: Array[int] = _map
 	var saved_indent: int = _indent
@@ -2860,14 +2929,50 @@ func _emit_lambda_inner(l: GateAST.Lambda, outer: int) -> String:
 	return head + ":\n" + "\n".join(body_lines)
 
 
-func _params(params: Array) -> String:
+func _params(params: Array, fname: String = "", helpers: Array = []) -> String:
 	var parts: PackedStringArray = PackedStringArray()
+	var earlier: PackedStringArray = PackedStringArray()
 	for p in params:
 		var pp: GateAST.Param = p
 		var s: String = ("..." if pp.is_rest else "") + pp.name
 		if pp.type != null:
 			s += ": " + _map_type(pp.type)
 		if pp.default != null:
-			s += (" := " if pp.inferred and pp.type == null else " = ") + _copy_value(pp.default)
+			var infer: bool = pp.inferred and pp.type == null
+			var value: String = ""
+			var hoisted: PackedStringArray = PackedStringArray()
+			var saved_no_hoist: String = _no_hoist
+			if fname != "":
+				var saved_in_body: bool = _in_func_body
+				var saved_locals: Dictionary = _fn_locals
+				var saved_pending: PackedStringArray = _pending
+				_in_func_body = true
+				_no_hoist = ""
+				_fn_locals = {}
+				for ep in params:
+					if ep == p:
+						break
+					_fn_locals[(ep as GateAST.Param).name] = _decl_info(_scope_class, (ep as GateAST.Param).type)
+				_pending = PackedStringArray()
+				value = _expr(pp.default) if _would_copy(pp) else _copy_value(pp.default)
+				hoisted = _pending
+				_pending = saved_pending
+				_fn_locals = saved_locals
+				_in_func_body = saved_in_body
+			else:
+				_no_hoist = "param"
+				value = _expr(pp.default) if _would_copy(pp) else _copy_value(pp.default)
+			_no_hoist = saved_no_hoist
+			if not hoisted.is_empty():
+				var hname: String = "__gate_dflt_%s_%s" % [fname, pp.name]
+				while _bound_names.has(hname):
+					hname = "_" + hname
+				var rtype: String = _type_text_of_key(_declared_type_of(pp.default)) if infer else ""
+				helpers.append([hname, earlier.duplicate(), hoisted, value, rtype])
+				value = "%s(%s)" % [hname, ", ".join(earlier)]
+				if infer and rtype == "":
+					infer = false   # nothing to infer from; Godot could not either
+			s += (" := " if infer else " = ") + value
 		parts.append(s)
+		earlier.append(pp.name)
 	return ", ".join(parts)

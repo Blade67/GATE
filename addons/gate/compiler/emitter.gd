@@ -756,9 +756,11 @@ func _emit_func(fd: GateAST.FuncDecl) -> void:
 		name = "_" + name
 
 	var head: String = ""
-	if fd.is_static or (_in_namespace and not fd.name.begins_with("_")):
+	var is_static: bool = fd.is_static or (_in_namespace and not fd.name.begins_with("_"))
+	if is_static:
 		head += "static "
-	head += "func %s(%s)" % [name, _params(fd.params)]
+	var helpers: Array = []
+	head += "func %s(%s)" % [name, _params(fd.params, name, helpers)]
 	if fd.return_type != null:
 		head += " -> " + _map_type(fd.return_type)
 	elif fd.is_operator:
@@ -766,6 +768,7 @@ func _emit_func(fd: GateAST.FuncDecl) -> void:
 	if _annotated_with(fd.annotations, "abstract"):
 		_line(head, fd.line)
 		_blank_line(fd.line)
+		_emit_default_helpers(helpers, is_static, fd.line)
 		return
 
 	_line(head + ":", fd.line)
@@ -838,8 +841,25 @@ func _emit_fn_body(fd: GateAST.FuncDecl) -> void:
 		_scalar_names = saved_names
 	_var_types = saved
 	_var_depths = saved_depths
-	_indent -= 1
-	_blank_line(fd.line)
+	_var_dict_values = saved_dict_values
+	_fn_locals = saved_locals
+	_assigned_names = saved_assigned
+	_cur_fn_body = saved_fn_body
+	_fn_params = saved_params
+	_null_locals = saved_null
+	_no_hoist = saved_no_hoist
+
+
+func _emit_default_helpers(helpers: Array, is_static: bool, line: int) -> void:
+	for h in helpers:
+		_line("%sfunc %s(%s)%s:" % ["static " if is_static else "", h[0],
+			", ".join(PackedStringArray(h[1])), (" -> " + String(h[4])) if String(h[4]) != "" else ""], line)
+		_indent += 1
+		for hl in (h[2] as PackedStringArray):
+			_line(_deeper(hl, 1), line)   # rendered at the function's own depth
+		_line(_deeper("return " + String(h[3]), 1), line)
+		_indent -= 1
+		_blank_line(line)
 
 
 func _emit_annotation(a: GateAST.Annotation) -> void:
@@ -862,8 +882,11 @@ func _annotation_text(a: GateAST.Annotation) -> String:
 	if a.args.is_empty():
 		return "@" + a.name
 	var parts: PackedStringArray = PackedStringArray()
+	var saved_no_hoist: String = _no_hoist
+	_no_hoist = "annotation"
 	for arg in a.args:
 		parts.append(_expr(arg))
+	_no_hoist = saved_no_hoist
 	return "@%s(%s)" % [a.name, ", ".join(parts)]
 
 
@@ -1127,14 +1150,6 @@ func _emit_var(vd: GateAST.VarDecl) -> void:
 		_emit_soa_decl(vd)
 		return
 
-	for a in vd.annotations:
-		var va: GateAST.Annotation = a
-		if va.name in ["observable", "packed"]:
-			continue
-		if va.line == vd.line:
-			continue
-		_emit_annotation(va)
-
 	var name: String = vd.name
 	if vd.visibility == "priv" and not name.begins_with("_"):
 		name = "_" + name
@@ -1207,12 +1222,36 @@ func _emit_var(vd: GateAST.VarDecl) -> void:
 	elif vd.type != null and vd.setter == "" and not _in_gate_helper and (vd.type.strict or _is_class_struct(vd.type)
 			or vd.type.is_union() or vd.type.is_tuple()):
 		value_src = _default_for(vd.type, packed)
+	elif vd.type != null and (vd.type.is_union() or vd.type.is_tuple()) and vd.type.array_depth == 0:
+		value_src = _default_for(vd.type, packed)
+	_no_hoist = saved_no_hoist
+
+	if _in_func_body:
+		_fn_locals[name] = {} if infer_untyped else _local_info(vd)
+
+	if not _in_func_body:
+		var prefix: String = ""
+		if vd.is_static or _in_namespace:
+			prefix = "static "
+		elif vd.is_onready or _has_annotation(vd, "onready"):
+			prefix = "@onready "
+		if prefix != "":
+			for pi in _pending.size():
+				if _pending[pi].begins_with("var "):
+					_pending[pi] = prefix + _pending[pi]
+
+	_flush_pending(vd.line)
+	for a in vd.annotations:
+		var va: GateAST.Annotation = a
+		if va.name in ["observable", "packed", "required", "export_if"]:
+			continue
+		if va.line == vd.line or observable:
+			continue   # an @observable's go on the property it generates
+		_emit_annotation(va)
 
 	if observable:
 		_emit_observable(vd, name, value_src)
 		return
-
-	_flush_pending(vd.line)
 
 	if _in_func_body and _scalar_repl.has(vd.name):
 		_emit_scalar_replaced(vd)
@@ -1543,7 +1582,10 @@ func _emit_discarded_safe_call(e, line: int) -> bool:
 	_flush_pending(line)
 	_line("if %s != null:" % base, line)
 	_indent += 1
-	_line("%s.%s(%s)" % [base, m.name, ", ".join(args)], line)
+	for h in arg_pending:
+		_line(_deeper(h, 1), line)
+	_line(_deeper("%s.%s(%s)" % [base, _method_emit_name(m.target, m.name, c.args.size(), m.member_class),
+		", ".join(args)], 1), line)
 	_indent -= 1
 	return true
 
@@ -1721,9 +1763,382 @@ func _emit_assign(a: GateAST.AssignStmt) -> void:
 	_pending = PackedStringArray()
 	_in_lvalue += 1
 	var t: String = _expr(a.target)
-	var v: String = _copy_value(a.value) if a.op == "=" else _expr(a.value)
+	_in_lvalue -= 1
+	var target_pending: PackedStringArray = _pending
+	_pending = PackedStringArray()
+	var v: String = _copy_value(a.value) if a.op == "=" else _appended_value(a)
+	var value_pending: PackedStringArray = _pending
+	_pending = saved_p
+	var redo: bool = not target_pending.is_empty() or (not value_pending.is_empty()
+		and (a.target is GateAST.Member or a.target is GateAST.Index))
+	if not redo:
+		_rehoist(target_pending)
+		_rehoist(value_pending)
+		_flush_pending(a.line)
+		_line("%s %s %s" % [t, a.op, v], a.line)
+		return
+	diagnostics.items.resize(diag_mark)
+	_emit_ordered_assign(a)
+
+
+func _emit_ordered_assign(a: GateAST.AssignStmt) -> void:
+	var steps: Array = []
+	var node = a.target
+	while node is GateAST.Member or node is GateAST.Index:
+		steps.push_front(node)
+		node = node.target
+	var root = node
+	var n: int = steps.size()
+	var last = steps[n - 1]
+	var saved_p: PackedStringArray = _pending
+	_pending = PackedStringArray()
+	var root_text: String = _postfix_base(root)
+	var root_pend: PackedStringArray = _pending
+	var keys: Array = []
+	var key_pend: Array = []
+	for i in n - 1:
+		_pending = PackedStringArray()
+		keys.append(_expr((steps[i] as GateAST.Index).index) if steps[i] is GateAST.Index else "")
+		key_pend.append(_pending)
+	_pending = PackedStringArray()
+	var v: String = _copy_value(a.value) if a.op == "=" else _appended_value(a)
+	var value_pend: PackedStringArray = _pending
+	_pending = PackedStringArray()
+	var lk: String = _expr((last as GateAST.Index).index) if last is GateAST.Index else ""
+	var lk_pend: PackedStringArray = _pending
+	_pending = saved_p
+
+	var last_hoist: int = 0 if not root_pend.is_empty() else -1
+	for i in n - 1:
+		if not (key_pend[i] as PackedStringArray).is_empty():
+			last_hoist = 1 + i
+	if not value_pend.is_empty():
+		last_hoist = n
+	if not lk_pend.is_empty():
+		last_hoist = n + 1
+	var upto: int = mini(last_hoist - 1, n - 1) if _assign_capturable(root, steps) else -1
+
+	_rehoist(root_pend)
+	var cur = root
+	var backs: Array = []   # [place node, temporary, the node it stands for]
+	if not (root is GateAST.Ident or root is GateAST.SelfExpr):
+		var rt: String = _new_tmp()
+		_hoist("var %s = %s" % [rt, root_text])
+		cur = _tmp_like(rt, root)
+	elif upto >= 0 and root is GateAST.Ident and not _stable(root, root_text) \
+			and _is_field_name((root as GateAST.Ident).name):
+		var ft: String = _new_tmp()
+		_hoist("var %s = %s" % [ft, root_text])
+		backs.append([root, ft, root])
+		cur = _tmp_like(ft, root)
+	for i in n - 1:
+		_rehoist(key_pend[i])
+		var st = steps[i]
+		var key = null
+		if st is GateAST.Index:
+			key = _raw_like(keys[i], (st as GateAST.Index).index)
+			if i + 1 <= upto and not _stable((st as GateAST.Index).index, keys[i]):
+				var kt: String = _new_tmp()
+				_hoist("var %s = %s" % [kt, keys[i]])
+				key = _raw_like(kt, (st as GateAST.Index).index)
+		var here = _step_on(st, cur, key)
+		if i + 1 <= upto:
+			var ct: String = _new_tmp()
+			_hoist("var %s = %s" % [ct, _expr(here)])
+			backs.append([here, ct, st])
+			cur = _tmp_like(ct, st)
+		else:
+			cur = here
+	_rehoist(value_pend)
+	if last_hoist == n + 1 and not _stable(a.value, v):
+		var vt: String = _new_tmp()
+		_hoist("var %s = %s" % [vt, v])
+		v = vt
+	_rehoist(lk_pend)
+	var target = _step_on(last, cur, _raw_like(lk, (last as GateAST.Index).index)
+		if last is GateAST.Index else null)
+	_in_lvalue += 1
+	var t: String = _expr(target)
+	_in_lvalue -= 1
 	_flush_pending(a.line)
 	_line("%s %s %s" % [t, a.op, v], a.line)
+	for k in range(backs.size() - 1, -1, -1):
+		var kind: String = _value_kind(backs[k][2])
+		if kind == "ref":
+			continue
+		_in_lvalue += 1
+		var place: String = _expr(backs[k][0])
+		_in_lvalue -= 1
+		if kind == "":
+			_line("if typeof(%s) < TYPE_OBJECT:" % backs[k][1], a.line)
+			_indent += 1
+			_line("%s = %s" % [place, backs[k][1]], a.line)
+			_indent -= 1
+		else:
+			_line("%s = %s" % [place, backs[k][1]], a.line)
+
+
+func _assign_capturable(root, steps: Array) -> bool:
+	if root is GateAST.Ident and (_soa.has((root as GateAST.Ident).name)
+			or _soa_cursors.has((root as GateAST.Ident).name)):
+		return false
+	for st in steps:
+		if _soa_name(st.target) != "":
+			return false
+	return true
+
+
+func _is_field_name(n: String) -> bool:
+	if _fn_locals.has(n) or n == "super":
+		return false
+	var q: String = _scope_class
+	var seen: Dictionary = {}
+	while q != "" and not seen.has(q) and (q == "." or _class_decls.has(q)):
+		seen[q] = true
+		if (_class_fields.get(q, {}) as Dictionary).has(n):
+			return true
+		var b: Dictionary = _base_of(q)
+		if String(b["kind"]) == "ext":
+			return not _field_info(String(b["name"]), n).is_empty()
+		if String(b["kind"]) != "local":
+			return false
+		q = String(b["key"])
+	return false
+
+
+func _value_kind(e) -> String:
+	var tr: GateAST.TypeRef = _value_tref(e)
+	var key: String = ""
+	if tr != null:
+		if tr.array_depth > 0 or tr.is_dict() or tr.is_set() or tr.is_tuple():
+			return "ref"
+		if tr.is_union():
+			return ""
+		key = _name_key(_scope_class, _scalar_type_name(tr))
+	if key == "":
+		key = _declared_type_of(e)
+	if key == "":
+		return ""
+	var c: String = GateTypes.canonical(key)
+	if c == "Array" or c == "Dictionary" or (c.begins_with("Packed") and c.ends_with("Array")):
+		return "ref"
+	if c == "Variant":
+		return ""
+	if GateTypes.BUILTIN.has(c) or not _vector_struct_of_key(key).is_empty():
+		return "value"
+	return "ref" if _is_object_key(key) else ""
+
+
+func _vector_struct_of_key(key: String) -> Dictionary:
+	var st: Dictionary = _struct_of(key)
+	return st if not st.is_empty() and st["lowering"] == "vector" else {}
+
+
+static func _step_on(st, target, key):
+	var out
+	if st is GateAST.Member:
+		out = GateAST.Member.new()
+		(out as GateAST.Member).name = (st as GateAST.Member).name
+	else:
+		out = GateAST.Index.new()
+		(out as GateAST.Index).index = key
+	out.at(st.line, st.col)
+	out.flow_type = st.flow_type
+	out.target = target
+	return out
+
+
+func _emit_safe_assign(a: GateAST.AssignStmt) -> void:
+	var chain: Array = []
+	var node = a.target
+	var safe_at: int = -1
+	while node is GateAST.Member or node is GateAST.Index:
+		chain.append(node)
+		if node.safe:
+			safe_at = chain.size() - 1   # the one nearest the root wins
+		node = node.target
+	var s = chain[safe_at]
+	var recv: String = _render_once(s.target, _postfix_base(s.target))
+	_flush_pending(a.line)
+	var rebuilt: GateAST.Expr = _tmp_ident(recv, s)
+	for i in range(safe_at, -1, -1):
+		var old = chain[i]
+		var nw
+		if old is GateAST.Member:
+			nw = GateAST.Member.new()
+			nw.name = (old as GateAST.Member).name
+			nw.safe = (old as GateAST.Member).safe and i != safe_at
+		else:
+			nw = GateAST.Index.new()
+			nw.index = (old as GateAST.Index).index
+			nw.safe = (old as GateAST.Index).safe and i != safe_at
+		nw.at(old.line, old.col)
+		nw.flow_type = old.flow_type
+		nw.target = rebuilt
+		rebuilt = nw
+	var inner: GateAST.AssignStmt = GateAST.AssignStmt.new()
+	inner.at(a.line, a.col)
+	inner.op = a.op
+	inner.value = a.value
+	inner.target = rebuilt
+	_line("if %s != null:" % recv, a.line)
+	_indent += 1
+	_emit_assign(inner)
+	_indent -= 1
+
+
+func _emit_struct_compound(a: GateAST.AssignStmt) -> bool:
+	if a.op == "=" or not a.op.ends_with("="):
+		return false
+	var bop: String = a.op.trim_suffix("=")
+	var tt: String = _static_type_of(a.target)
+	if tt == "" or not (_ops_of(tt) as Dictionary).has(bop):
+		return false
+	var spine = _lvalue_spine(a.target)
+	var bin: GateAST.Binary = GateAST.Binary.new()
+	bin.at(a.line, a.col)
+	bin.op = bop
+	bin.left = spine
+	bin.right = a.value
+	var na: GateAST.AssignStmt = GateAST.AssignStmt.new()
+	na.at(a.line, a.col)
+	na.target = spine
+	na.op = "="
+	na.value = bin
+	_emit_assign(na)
+	return true
+
+
+func _soa_cursor_write_ok(target) -> bool:
+	var root = target
+	while root is GateAST.Member or root is GateAST.Index:
+		root = root.target
+	if not (root is GateAST.Ident) or not _soa_cursors.has((root as GateAST.Ident).name) \
+			or root == target:
+		return true
+	var cn: String = (root as GateAST.Ident).name
+	var soa: String = String(_soa_cursors[cn]["soa"])
+	var field: String = "field"
+	var step = target
+	while step is GateAST.Member or step is GateAST.Index:
+		if step is GateAST.Member and step.target == root:
+			field = (step as GateAST.Member).name
+		step = step.target
+	diagnostics.error("'%s' is a value read from the @soa array '%s', so writing to it changes nothing; write `%s[i].%s`"
+			% [cn, soa, soa, field], (target as GateAST.Expr).line, (target as GateAST.Expr).col,
+		"@soa keeps each field in its own array. Loop over the indices: `for i in range(%s.size()):`." % soa)
+	return false
+
+
+func _no_swizzle_below(target) -> bool:
+	var node = target
+	while node is GateAST.Member or node is GateAST.Index:
+		var inner = node.target
+		if inner is GateAST.Member and not _swizzle_of(inner).is_empty():
+			var im: GateAST.Member = inner
+			diagnostics.error("'%s' is a swizzle, a new vector, so assigning into it is lost"
+					% im.name, im.line, im.col,
+				"assign to the vector's own components instead.")
+			return false
+		node = inner
+	return true
+
+
+##
+func _emit_swizzle_write(a: GateAST.AssignStmt, m: GateAST.Member, sw: Dictionary) -> void:
+	if a.op != "=":
+		diagnostics.error("a swizzle cannot take a compound assignment ('%s')" % a.op,
+			a.line, a.col, "write v.xy = v.xy %s w" % a.op.trim_suffix("="))
+		return
+	if not _swizzle_in_range(m, sw):
+		return
+	for i in m.name.length():
+		if m.name.find(m.name[i]) != i:
+			diagnostics.error("a swizzle that is assigned to cannot repeat a component: "
+					+ "'%s' names '%s' twice" % [m.name, m.name[i]], m.line, m.col,
+				"each component can receive one value.")
+			return
+	if not _no_swizzle_below(m):
+		return
+	var rsize: int = int(SWIZZLE_SIZES.get(GateTypes.canonical(_declared_type_of(a.value)), 0))
+	if rsize != 0 and rsize != m.name.length():
+		diagnostics.error("'%s' names %d component(s) but the value is a %s"
+				% [m.name, m.name.length(), GateTypes.canonical(_declared_type_of(a.value))],
+			a.line, a.col, "the right side needs exactly one component per letter.")
+		return
+	var spine = _lvalue_spine(m.target)
+	var base: String = _postfix_base(spine)
+	var direct: bool = _lvalue_plain(spine)
+	var cell: String = base
+	if not direct:
+		cell = _new_tmp()
+		_hoist("var %s = %s" % [cell, base])
+	var rhs: String = _new_tmp()
+	_hoist("var %s = %s" % [rhs, _copy_value(a.value)])
+	_flush_pending(a.line)
+	for i in m.name.length():
+		_line("%s.%s = %s.%s" % [cell, m.name[i], rhs, GateTypes.VECTOR_COMPONENTS[i]], a.line)
+	if not direct:
+		_line("%s = %s" % [base, cell], a.line)
+
+
+func _lvalue_spine(e):
+	if e is GateAST.Ident or e is GateAST.SelfExpr:
+		return e
+	if e is GateAST.Member and not (e as GateAST.Member).safe:
+		var om: GateAST.Member = e
+		var nm: GateAST.Member = GateAST.Member.new()
+		nm.at(om.line, om.col)
+		nm.name = om.name
+		nm.flow_type = om.flow_type
+		nm.target = _lvalue_spine(om.target)
+		if nm.target is GateAST.Member:
+			var ttext: String = _expr(nm.target)
+			if (not _repeatable(nm.target, ttext)
+					and _is_object_key(_declared_type_of(om.target))):
+				nm.target = _tmp_ident(_render_once(nm.target, ttext), om)
+		return nm
+	if e is GateAST.Index and not (e as GateAST.Index).safe:
+		var oi: GateAST.Index = e
+		var ni: GateAST.Index = GateAST.Index.new()
+		ni.at(oi.line, oi.col)
+		ni.flow_type = oi.flow_type
+		ni.target = _lvalue_spine(oi.target)
+		var itxt: String = _expr(oi.index)
+		if _repeatable(oi.index, itxt):
+			ni.index = oi.index
+		else:
+			ni.index = _tmp_ident(_render_once(oi.index, itxt), oi)
+		return ni
+	return _tmp_ident(_render_once(e, _postfix_base(e)), e)
+
+
+func _is_object_key(key: String) -> bool:
+	if key == "" or GateTypes.BUILTIN.has(key):
+		return false
+	if key == ".":
+		return true
+	if _class_decls.has(key):
+		var cd: GateAST.ClassDecl = _class_decls[key]
+		if cd.form == "class":
+			return true
+		if cd.form == "struct":
+			var st: Dictionary = _struct_of(cd.name)
+			return st.is_empty() or st["lowering"] != "vector"
+		return false
+	return _reg_classes.has(key) or ClassDB.class_exists(key)
+
+
+func _lvalue_plain(spine) -> bool:
+	if spine is GateAST.Ident or spine is GateAST.SelfExpr:
+		return _repeatable(spine, _expr(spine))
+	if spine is GateAST.Member:
+		return _repeatable(spine, _expr(spine))
+	if spine is GateAST.Index:
+		var ix: GateAST.Index = spine
+		return (ix.target is GateAST.Ident and _repeatable(ix.target, _expr(ix.target))
+			and _repeatable(ix.index, _expr(ix.index)))
+	return false
 
 
 func _emit_multi_assign(m: GateAST.MultiAssign) -> void:
@@ -1805,8 +2220,10 @@ func _emit_if(st: GateAST.IfStmt) -> void:
 			_line("else:", el)
 			_indent += 1
 			opened += 1
+			for i in _pending.size():
+				_pending[i] = _deeper(_pending[i], 1)
 			_flush_pending(el)
-			_line("if %s:" % ec, el)
+			_line(_deeper("if %s:" % ec, 1), el)
 			_emit_body(pair[1], el)
 			continue
 		_line("elif %s:" % ec, el)
@@ -1984,9 +2401,11 @@ func _emit_while(st: GateAST.WhileStmt) -> void:
 	_line("while true:", st.line)
 	_indent += 1
 	for p in pend:
-		_line(p, st.line)
-	_line("if not (%s): break" % c, st.line)
-	_indent -= 1
+		_line(_deeper(p, 1), st.line)
+	_line(_deeper("if %s:" % _not_text(st.cond, c), 1), st.line)
+	_indent += 1
+	_line("break", st.line)
+	_indent -= 2
 	_emit_body(st.body, st.line)
 
 

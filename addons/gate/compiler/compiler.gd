@@ -27,6 +27,149 @@ static func strip_header(src: String) -> String:
 	return "\n".join(kept)
 
 
+var indent: String = ""
+
+
+static func indent_of(src: String) -> String:
+	var inside: Dictionary = lines_inside_strings(src)
+	var lines: PackedStringArray = src.split("\n")
+	for i in lines.size():
+		if inside.has(i):
+			continue
+		var line: String = lines[i]
+		if line.strip_edges() == "" or not (line.begins_with("\t") or line.begins_with(" ")):
+			continue
+		var n: int = 0
+		while n < line.length() and line[n] == line[0]:
+			n += 1
+		return "\t" if line[0] == "\t" else " ".repeat(n)
+	return "\t"
+
+
+static func reindent(text: String, unit: String) -> String:
+	if unit == "" or unit == "\t" or not text.contains("\t"):
+		return text
+	var inside: Dictionary = lines_inside_strings(text)
+	var lines: PackedStringArray = text.split("\n")
+	for i in lines.size():
+		if inside.has(i):
+			continue
+		var line: String = lines[i]
+		var n: int = 0
+		while n < line.length() and line[n] == "\t":
+			n += 1
+		if n > 0:
+			lines[i] = unit.repeat(n) + line.substr(n)
+	return "\n".join(lines)
+
+
+static func lines_inside_strings(text: String) -> Dictionary:
+	var out: Dictionary = {}
+	var quote: String = ""
+	var line: int = 0
+	var i: int = 0
+	var n: int = text.length()
+	while i < n:
+		var ch: String = text[i]
+		if ch == "\n":
+			line += 1
+			if quote.length() == 3:
+				out[line] = true
+			i += 1
+			continue
+		if quote != "":
+			if ch == "\\":
+				if i + 1 < n and text[i + 1] == "\n":
+					line += 1
+					if quote.length() == 3:
+						out[line] = true
+				i += 2
+				continue
+			if text.substr(i, quote.length()) == quote:
+				i += quote.length()
+				quote = ""
+				continue
+			i += 1
+			continue
+		if ch == "#":
+			while i < n and text[i] != "\n":
+				i += 1
+			continue
+		var three: String = text.substr(i, 3)
+		if three == '"""' or three == "'''":
+			quote = three
+			i += 3
+			continue
+		if ch == '"' or ch == "'":
+			quote = ch
+			i += 1
+			continue
+		i += 1
+	return out
+
+
+const MAX_TREE_DEPTH := 180
+
+
+static func too_deep(members: Array, limit: int) -> GateAST.ASTNode:
+	var items: Array = [members]
+	var depths: PackedInt32Array = PackedInt32Array([0])
+	var roots: Array = [null]
+	while not items.is_empty():
+		var top: int = items.size() - 1
+		var n = items[top]
+		var d: int = depths[top]
+		var root = roots[top]
+		items.resize(top)
+		depths.resize(top)
+		roots.resize(top)
+		if n is Array:
+			for i in range((n as Array).size() - 1, -1, -1):
+				items.append((n as Array)[i])
+				depths.append(d)
+				roots.append(root)
+			continue
+		if not (n is GateAST.ASTNode) or n is GateAST.TypeRef:
+			continue
+		if root == null and n is GateAST.Expr:
+			root = n
+		if root != null:
+			d += 1
+			if d > limit:
+				return _expression_start(root)
+		for pn in GateAST.child_names(n):
+			var v = (n as Object).get(pn)
+			if v is Array or v is Object:
+				items.append(v)
+				depths.append(d)
+				roots.append(root)
+	return null
+
+
+static func _expression_start(e: GateAST.Expr) -> GateAST.Expr:
+	var cur: GateAST.Expr = e
+	while true:
+		var nxt: GateAST.Expr = null
+		if cur is GateAST.Binary:
+			nxt = (cur as GateAST.Binary).left
+		elif cur is GateAST.NullCoalesce:
+			nxt = (cur as GateAST.NullCoalesce).left
+		elif cur is GateAST.Ternary:
+			nxt = (cur as GateAST.Ternary).if_true
+		elif cur is GateAST.Member:
+			nxt = (cur as GateAST.Member).target
+		elif cur is GateAST.Index:
+			nxt = (cur as GateAST.Index).target
+		elif cur is GateAST.Call:
+			nxt = (cur as GateAST.Call).callee
+		elif cur is GateAST.CastExpr:
+			nxt = (cur as GateAST.CastExpr).operand
+		if nxt == null:
+			return cur
+		cur = nxt
+	return cur
+
+
 func compile(src_in: String, path: String, registry = null) -> Result:
 	# Normalise line endings once, before anything reads the text. Constructs
 	# re-emitted as raw source would otherwise carry a bare CR into the output.
@@ -49,6 +192,24 @@ func compile(src_in: String, path: String, registry = null) -> Result:
 				parser.known_aliases[aname] = true
 	var mod: GateAST.Module = parser.parse(tokens, src, diags)
 	mod.path = path
+	GateInject.expand_accessors(mod.members)
+	var deep: GateAST.ASTNode = too_deep(mod.members, MAX_TREE_DEPTH)
+	if deep != null:
+		diags.error("expression nests deeper than %d levels" % MAX_TREE_DEPTH, deep.line, deep.col,
+			"GATE's passes are written in GDScript and walk the tree once per level, so they "
+			+ "run out of stack well before Godot's own parser does. A chain counts a level for "
+			+ "every operator, call and member. Split the expression into locals.")
+		res.ok = false
+		diags.sort_by_position()
+		return res
+	var chain: Dictionary = GateChecker.base_chain(mod.extends_type, path, registry)
+	for tn in chain["types"]:
+		if GateTypes.SHORTHAND.has(tn):
+			GateTypes.shadowed[tn] = true
+	if registry != null:
+		var hidden: Dictionary = GateChecker.hidden_by_base(mod, registry, chain)
+		if not hidden.is_empty():
+			registry = registry.without(hidden)
 
 	var checker: GateChecker = GateChecker.new()
 	checker.check(mod, diags, registry)
