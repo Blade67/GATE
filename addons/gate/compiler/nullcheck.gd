@@ -2042,6 +2042,94 @@ func _check_array_store_call(c: GateAST.Call) -> void:
 		c.line, c.col)
 
 
+func _check_signal_use(c: GateAST.Call) -> void:
+	var sig: GateAST.TypeRef = null
+	var shown: String = ""
+	var verb: String = ""
+	var args: Array = c.args
+	var by_name_cls: String = ""
+	if c.callee is GateAST.Member:
+		var m: GateAST.Member = c.callee
+		if m.name == "emit" or m.name == "connect":
+			if m.target is GateAST.Ident and _local_names.has((m.target as GateAST.Ident).name):
+				var lt: Variant = _locals.get((m.target as GateAST.Ident).name, null)
+				if not (lt is GateAST.TypeRef and (lt as GateAST.TypeRef).sig_known):
+					return
+			var st: GateAST.TypeRef = _type_of(m.target)
+			if st != null and st.sig_known and st.array_depth == 0 \
+					and GateTypes.canonical(st.name) == "Signal":
+				sig = st
+				verb = m.name
+				shown = (m.target as GateAST.Member).name if m.target is GateAST.Member \
+					else (m.target as GateAST.Ident).name if m.target is GateAST.Ident else "the signal"
+		elif m.name == "emit_signal":
+			var rt: GateAST.TypeRef = _type_of(m.target)
+			if rt != null and rt.array_depth == 0:
+				by_name_cls = rt.name
+	elif c.callee is GateAST.Ident and (c.callee as GateAST.Ident).name == "emit_signal":
+		by_name_cls = _cls
+	if by_name_cls != "" and not c.args.is_empty() and c.args[0] is GateAST.Literal \
+			and (c.args[0] as GateAST.Literal).kind == "string":
+		shown = (c.args[0] as GateAST.Literal).raw.lstrip("&^").replace("\"", "").replace("'", "")
+		sig = infer.signal_type(by_name_cls, shown)
+		verb = "emit"
+		args = c.args.slice(1)
+	if sig == null:
+		return
+	if sig.callable_params.is_empty():
+		return
+	for p in sig.callable_params:
+		if p == null:
+			return
+	var params: PackedStringArray = PackedStringArray()
+	for p2 in sig.callable_params:
+		params.append((p2 as GateAST.TypeRef).describe())
+	var declared: String = "%s(%s)" % [shown, ", ".join(params)]
+	if verb == "emit":
+		if args.size() != sig.callable_params.size():
+			_warn("'%s' is declared %s, but %d argument(s) are emitted"
+					% [shown, declared, args.size()], c.line, c.col,
+				"GDScript does not check signal arguments; every connected method "
+				+ "receives exactly these")
+			return
+		var offset: int = c.args.size() - args.size()
+		for i in args.size():
+			var vt: GateAST.TypeRef = _value_type(args[i])
+			var pt: GateAST.TypeRef = sig.callable_params[i]
+			if vt != null and vt.name == "null" and GateTypeCompat.holds_null(pt, infer):
+				continue
+			if GateTypeCompat.godot_converts(vt, pt):
+				continue
+			if GateTypeCompat.assignable(vt, pt, infer) == GateTypeCompat.NO:
+				_warn("'%s' is declared %s, but argument %d is %s"
+						% [shown, declared, i + 1, GateTypeCompat.describe(vt)], c.line, c.col,
+					"GDScript does not check signal arguments, so connected methods "
+					+ "would receive this as it is")
+			elif GateChecker.is_gate_only_type(pt):
+				c.args[i + offset] = _widen(pt, c.args[i + offset],
+					"argument %d of '%s'" % [i + 1, shown], c.line, c.col)
+		return
+	if args.is_empty():
+		return
+	var ft: GateAST.TypeRef = _type_of(args[0])
+	if ft == null or not (ft.sig_known or ft.is_func_type) or GateTypes.canonical(ft.name) != "Callable":
+		return
+	var want: GateAST.TypeRef = GateAST.TypeRef.new()
+	want.name = "Callable"
+	want.is_func_type = true
+	want.callable_params = sig.callable_params
+	var ret: GateAST.TypeRef = GateAST.TypeRef.new()
+	ret.name = "void"
+	want.callable_return = ret
+	if GateTypeCompat.assignable(ft, want, infer) == GateTypeCompat.NO:
+		var receiver: String = (args[0] as GateAST.Ident).name if args[0] is GateAST.Ident \
+			else "this callable"
+		_warn("'%s' cannot receive '%s', which is declared %s" % [receiver, shown, declared],
+			c.line, c.col,
+			"its parameters must take exactly what the signal passes. Godot reports this "
+			+ "only when the signal is emitted")
+
+
 func _check_union_elements(target, what: String, line: int, col: int) -> void:
 	var t: GateAST.TypeRef = _type_of(target)
 	if t == null or not t.is_union() or t.array_depth > 0:

@@ -73,6 +73,17 @@ func _index_member_names(members: Array, owner: String) -> void:
 			_index_member_names(cd.members, cd.name)
 
 
+func signal_type(cls: String, name: String) -> GateAST.TypeRef:
+	var sd: Variant = _lookup(signals, cls, name)
+	if not (sd is GateAST.SignalDecl):
+		return null
+	var st: GateAST.TypeRef = _named("Signal")
+	st.sig_known = true
+	for p in (sd as GateAST.SignalDecl).params:
+		st.shaped().callable_params.append((p as GateAST.Param).type)
+	return st
+
+
 func has_member(cls: String, name: String) -> int:
 	_ensure_member_names()
 	var seen: Dictionary = {}
@@ -465,6 +476,15 @@ func _ensure_member_names() -> void:
 				_index_member_names((table[cname] as GateAST.ClassDecl).members, String(cname))
 	if _names_mod != null:
 		_index_member_names(_names_mod.members, MODULE_CLASS)
+
+
+func _index_signals(members: Array, owner: String) -> void:
+	for m in members:
+		if m is GateAST.SignalDecl:
+			signals["%s.%s" % [owner, (m as GateAST.SignalDecl).name]] = m
+			_ref_names[(m as GateAST.SignalDecl).name] = true
+		elif m is GateAST.ClassDecl:
+			_index_signals((m as GateAST.ClassDecl).members, (m as GateAST.ClassDecl).name)
 
 
 func type_of(e, locals: Dictionary) -> GateAST.TypeRef:
