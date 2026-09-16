@@ -44,12 +44,26 @@ func build(root: String = "res://") -> Dictionary:
 		var where: Array = registry.declared_in[dname]
 		if where.size() < 2:
 			continue
-		var sorted: Array = where.duplicate()
-		sorted.sort()
-		errors.append(("[GATE] '%s' is declared at the top level of more than one file: "
-			+ "%s. The project index is flat, so one of them would silently win every "
-			+ "reference. Rename one, or move it inside a class or namespace.")
-			% [dname, ", ".join(PackedStringArray(sorted))])
+		var users: PackedStringArray = PackedStringArray()
+		for gp in gate_files:
+			if where.has(gp):
+				continue
+			if not sources.has(gp):
+				sources[gp] = _code_of(gp)
+			if _uses_word(sources[gp], String(dname)):
+				users.append(gp)
+		if not users.is_empty():
+			ambiguous[dname] = users
+
+	for cname in registry.class_name_declared_in:
+		var decls: Array = registry.class_name_declared_in[cname]
+		if decls.size() < 2:
+			continue
+		var sorted_cn: Array = decls.duplicate()
+		sorted_cn.sort()
+		errors.append(("[GATE] class_name '%s' is declared by more than one file: %s. Godot "
+			+ "registers one of them, and the other will not load. Rename one.")
+			% [cname, ", ".join(PackedStringArray(sorted_cn))])
 		failed += 1
 
 	for skipped in _gate_files_under_addons(root):
@@ -66,6 +80,36 @@ func build(root: String = "res://") -> Dictionary:
 			1: changed += 1
 			0: unchanged += 1
 			-1: failed += 1
+	if changed > 0 and not _skipped_now.is_empty():
+		var again: Array = _skipped_now.duplicate()
+		_skipped_now = []
+		for path2 in again:
+			_failed_at.erase(path2)
+			match compile_file(path2, registry, deferred, reg_sig):
+				1: changed += 1
+				0: unchanged += 1
+				-1: failed += 1
+	for path3 in _skipped_now:
+		errors.append(String(_failed_msg.get(path3, "[GATE] %s: Godot will not load its output." % path3)))
+		failed += 1
+
+	for dname3 in ambiguous:
+		var where3: Array = registry.declared_in[dname3]
+		var real_users: PackedStringArray = PackedStringArray()
+		for up in ambiguous[dname3]:
+			var up_out: String = String(up).get_basename() + ".gd"
+			var text: String = String(deferred[up_out]["source"]) if deferred.has(up_out) else _read_text(up_out)
+			if text == "" or _uses_extern(text, String(dname3), where3):
+				real_users.append(up)
+		if real_users.is_empty():
+			continue
+		var sorted: Array = where3.duplicate()
+		sorted.sort()
+		errors.append(("[GATE] '%s' is declared at the top level of more than one file: "
+			+ "%s, and %s uses it. The project index is flat, so GATE cannot tell which "
+			+ "one it means. Rename one, or move it inside a class or namespace.")
+			% [dname3, ", ".join(PackedStringArray(sorted)), ", ".join(real_users)])
+		failed += 1
 
 	var dependents: Dictionary = {}
 	for out_path in deferred:

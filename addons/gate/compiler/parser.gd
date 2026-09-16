@@ -27,17 +27,21 @@ func parse(tokens: Array, source: String, diags: GateDiagnostics) -> GateAST.Mod
 	var mod: GateAST.Module = GateAST.Module.new()
 	_skip_newlines()
 	while not _at_end():
+		var before: int = diags.error_count()
 		var m: GateAST.Stmt = _parse_module_member(mod)
 		if m != null:
 			mod.members.append(m)
 		_drain_extras(mod.members)
+		_expect_stmt_end(before)
 		while _match_op(";"):
 			if _at_stmt_end():
 				break
+			var before2: int = diags.error_count()
 			var m2: GateAST.Stmt = _parse_module_member(mod)
 			if m2 != null:
 				mod.members.append(m2)
 			_drain_extras(mod.members)
+			_expect_stmt_end(before2)
 		_skip_newlines()
 	mod.generic_uses = _generic_uses
 	mod.uses_nullable = _saw_nullable
@@ -135,7 +139,17 @@ func _parse_annotations() -> Array:
 
 func _parse_member() -> GateAST.Stmt:
 	var start_line: int = _cur().line
+	if _check(GateLexer.T.INDENT):
+		if _stray_indent():
+			return null
+		return _raw_block()
 	var annotations: Array = _parse_annotations()
+	# Annotations that close a block have nothing to attach to; keep them as they are.
+	if not annotations.is_empty() and (_check(GateLexer.T.DEDENT) or _at_end()):
+		var lone: GateAST.AnnotatedStmt = GateAST.AnnotatedStmt.new()
+		lone.at(start_line, 0)
+		lone.annotations = annotations
+		return lone
 
 	var visibility: String = ""
 	var is_static: bool = false
@@ -148,11 +162,16 @@ func _parse_member() -> GateAST.Stmt:
 		if _check_kw("pub"): _advance(); visibility = "pub"
 		elif _check_kw("priv"): _advance(); visibility = "priv"
 		elif _check_kw("static"): _advance(); is_static = true
-		elif _check_kw("abstract"): _advance(); is_abstract = true
+		elif _check_kw("abstract") and _abstract_is_modifier(): _advance(); is_abstract = true
 		elif _check_kw("virtual"): _advance(); is_virtual = true
 		elif _check_kw("override"): _advance(); is_override = true
 		elif _check_kw("final"): _advance(); is_final = true
+		elif visibility != "" and _check(GateLexer.T.ANNOTATION):
+			annotations.append_array(_parse_annotations())   # `priv @export var x`
 		else: break
+
+	if not (_check_kw("func") or _check_kw("operator")):
+		_reject_method_modifiers(is_final, is_virtual, is_override)
 
 	if _check_kw("class") or _check_kw("struct") or _check_kw("interface") \
 		or _check_kw("trait") or _check_kw("namespace"):
@@ -195,12 +214,22 @@ func _parse_member() -> GateAST.Stmt:
 		return ed
 
 	if _check_kw("var") or _check_kw("const"):
+		_leftover = -1
 		var vd: GateAST.VarDecl = _parse_var_decl(true)
 		if vd != null:
 			vd.annotations = annotations
 			vd.visibility = visibility
 			vd.is_static = is_static
 			return vd
+		if _leftover >= 0 and _starts_a_second_statement(_leftover):
+			var lt: GateLexer.Token = _toks[_leftover]
+			diagnostics.error("expected the end of the statement, found '%s'" % lt.value,
+				lt.line, lt.col,
+				"GDScript takes one statement per line; separate two with `;` or a line break. "
+				+ "A missing operator or comma reads as a second statement here.")
+			_leftover = -1
+			_skip_to_statement_end()
+			return null
 		_skip_to_statement_end()
 		var vraw: GateAST.RawStmt = _raw_from(start_line, maxi(_cur().line, start_line))
 		return vraw
@@ -227,6 +256,81 @@ func _parse_member() -> GateAST.Stmt:
 	_skip_to_statement_end()
 	var raw: GateAST.RawStmt = _raw_from(start_line, maxi(_cur().line, start_line))
 	return raw
+
+
+func _reject_method_modifiers(is_final: bool, is_virtual: bool, is_override: bool) -> void:
+	var on_class: bool = _check_kw("class") or _check_kw("struct") or _check_kw("interface") \
+		or _check_kw("trait") or _check_kw("namespace")
+	var hint: String = "GDScript cannot stop a class from being extended; mark the methods " \
+		+ "that must not change instead" if on_class \
+		else "declare it `const` if the value must not change. A subclass that redeclares a " \
+			+ "field is an error in GDScript whether or not it says so here"
+	for pair in [[is_final, "final"], [is_virtual, "virtual"], [is_override, "override"]]:
+		if pair[0]:
+			_err("`%s` applies to a method" % pair[1], hint)
+
+
+func _raw_block() -> GateAST.RawStmt:
+	var start_line: int = _toks[_i + 1].line if _i + 1 < _toks.size() else _cur().line
+	var end_line: int = start_line
+	var depth: int = 0
+	while not _at_end():
+		if _check(GateLexer.T.INDENT):
+			depth += 1
+		elif _check(GateLexer.T.DEDENT):
+			depth -= 1
+			if depth == 0:
+				_advance()
+				break
+		elif not _check(GateLexer.T.NEWLINE):
+			end_line = maxi(end_line, _cur().line)
+		_advance()
+	return _raw_from(start_line, end_line)
+
+
+func _stray_indent() -> bool:
+	var j: int = _i - 1
+	while j >= 0 and _toks[j].type in [GateLexer.T.NEWLINE, GateLexer.T.COMMENT]:
+		j -= 1
+	if j >= 0 and _toks[j].is_op(":"):
+		return false
+	var reported: bool = false
+	for d in diagnostics.items:
+		if d.level == GateDiagnostics.Level.ERROR and j >= 0 and d.line == _toks[j].line:
+			reported = true   # the line above already failed; this is its body
+	if not reported:
+		_err("unexpected indentation in a class body",
+			"indent a line only inside the block it belongs to; this one is not in a function, "
+			+ "a class or a property")
+	var depth: int = 0
+	while not _at_end():
+		if _check(GateLexer.T.INDENT):
+			depth += 1
+		elif _check(GateLexer.T.DEDENT):
+			depth -= 1
+			if depth == 0:
+				_advance()
+				break
+		_advance()
+	return true
+
+
+const MEMBER_MODIFIERS := ["pub", "priv", "static", "abstract", "virtual", "override", "final"]
+const ABSTRACT_TARGETS := ["class", "struct", "interface", "trait", "namespace", "func", "operator"]
+
+
+func _abstract_is_modifier() -> bool:
+	var j: int = _i + 1
+	while j < _toks.size():
+		var t: GateLexer.Token = _toks[j]
+		if t.type != GateLexer.T.KEYWORD:
+			return false
+		if t.value in ABSTRACT_TARGETS:
+			return true
+		if not t.value in MEMBER_MODIFIERS:
+			return false
+		j += 1
+	return false
 
 
 func _parse_class_like() -> GateAST.ClassDecl:
@@ -362,6 +466,12 @@ func _parse_enum() -> GateAST.EnumDecl:
 	ed.at(kw.line, kw.col)
 	if _at_name():
 		ed.name = _advance().value
+	# The opening brace may sit on the next line.
+	var k: int = _i
+	while k < _toks.size() and (_toks[k].type == GateLexer.T.NEWLINE or _toks[k].type == GateLexer.T.COMMENT):
+		k += 1
+	if k < _toks.size() and _toks[k].is_op("{"):
+		_i = k
 	if _expect_op("{", "to open the enum body"):
 		_skip_newlines()
 		while not _at_end() and not _check_op("}"):
@@ -428,6 +538,7 @@ func _parse_var_decl(strict_end := false) -> GateAST.VarDecl:
 	if (strict_end and vd.setter == "" and vd.inline_accessors == ""
 			and not value_took_a_block
 			and not _at_stmt_end() and not _check_op(";")):
+		_leftover = _i
 		_i = entry
 		return null
 	return vd
@@ -553,21 +664,65 @@ func _parse_block_body(is_class_body: bool) -> Array:
 		_skip_newlines()
 		if _check(GateLexer.T.DEDENT) or _at_end():
 			break
+		var before: int = diagnostics.error_count()
 		var s: GateAST.Stmt = _parse_member() if is_class_body else _parse_statement()
 		if s != null:
 			out.append(s)
 		_drain_extras(out)
+		_expect_stmt_end(before)
 		while _match_op(";"):
 			if _at_stmt_end():
 				break
+			var before2: int = diagnostics.error_count()
 			var s2: GateAST.Stmt = _parse_member() if is_class_body else _parse_statement()
 			if s2 != null:
 				out.append(s2)
 			_drain_extras(out)
+			_expect_stmt_end(before2)
 		_skip_newlines()
 	if _check(GateLexer.T.DEDENT):
 		_advance()
 	return out
+
+
+const STATEMENT_STARTERS := ["var", "const", "func", "class", "signal", "enum", "static",
+	"if", "for", "while", "match", "return", "pass", "break", "continue", "breakpoint",
+	"struct", "interface", "trait", "namespace"]
+
+
+func _starts_a_second_statement(at: int) -> bool:
+	var t: GateLexer.Token = _toks[at]
+	if t.type == GateLexer.T.KEYWORD:
+		return STATEMENT_STARTERS.has(t.value)
+	if t.type in [GateLexer.T.STRING, GateLexer.T.FSTRING, GateLexer.T.NUMBER]:
+		return true
+	if t.type == GateLexer.T.OP:
+		return t.value in [")", "]", "}", ","]
+	return (t.type == GateLexer.T.IDENT and at + 1 < _toks.size()
+		and _toks[at + 1].is_op("("))
+
+
+var _leftover: int = -1
+
+
+func _expect_stmt_end(errors_before: int) -> void:
+	if _at_stmt_end() or _check_op(";") or _check(GateLexer.T.INDENT):
+		return
+	if diagnostics.error_count() > errors_before:
+		_skip_to_statement_end()   # this statement already said what is wrong
+		return
+	var j: int = _i - 1
+	while j >= 0 and _toks[j].type in [GateLexer.T.NEWLINE, GateLexer.T.INDENT,
+			GateLexer.T.DEDENT, GateLexer.T.COMMENT]:
+		j -= 1
+	if j < 0 or _toks[j].line < _cur().line:
+		return   # the statement ran to the end of its line; a block took the NEWLINE
+	if not _starts_a_second_statement(_i):
+		return   # a construct GATE does not model, such as Godot 3's `setget`: passed through
+	_err("expected the end of the statement, found '%s'" % _cur().value,
+		"GDScript takes one statement per line; separate two with `;` or a line break. "
+		+ "A missing operator or comma reads as a second statement here.")
+	_skip_to_statement_end()
 
 
 func _drain_extras(into: Array) -> void:
@@ -659,6 +814,11 @@ func _parse_statement() -> GateAST.Stmt:
 		var probe: int = _i
 		var anns: Array = _parse_annotations()
 		_skip_newlines()
+		if not anns.is_empty() and (_check(GateLexer.T.DEDENT) or _at_end()):
+			var lone_stmt: GateAST.AnnotatedStmt = GateAST.AnnotatedStmt.new()
+			lone_stmt.at(start_line, 0)
+			lone_stmt.annotations = anns
+			return lone_stmt
 		if _starts_declaration():
 			_i = probe
 			return _parse_member()
@@ -712,7 +872,21 @@ func _parse_statement() -> GateAST.Stmt:
 	return _parse_expression_statement(start_line)
 
 
+## Where a line's first token starts: an inline `if` after `else:` belongs there.
+func _line_start_col(idx: int) -> int:
+	var j: int = idx
+	while j > 0:
+		var prev: GateLexer.Token = _toks[j - 1]
+		if prev.line != _toks[idx].line:
+			break
+		if prev.type in [GateLexer.T.NEWLINE, GateLexer.T.INDENT, GateLexer.T.DEDENT]:
+			break
+		j -= 1
+	return _toks[j].col
+
+
 func _parse_if() -> GateAST.IfStmt:
+	var anchor_col: int = _line_start_col(_i)
 	var kw: GateLexer.Token = _advance()
 	var st: GateAST.IfStmt = GateAST.IfStmt.new()
 	st.at(kw.line, kw.col)
@@ -723,7 +897,7 @@ func _parse_if() -> GateAST.IfStmt:
 		_skip_newlines()
 		# An `elif`/`else` belongs to the `if` at its own column. Inside brackets there
 		# is no DEDENT to enforce that.
-		if _cur().line != kw.line and _cur().col != kw.col:
+		if _cur().line != kw.line and _cur().col != anchor_col:
 			break
 		if _check_kw("elif"):
 			_advance()
@@ -814,7 +988,7 @@ func _parse_while() -> GateAST.WhileStmt:
 func _match_starts_a_statement() -> bool:
 	var nxt: GateLexer.Token = _peek(1)
 	if nxt.type == GateLexer.T.OP:
-		return not (nxt.value in [".", "?.", "[", "?[", "=", ":=", ",", ")", "]", "}",
+		return not (nxt.value in [".", "?.", "?[", "=", ":=", ",", ")", "]", "}",
 			"+=", "-=", "*=", "/=", "%=", "**=", "&=", "|=", "^=", "<<=", ">>="])
 	return true
 
@@ -1034,7 +1208,8 @@ func _scan_pattern() -> GateAST.Expr:
 				depth -= 1
 			elif depth == 0 and (t.value == ":" or t.value == ","):
 				break
-		elif depth == 0 and t.is_kw("when"):
+		elif depth == 0 and t.is_kw("when") and before != null and not before.is_op(".") \
+			and not before.is_kw("var"):
 			break
 		elif t.type == GateLexer.T.NEWLINE and depth <= 0:
 			break

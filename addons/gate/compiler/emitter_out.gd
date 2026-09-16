@@ -90,8 +90,18 @@ func _blank_gap(src_line: int) -> void:
 func _blank_line(src_line: int) -> void:
 	if _out.is_empty() or _out[_out.size() - 1].strip_edges() == "":
 		return
+	if not _code_emitted():
+		return   # as `set_source` reads it back: no blank above the first line of code
 	_out.append("")
 	_map.append(src_line)
+
+
+func _code_emitted() -> bool:
+	for l in _out:
+		var t: String = String(l).strip_edges()
+		if t != "" and not t.begins_with("#") and not _is_annotation_only_line(t):
+			return true
+	return false
 
 var _tmp: int = 0
 
@@ -132,6 +142,7 @@ var _cur_class: String = ""
 var _class_bases: Dictionary = {}
 
 var _needs_iface_helper: bool = false
+var _iface_scopes: Array = []
 
 var _interface_names: Dictionary = {}
 
@@ -145,6 +156,10 @@ var _used_origins: Dictionary = {}    ## origin .gate path -> const alias
 var _self_path: String = ""       ## the file being compiled, which needs no preload
 var _local_types: Dictionary = {}     ## type names this module declares itself
 var _bound_names: Dictionary = {}     ## names that are a value in scope in this module
+var _base_names: Dictionary = {}      ## names the base chain defines
+var _base_chain: Dictionary = {}
+var _const_exprs: Dictionary = {}     ## `const` values, for folding a tuple index
+var _base_via_gate: bool = false      ## a link of the base chain is a script GATE builds
 var _field_types: Dictionary = {}
 var _var_dict_values: Dictionary = {}
 var _project_generic_uses: Array = []
@@ -301,14 +316,25 @@ func _emit_init_helper(at: int = 0) -> void:
 ## so every class that tests an interface gets its own copy.
 func _emit_iface_helper() -> void:
 	var saved: int = _indent
-	_indent = 0
 	_blank_line(1)
 	_line("static func __gate_is(o, iface: String) -> bool:", 1)
-	_indent = 1
-	_line("if o == null:", 1)
-	_indent = 2
+	_indent = saved + 1
+	_line("if typeof(o) != TYPE_OBJECT or o == null:", 1)
+	_indent = saved + 2
 	_line("return false", 1)
-	_indent = 1
+	_indent = saved + 1
 	_line("var m = o.get(\"__gate_impl\")", 1)
 	_line("return m != null and iface in m", 1)
 	_indent = saved
+
+
+func _want_iface_helper() -> void:
+	if _iface_scopes.is_empty():
+		_needs_iface_helper = true
+	else:
+		_iface_scopes[_iface_scopes.size() - 1] = true
+
+
+func _close_class_scope() -> void:
+	if _iface_scopes.pop_back():
+		_emit_iface_helper()

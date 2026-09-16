@@ -114,14 +114,10 @@ func _expr(e) -> String:
 			bv = _lazy_part(t3.if_false) if _lazy_ctx() else _expr(t3.if_false)
 		var bp: PackedStringArray = _pending
 		_pending = saved_p
-		if t3.if_true is GateAST.Lambda:
-			av = "(%s)" % av
 		if t3.if_false is GateAST.Lambda:
 			bv = "(%s)" % bv
 		if ap.is_empty() and bp.is_empty():
-			if t3.if_false is GateAST.Ternary:
-				return "%s if %s else %s" % [av, cond, bv]
-			return "(%s if %s else %s)" % [av, cond, bv]
+			return _ternary_text(av, cond, bv)
 		var tmp: String = _new_tmp()
 		_hoist("var %s = null" % tmp)
 		_hoist("if %s:" % cond)
@@ -1478,7 +1474,7 @@ func _postfix_base(e) -> String:
 
 func _paren_below(e, floor_prec: int) -> String:
 	var s: String = _expr(e)
-	if _prec_of(e) < floor_prec:
+	if _text_prec(e, s) < floor_prec and not _is_bare_ident(s):
 		return "(%s)" % s
 	return s
 
@@ -1622,13 +1618,20 @@ func _emit_widen(w: GateAST.Widen) -> String:
 
 
 func _emit_is(ie: GateAST.IsExpr) -> String:
-	var operand: String = _paren_below(ie.operand, PREC_TYPE_TEST)
 	var tname: String = ie.type.name
 	if not _is_known_native(tname) and _looks_like_interface(tname):
-		_needs_iface_helper = true
-		var expr: String = "__gate_is(%s, \"%s\")" % [operand, tname]
+		_want_iface_helper()
+		var expr: String = "__gate_is(%s, \"%s\")" % [_paren_below(ie.operand, PREC_TYPE_TEST), tname]
 		return "not " + expr if ie.negated else expr
-	var s: String = "%s is %s" % [operand, _map_type(ie.type)]
+	var mapped: String = _map_type(ie.type)
+	# `int[]` may be lowered as either, so both count. The lambda reads the operand once.
+	var packed: String = _packed_twin(ie.type, mapped)
+	if packed != "":
+		var call: String = "(func(__gate_v): return __gate_v is %s or __gate_v is %s).call(%s)" \
+			% [mapped, packed, _expr(ie.operand)]
+		return "not " + call if ie.negated else call
+	var operand: String = _paren_below(ie.operand, PREC_TYPE_TEST)
+	var s: String = "%s is %s" % [operand, mapped]
 	return "not (%s)" % s if ie.negated else s
 
 
@@ -1806,9 +1809,9 @@ func _emit_call(c: GateAST.Call) -> String:
 
 	if c.callee is GateAST.Ident:
 		var n: String = (c.callee as GateAST.Ident).name
-		if CTOR_SHORTHAND.has(n) and not _declared_funcs.has(n):
+		if CTOR_SHORTHAND.has(n) and not _shorthand_taken(n) and not GateTypes.shadowed.has(n):
 			return "%s(%s)" % [CTOR_SHORTHAND[n], ", ".join(args)]
-		var st: Dictionary = _struct_of(n)
+		var st: Dictionary = _ctor_struct_of(n)
 		if not st.is_empty():
 			_check_struct_arity(n, st, c)
 			if st["lowering"] == "vector":
@@ -1854,6 +1857,10 @@ func _emit_call(c: GateAST.Call) -> String:
 	elif c.callee is GateAST.Member:
 		var mem: GateAST.Member = c.callee
 		var mangled2: String = _resolve_overload(mem.name, c.args.size())
+		if mangled2 != "" and mem.member_class != "":
+			if _overload_declared_by_chain(mem.name, mem.member_class):
+				return "%s.%s(%s)" % [recv_text if recv_node != null else _postfix_base(mem.target),
+					mangled2, ", ".join(args)]
 		if mangled2 != "":
 			if mem.target is GateAST.SelfExpr:
 				if _overload_declared_by_chain(mem.name, _cur_class):

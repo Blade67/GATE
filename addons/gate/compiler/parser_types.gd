@@ -14,6 +14,9 @@ func _parse_extends_type() -> GateAST.TypeRef:
 		tr.at(t.line, t.col)
 		tr.name = q + t.value + q
 		tr.is_path_literal = true
+		while _check_op(".") and _peek(1).type == GateLexer.T.IDENT:
+			_advance()
+			tr.name += "." + _advance().value
 		return tr
 	return _parse_type()
 
@@ -399,6 +402,8 @@ func _decl_name_follows(j2: int) -> bool:
 func _is_type_looking(name: String) -> bool:
 	if GateTypes.is_shorthand(name) or _alias_names.has(name):
 		return true
+	if GateTypes.shadowed.has(name):
+		return true   # `class vec2` declared here or in the project: a type all the same
 	if name.length() > 0 and name[0] == name[0].to_upper() and name[0] != "_":
 		return true
 	if GateTypes.BUILTIN.has(name):

@@ -40,6 +40,26 @@ class Registry extends RefCounted:
 	func describe(name: String) -> String:
 		return origin.get(name, "<unknown file>")
 
+	func without(names: Dictionary) -> Registry:
+		var r: Registry = Registry.new()
+		for p in get_property_list():
+			if (int(p["usage"]) & PROPERTY_USAGE_SCRIPT_VARIABLE) != 0:
+				r.set(p["name"], get(p["name"]))
+		for t in ["interfaces", "traits", "structs", "classes", "namespaces", "generics",
+				"top_level", "origin", "declared_in", "bases"]:
+			var d: Dictionary = (get(t) as Dictionary).duplicate()
+			for n in names:
+				d.erase(n)
+			r.set(t, d)
+		for t2 in ["methods", "fields"]:
+			var src: Dictionary = get(t2)
+			var kept: Dictionary = {}
+			for k in src:
+				if not names.has(String(k).get_slice(".", 0)):
+					kept[k] = src[k]
+			r.set(t2, kept)
+		return r
+
 	## A fingerprint of everything a file compiles against. Declaration shape only, so
 	## editing a function body does not rebuild the project.
 	func signature() -> String:
@@ -200,6 +220,38 @@ func _index_file(path: String, src: String, tokens: Array, diags: GateDiagnostic
 
 	if mod.class_name_decl != "":
 		registry.script_class_names[mod.class_name_decl] = path
+		var scd: GateAST.ClassDecl = GateAST.ClassDecl.new()
+		scd.name = mod.class_name_decl
+		scd.form = "class"
+		scd.extends_type = mod.extends_type
+		scd.members = mod.members
+		registry.script_class_decls[mod.class_name_decl] = scd
+		if scd.extends_type != null and not registry.bases.has(scd.name):
+			registry.bases[scd.name] = scd.extends_type.name
+		for sm in mod.members:
+			if sm is GateAST.FuncDecl:
+				var skey: String = "%s.%s" % [scd.name, (sm as GateAST.FuncDecl).name]
+				if not registry.methods.has(skey):
+					registry.methods[skey] = []
+				registry.methods[skey].append(sm)
+			elif sm is GateAST.VarDecl and (sm as GateAST.VarDecl).type != null:
+				registry.fields["%s.%s" % [scd.name, (sm as GateAST.VarDecl).name]] = (sm as GateAST.VarDecl).type
+		if not registry.class_name_declared_in.has(mod.class_name_decl):
+			registry.class_name_declared_in[mod.class_name_decl] = []
+		registry.class_name_declared_in[mod.class_name_decl].append(path)
+	var defines: Array = []
+	for fm in mod.members:
+		if fm is GateAST.FuncDecl and SYNTHESISED.has((fm as GateAST.FuncDecl).name):
+			defines.append((fm as GateAST.FuncDecl).name)
+	for wn in GateInject.will_define(mod.members):
+		if not defines.has(wn):
+			defines.append(wn)
+	registry.script_modules[path] = {
+		"extends": mod.extends_type.name if mod.extends_type != null else "",
+		"defines": defines,
+	}
+	if not registry.injects and _injects(mod.members):
+		registry.injects = true
 	for m in mod.members:
 		if m is GateAST.ClassDecl:
 			registry.top_level[(m as GateAST.ClassDecl).name] = true
@@ -243,6 +295,15 @@ func _collect(members: Array, path: String) -> void:
 				else:
 					registry.classes[cd.name] = cd
 		registry.origin[cd.name] = path
+		var kind: String = cd.form
+		if kind == "class" and not cd.generic_params.is_empty():
+			kind = "generic class"
+		if kind != "class":
+			var kkey: String = "%s|%s" % [kind, cd.name]
+			if not registry.kind_files.has(kkey):
+				registry.kind_files[kkey] = []
+			if not registry.kind_files[kkey].has(path):
+				registry.kind_files[kkey].append(path)
 		if not registry.declared_in.has(cd.name):
 			registry.declared_in[cd.name] = []
 		if not registry.declared_in[cd.name].has(path):
@@ -280,6 +341,70 @@ static func _is_gdignored(dir: String) -> bool:
 	return FileAccess.file_exists(dir.path_join(".gdignore"))
 
 
+static func is_utf8(path: String) -> bool:
+	var bytes: PackedByteArray = FileAccess.get_file_as_bytes(path)
+	if bytes.size() >= 3 and bytes[0] == 0xEF and bytes[1] == 0xBB and bytes[2] == 0xBF:
+		bytes = bytes.slice(3)
+	return bytes.get_string_from_utf8().to_utf8_buffer() == bytes
+
+
+func _index_gd_class_names(root: String) -> void:
+	for path in find_gd_files(root):
+		var name: String = gd_class_name_of(path)
+		if name != "" and not registry.gd_class_names.has(name):
+			registry.gd_class_names[name] = path
+
+
+static var _gd_name_cache: Dictionary = {}
+static var _class_name_re: RegEx = null
+
+
+static func release_statics() -> void:
+	_class_name_re = null
+
+
+static func gd_class_name_of(path: String) -> String:
+	var stamp: int = FileAccess.get_modified_time(path)
+	var hit: Array = _gd_name_cache.get(path, [])
+	if not hit.is_empty() and int(hit[0]) == stamp:
+		return String(hit[1])
+	var name: String = ""
+	var text: String = FileAccess.get_file_as_string(path)
+	if text.contains("class_name"):
+		if _class_name_re == null:
+			_class_name_re = RegEx.create_from_string(
+				"(?m)^(?:@[A-Za-z_]\\w*(?:\\([^)]*\\))?\\s+)*class_name\\s+([A-Za-z_]\\w*)")
+		var m: RegExMatch = _class_name_re.search(text)
+		if m != null:
+			name = m.get_string(1)
+	_gd_name_cache[path] = [stamp, name]
+	return name
+
+
+static func find_gd_files(root: String) -> Array[String]:
+	var out: Array[String] = []
+	var d: DirAccess = DirAccess.open(root)
+	if d == null:
+		return out
+	d.list_dir_begin()
+	var n: String = d.get_next()
+	while n != "":
+		var p: String = root.path_join(n)
+		if d.current_is_dir():
+			if n == "addons" or walks_into(d, n, p):
+				out.append_array(find_gd_files(p))
+		elif n.get_extension().to_lower() == "gd":
+			out.append(p)
+		n = d.get_next()
+	d.list_dir_end()
+	return out
+
+
+static func walks_into(d: DirAccess, n: String, p: String) -> bool:
+	return (not n.begins_with(".") and not IGNORE_DIRS.has(n) and not d.is_link(p)
+		and not _is_gdignored(p) and not FileAccess.file_exists(p.path_join("project.godot")))
+
+
 static func find_gate_files(root: String) -> Array[String]:
 	var out: Array[String] = []
 	var d: DirAccess = DirAccess.open(root)
@@ -290,8 +415,7 @@ static func find_gate_files(root: String) -> Array[String]:
 	while n != "":
 		var p: String = root.path_join(n)
 		if d.current_is_dir():
-			if (not n.begins_with(".") and not IGNORE_DIRS.has(n)
-					and not d.is_link(p) and not _is_gdignored(p)):
+			if walks_into(d, n, p):
 				out.append_array(find_gate_files(p))
 		elif n.get_extension().to_lower() == "gate":
 			out.append(p)

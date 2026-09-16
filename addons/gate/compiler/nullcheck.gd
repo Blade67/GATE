@@ -327,6 +327,8 @@ func _walk_stmt(s) -> bool:
 		return false
 
 	if s is GateAST.AnnotatedStmt:
+		if (s as GateAST.AnnotatedStmt).stmt == null:
+			return false
 		return _walk_stmt((s as GateAST.AnnotatedStmt).stmt)
 
 	if s is GateAST.VarDecl:
@@ -2927,6 +2929,8 @@ func _resolve_callee(c: GateAST.Call) -> Dictionary:
 	if c.callee is GateAST.Ident:
 		var n: String = (c.callee as GateAST.Ident).name
 		out["name"] = n
+		if GateInfer.GLOBAL_FUNCTIONS.has(n):
+			return out
 		if _cls != "":
 			var own2 = _pick_arity(infer.method_candidates(_cls, n), c.args.size())
 			if own2 != null:
@@ -2987,6 +2991,8 @@ func _pick_arity(cands: Array, given: int):
 func _candidates(c: GateAST.Call, narrowed: bool = false) -> Array:
 	if c.callee is GateAST.Ident:
 		var n: String = (c.callee as GateAST.Ident).name
+		if GateInfer.GLOBAL_FUNCTIONS.has(n):
+			return []
 		if _cls != "":
 			var own: Array = infer.method_candidates(_cls, n)
 			if not own.is_empty():

@@ -24,6 +24,7 @@ func emit(mod: GateAST.Module, diags: GateDiagnostics, path: String) -> Dictiona
 	_soa_cursors.clear()
 	_soa_fields.clear()
 	_needs_iface_helper = false
+	_iface_scopes = []
 	_preload_targets.clear()
 	_pending_line_src = []
 	_generic_renames.clear()
@@ -93,8 +94,12 @@ func emit(mod: GateAST.Module, diags: GateDiagnostics, path: String) -> Dictiona
 		var cn: String = "class_name " + mod.class_name_decl
 		_line(cn, mod.class_name_line)
 	if mod.extends_type != null:
-		_line("extends " + GateTypes.resolve(mod.extends_type, diagnostics),
-			mod.extends_line)
+		var ext: String = GateTypes.resolve(mod.extends_type, diagnostics)
+		var xa: String = "" if (mod.extends_type.is_path_literal
+			or not mod.extends_type.generic_args.is_empty()) else _extern_alias(mod.extends_type.name)
+		if xa != "":
+			ext = "%s.%s" % [xa, mod.extends_type.name]
+		_line("extends " + ext, mod.extends_line)
 	if mod.class_name_decl != "" or mod.extends_type != null:
 		_blank_line(mod.extends_line)
 
@@ -351,6 +356,7 @@ func _emit_class(cd: GateAST.ClassDecl) -> void:
 	var saved_gen: bool = _in_gate_helper
 	_in_gate_helper = saved_gen or _gate_written(cd)
 	_emit_interface_marker(cd)
+	_iface_scopes.append(false)
 	var before: int = _out.size()
 	for m in cd.members:
 		_emit_member(m)
@@ -1551,7 +1557,8 @@ func _emit_statement(s) -> void:
 		var an: GateAST.AnnotatedStmt = s
 		for a in an.annotations:
 			_emit_annotation(a)
-		_emit_statement(an.stmt)
+		if an.stmt != null:
+			_emit_statement(an.stmt)
 		return
 
 	if s is GateAST.CommentStmt:

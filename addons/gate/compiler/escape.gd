@@ -45,7 +45,8 @@ func _collect_stmt(s) -> void:
 	if s == null:
 		return
 	if s is GateAST.AnnotatedStmt:
-		_collect_stmt((s as GateAST.AnnotatedStmt).stmt)
+		if (s as GateAST.AnnotatedStmt).stmt != null:
+			_collect_stmt((s as GateAST.AnnotatedStmt).stmt)
 		return
 	if s is GateAST.VarDecl:
 		var vd: GateAST.VarDecl = s
@@ -144,7 +145,8 @@ func _check_stmt(s) -> void:
 		return
 
 	if s is GateAST.AnnotatedStmt:
-		_check_stmt((s as GateAST.AnnotatedStmt).stmt)
+		if (s as GateAST.AnnotatedStmt).stmt != null:
+			_check_stmt((s as GateAST.AnnotatedStmt).stmt)
 		return
 
 	if s is GateAST.RawStmt:
@@ -306,6 +308,8 @@ func _expr(e) -> void:
 
 static func _child_blocks(s) -> Array:
 	if s is GateAST.AnnotatedStmt:
+		if (s as GateAST.AnnotatedStmt).stmt == null:
+			return []
 		return _child_blocks((s as GateAST.AnnotatedStmt).stmt)
 	if s is GateAST.IfStmt:
 		var i: GateAST.IfStmt = s

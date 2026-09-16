@@ -136,20 +136,47 @@ func set_registry(reg, self_path: String) -> void:
 			_extern_generics[gname] = gorigin
 
 
+func set_base_chain(chain: Dictionary) -> void:
+	_base_chain = chain
+
+
+func _apply_base_chain() -> void:
+	if _base_chain.is_empty():
+		return
+	for n in _base_chain["names"]:
+		_base_names[n] = true
+	for f in _base_chain["funcs"]:
+		_declared_funcs[f] = true
+	_base_via_gate = _base_chain["gate"]
+
+
 func _extern_alias(name: String) -> String:
 	if not _extern_origin.has(name):
 		return ""
-	if _local_types.has(name):
-		return ""
-	if _bound_names.has(name):
+	if _local_types.has(name) or _base_names.has(name) or _value_shadows(name):
 		return ""
 	return _origin_alias(_extern_origin[name])
+
+
+func _value_shadows(n: String) -> bool:
+	if not _bound_names.has(n):
+		return false
+	if _fn_locals.has(n) or _declares_value(_scope_class, n):
+		return true
+	var q: String = _scope_class
+	var seen: Dictionary = {}
+	while not seen.has(q):
+		seen[q] = true
+		if _names_of_scope(q).has(n):
+			return true
+		q = String(_class_parent.get(q, "."))
+	return false
 
 
 func _extern_generic_alias(name: String) -> String:
 	if not _extern_generics.has(name):
 		return ""
-	if _local_types.has(name):
+	if _local_types.has(name) or _base_names.has(name):
 		return ""
 	return _origin_alias(_extern_generics[name])
 
@@ -157,11 +184,16 @@ func _extern_generic_alias(name: String) -> String:
 func _origin_alias(origin: String) -> String:
 	if _used_origins.has(origin):
 		return _used_origins[origin]
+	var mine: String = _user_preload_const(origin)
+	if mine != "":
+		return mine   # the file already preloads it, under a name of its own
 	var base: String = ""
 	for ch in String(origin).get_file().get_basename():
 		base += ch if _is_ident_char(ch) else "_"
 	var alias: String = "__gate_dep_%s_%d" % [base, _used_origins.size()]
-	while _bound_names.has(alias) or _local_types.has(alias):
+	if _base_via_gate:
+		alias = "%s_%s" % [alias, _file_tag()]
+	while _bound_names.has(alias) or _local_types.has(alias) or _base_names.has(alias):
 		alias = "_" + alias
 	_used_origins[origin] = alias
 	return alias
@@ -211,13 +243,31 @@ func _index_local_names(members: Array) -> void:
 			_bound_names[fd.name] = true
 			for pp in fd.params:
 				_bound_names[(pp as GateAST.Param).name] = true
+				_index_expr_names((pp as GateAST.Param).default)
 			_index_local_names(fd.body)
+		elif m is GateAST.AnnotatedStmt:
+			_index_local_names([(m as GateAST.AnnotatedStmt).stmt])
+		elif m is GateAST.ExprStmt:
+			_index_expr_names((m as GateAST.ExprStmt).expr)
+		elif m is GateAST.ReturnStmt:
+			_index_expr_names((m as GateAST.ReturnStmt).value)
+		elif m is GateAST.AssignStmt:
+			_index_expr_names((m as GateAST.AssignStmt).value)
+		elif m is GateAST.MultiAssign:
+			var ma: GateAST.MultiAssign = m
+			if ma.declares:
+				for t in ma.targets:
+					if t is GateAST.Ident:
+						_bound_names[(t as GateAST.Ident).name] = true
+			for v in ma.values:
+				_index_expr_names(v)
 		elif m is GateAST.SignalDecl:
 			_bound_names[(m as GateAST.SignalDecl).name] = true
 		elif m is GateAST.EnumDecl:
 			var ed: GateAST.EnumDecl = m
 			if ed.name != "":
 				_bound_names[ed.name] = true
+				_enum_names[ed.name] = true
 			else:
 				for k in ed.keys:
 					_bound_names[String(k)] = true
@@ -225,18 +275,71 @@ func _index_local_names(members: Array) -> void:
 			var fs: GateAST.ForStmt = m
 			for vn in fs.var_names:
 				_bound_names[String(vn)] = true
+			_index_expr_names(fs.iterable)
 			_index_local_names(fs.body)
 		elif m is GateAST.IfStmt:
 			var ifs: GateAST.IfStmt = m
+			_index_expr_names(ifs.cond)
 			_index_local_names(ifs.then_body)
 			for pair in ifs.elifs:
+				_index_expr_names(pair[0])
 				_index_local_names(pair[1])
 			_index_local_names(ifs.else_body)
 		elif m is GateAST.WhileStmt:
+			_index_expr_names((m as GateAST.WhileStmt).cond)
 			_index_local_names((m as GateAST.WhileStmt).body)
 		elif m is GateAST.MatchStmt:
+			_index_expr_names((m as GateAST.MatchStmt).subject)
 			for br in (m as GateAST.MatchStmt).branches:
+				for bn in GateChecker.pattern_bindings(br[0]):
+					_bound_names[bn] = true
+				_index_expr_names(br[1])
 				_index_local_names(br[2])
+
+
+func _index_expr_names(e) -> void:
+	if e == null:
+		return
+	if e is GateAST.Lambda:
+		var lam: GateAST.Lambda = e
+		for p in lam.params:
+			_bound_names[(p as GateAST.Param).name] = true
+			_index_expr_names((p as GateAST.Param).default)
+		_index_local_names(lam.body)
+		_index_expr_names(lam.expr_body)
+	elif e is GateAST.Call:
+		_index_expr_names((e as GateAST.Call).callee)
+		for a in (e as GateAST.Call).args:
+			_index_expr_names(a)
+	elif e is GateAST.Binary:
+		_index_expr_names((e as GateAST.Binary).left)
+		_index_expr_names((e as GateAST.Binary).right)
+	elif e is GateAST.Unary:
+		_index_expr_names((e as GateAST.Unary).operand)
+	elif e is GateAST.Ternary:
+		_index_expr_names((e as GateAST.Ternary).cond)
+		_index_expr_names((e as GateAST.Ternary).if_true)
+		_index_expr_names((e as GateAST.Ternary).if_false)
+	elif e is GateAST.NullCoalesce:
+		_index_expr_names((e as GateAST.NullCoalesce).left)
+		_index_expr_names((e as GateAST.NullCoalesce).right)
+	elif e is GateAST.Member:
+		_index_expr_names((e as GateAST.Member).target)
+	elif e is GateAST.Index:
+		_index_expr_names((e as GateAST.Index).target)
+		_index_expr_names((e as GateAST.Index).index)
+	elif e is GateAST.ArrayLit:
+		for el in (e as GateAST.ArrayLit).elements:
+			_index_expr_names(el)
+	elif e is GateAST.DictLit:
+		for v in (e as GateAST.DictLit).values:
+			_index_expr_names(v)
+	elif e is GateAST.AwaitExpr:
+		_index_expr_names((e as GateAST.AwaitExpr).operand)
+	elif e is GateAST.CastExpr:
+		_index_expr_names((e as GateAST.CastExpr).operand)
+	elif e is GateAST.IsExpr:
+		_index_expr_names((e as GateAST.IsExpr).operand)
 
 
 func _preload_lines() -> Array:
@@ -544,7 +647,7 @@ func _generic_name(t: GateAST.TypeRef) -> String:
 func _is_known_type_name(n: String) -> bool:
 	if n == "":
 		return false
-	if GateTypes.BUILTIN.has(n) or GateTypes.SHORTHAND.has(n):
+	if GateTypes.BUILTIN.has(n) or GateTypes.is_shorthand(n):
 		return true
 	if not _struct_of(n).is_empty():
 		return true
@@ -931,6 +1034,8 @@ const PREC_AWAIT := 15
 
 const PREC_ATOM := 100
 
+const PREC_TERNARY := 0
+
 
 func _prec_of(e) -> int:
 	if e is GateAST.Ident and _rename_prec.has((e as GateAST.Ident).name) \
@@ -948,12 +1053,150 @@ func _prec_of(e) -> int:
 	if e is GateAST.Unary:
 		return PREC_NOT if (e as GateAST.Unary).op == "not" else PREC_UNARY
 	if e is GateAST.IsExpr:
-		return PREC_TYPE_TEST
+		# Lowered to a call, it binds like one. Keeping `not (x is T)`'s parentheses
+		if (e as GateAST.IsExpr).negated:
+			return PREC_NOT
+		return PREC_ATOM if _is_lowers_to_call(e) else PREC_TYPE_TEST
 	if e is GateAST.AwaitExpr:
 		return PREC_AWAIT
 	if e is GateAST.Lambda:
 		return 0
+	if e is GateAST.Ternary:
+		return PREC_TERNARY if (e as GateAST.Ternary).if_false is GateAST.Ternary else PREC_ATOM
+	if e is GateAST.CastExpr and (e as GateAST.CastExpr).operand is GateAST.CastExpr:
+		return PREC_TYPE_TEST   # `a as A as B` is printed without parentheses
 	return PREC_ATOM
+
+
+func _text_prec(e, text: String) -> int:
+	if _bare_ternary(text):
+		return PREC_TERNARY
+	return _prec_of(e)
+
+
+static func _bare_ternary(text: String) -> bool:
+	if not text.contains(" if "):
+		return false   # the scan below can only answer yes through one
+	var depth: int = 0
+	var quote: String = ""
+	var saw_if: bool = false
+	var i: int = 0
+	while i < text.length():
+		var ch: String = text[i]
+		if quote != "":
+			if ch == "\\":
+				i += 2
+				continue
+			if text.substr(i, quote.length()) == quote:
+				i += quote.length()
+				quote = ""
+				continue
+		elif ch == "\"" or ch == "'":
+			quote = ch.repeat(3) if text.substr(i, 3) == ch.repeat(3) else ch
+			i += quote.length()
+			continue
+		elif ch == "(" or ch == "[" or ch == "{":
+			depth += 1
+		elif ch == ")" or ch == "]" or ch == "}":
+			depth -= 1
+		elif depth == 0 and text.substr(i, 4) == " if ":
+			saw_if = true
+		elif depth == 0 and saw_if and text.substr(i, 6) == " else ":
+			return true
+		i += 1
+	return false
+
+
+static func _wrapped(text: String) -> bool:
+	if not text.begins_with("(") or not text.ends_with(")"):
+		return false
+	var depth: int = 0
+	var quote: String = ""
+	var i: int = 0
+	while i < text.length():
+		var ch: String = text[i]
+		if quote != "":
+			if ch == "\\":
+				i += 2
+				continue
+			if ch == quote:
+				quote = ""
+		elif ch == "\"" or ch == "'":
+			quote = ch
+		elif ch == "(" or ch == "[" or ch == "{":
+			depth += 1
+		elif ch == ")" or ch == "]" or ch == "}":
+			depth -= 1
+			if depth == 0 and i != text.length() - 1:
+				return false
+		i += 1
+	return true
+
+
+func _binary_lowering(b: GateAST.Binary) -> String:
+	if (b.op == "==" or b.op == "!=") and _against_null(b):
+		return ""   # against null, identity is equality
+	var lt: String = _static_type_of(b.left)
+	if lt != "":
+		var ops: Dictionary = _ops_of(lt)
+		if ops.has(b.op):
+			return "call"
+		if b.op == "!=" and ops.has("=="):
+			return "not"
+	if (b.op == "==" or b.op == "!=") and _eqv_text(b) != "":
+		return "call" if b.op == "==" else "not"
+	if (b.op == "in" or b.op == "not in") and _in_struct_text(b) != "":
+		return "call" if b.op == "in" else "not"
+	return ""
+
+
+func _eqv_text(_b: GateAST.Binary) -> String:
+	push_error("[GATE] internal: _eqv_text not overridden")
+	return ""
+
+
+func _in_struct_text(_b: GateAST.Binary) -> String:
+	push_error("[GATE] internal: _in_struct_text not overridden")
+	return ""
+
+
+static func _against_null(b: GateAST.Binary) -> bool:
+	for lit in [b.left, b.right]:
+		if lit is GateAST.Literal and (lit as GateAST.Literal).kind == "null":
+			return true
+	return false
+
+
+func _eq_struct(b: GateAST.Binary) -> String:
+	if _against_null(b):
+		return ""   # against null, identity is equality
+	for side in [b.left, b.right]:
+		var t: String = _static_type_of(side)
+		var st: Dictionary = _struct_of(t)
+		if not st.is_empty() and st["lowering"] != "vector":
+			if (_ops_of(t) as Dictionary).has("=="):
+				return ""
+			return t
+	return ""
+
+
+func _is_lowers_to_call(ie: GateAST.IsExpr) -> bool:
+	var tname: String = ie.type.name
+	if not _is_known_native(tname) and _looks_like_interface(tname):
+		return true
+	return _packed_twin(ie.type, _map_type(ie.type)) != ""
+
+
+func _packed_twin(t: GateAST.TypeRef, mapped: String) -> String:
+	if t.array_depth != 1 or not t.generic_args.is_empty() or t.is_dict() or t.is_set():
+		return ""
+	if not mapped.begins_with("Array["):
+		return ""
+	return GateTypes.packed_for(t.name)
+func _not_text(node, text: String) -> String:
+	if _text_prec(node, text) < PREC_ATOM and not _is_bare_ident(text):
+		return "not (%s)" % text
+	return "not %s" % text
 
 const CTOR_SHORTHAND := {
 	"vec2": "Vector2", "vec2i": "Vector2i",
@@ -1081,7 +1324,7 @@ func _static_type_of(e) -> String:
 			return "PackedScene"
 		if c.callee is GateAST.Ident:
 			var cn: String = (c.callee as GateAST.Ident).name
-			if not _struct_of(cn).is_empty():
+			if not _ctor_struct_of(cn).is_empty():
 				return cn
 			if _func_returns.has(cn):
 				return _func_returns[cn]
@@ -1251,9 +1494,12 @@ func _overload_declared_by_chain(name: String, owner: String) -> bool:
 		seen[c] = true
 		if _overload_declared_by(name, c):
 			return true
-		if not _class_bases.has(c):
+		if _class_bases.has(c):
+			c = String(_class_bases[c])
+		elif _reg_bases.has(c):
+			c = String(_reg_bases[c])   # another file's class
+		else:
 			break
-		c = String(_class_bases[c])
 	return false
 
 

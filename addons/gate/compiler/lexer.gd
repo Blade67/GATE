@@ -36,7 +36,7 @@ const GATE_ONLY := {
 static func is_gate_only_keyword(v: String) -> bool:
 	return GATE_ONLY.has(v)
 
-const CONTEXTUAL_KEYWORDS := {"match": true}
+const CONTEXTUAL_KEYWORDS := {"match": true, "when": true, "abstract": true}
 
 
 static func is_contextual_keyword(v: String) -> bool:
@@ -81,6 +81,7 @@ var _i: int = 0
 var _line: int = 1
 var _line_start: int = 0
 var _indents: Array[int] = [0]
+var _indent_char: String = ""
 var _depth: int = 0
 
 
@@ -109,6 +110,7 @@ func tokenize(src: String, diags: GateDiagnostics, first_line: int = 1) -> Array
 	_line = first_line
 	_line_start = 0
 	_indents = [0]
+	_indent_char = ""
 	_depth = 0
 
 	var at_line_start: bool = true
@@ -133,7 +135,14 @@ func tokenize(src: String, diags: GateDiagnostics, first_line: int = 1) -> Array
 			_i += 1
 			continue
 		if c == "\\":
+			var bs_col: int = _col()
 			_i += 1
+			if _i < _n and _src[_i] == "\r":
+				_i += 1
+			if _i >= _n or _src[_i] != "\n":
+				diagnostics.error("Expected new line after \"\\\".", _line, bs_col,
+					"a `\\` outside a string joins the next line, so it must end this one: "
+					+ "remove what follows it, or check for a missing closing quote above")
 			while _i < _n and _src[_i] != "\n":
 				_i += 1
 			if _i < _n:
@@ -180,7 +189,11 @@ func tokenize(src: String, diags: GateDiagnostics, first_line: int = 1) -> Array
 		if c == "$" or c == "%":
 			# `%` is a unique-node path only in prefix position. After anything that can end
 			# an expression it is modulo, which is how Godot's own tokenizer decides.
-			var nxt: String = _src[_i + 1] if _i + 1 < _n else ""
+			# Godot allows whitespace between the sigil and the name.
+			var k: int = _i + 1
+			while k < _n and (_src[k] == " " or _src[k] == "	"):
+				k += 1
+			var nxt: String = _src[k] if k < _n else ""
 			var path_like: bool = nxt != "" and (_is_word_start(nxt) or _is_quote(nxt))
 			if c == "%" and (not path_like or _prev_ends_expr()):
 				_lex_operator()
@@ -231,6 +244,9 @@ func _handle_indent() -> bool:
 		return false
 	if c2 == "#":
 		return false
+	if not _indent_chars_agree(_src.substr(start, _i - start)):
+		_i = _n   # Godot stops here; what follows would only report the same mistake again
+		return false
 	if col > _indents[-1]:
 		_indents.append(col)
 		_push(T.INDENT, "", _line, start - _line_start + 1)
@@ -241,6 +257,30 @@ func _handle_indent() -> bool:
 		if col != _indents[-1]:
 			diagnostics.error("inconsistent indentation", _line, col + 1,
 				"expected %d spaces, found %d" % [_indents[-1], col])
+	return false
+
+
+## Godot fixes the indentation character at the first indented line of code -
+## blank lines, comments, string contents and continuations do not count - and
+## refuses a later line indented with the other one, or with both.
+func _indent_chars_agree(ws: String) -> bool:
+	if ws == "":
+		return true
+	if ws.contains(" ") and ws.contains("	"):
+		diagnostics.error("Mixed use of tabs and spaces for indentation.", _line, 1,
+			"indent with one character throughout; the editor's Convert Indentation fixes a file")
+		return false
+	var ch: String = ws[0]
+	if _indent_char == "":
+		_indent_char = ch
+		return true
+	if ch == _indent_char:
+		return true
+	var used: String = "tab" if ch == "	" else "space"
+	var before: String = "tab" if _indent_char == "	" else "space"
+	diagnostics.error("Used %s character for indentation instead of %s as used before in the file."
+			% [used, before], _line, 1,
+		"indent with one character throughout; the editor's Convert Indentation fixes a file")
 	return false
 
 
@@ -357,6 +397,11 @@ func _lex_nodepath() -> void:
 	var col: int = _col()
 	var start: int = _i
 	_i += 1
+	var k: int = _i
+	while k < _n and (_src[k] == " " or _src[k] == "	"):
+		k += 1
+	if k < _n and (_is_word_start(_src[k]) or _is_quote(_src[k])):
+		_i = k
 	if _i < _n and (_src[_i] == "\"" or _src[_i] == "'"):
 		var q: String = _src[_i]
 		_i += 1
@@ -413,12 +458,37 @@ func _prev_ends_expr() -> bool:
 			T.IDENT, T.NUMBER, T.STRING, T.FSTRING, T.NODEPATH:
 				return true
 			T.KEYWORD:
-				return t.value in ["self", "super", "true", "false", "null"]
+				if CONTEXTUAL_KEYWORDS.has(t.value):
+					return _contextual_is_name(i)
+				return (t.value in ["self", "super", "true", "false", "null"]
+					or GATE_ONLY.has(t.value))
 			T.OP:
 				return t.value in [")", "]", "}"]
 			_:
 				return false
 	return false
+
+
+func _contextual_is_name(i: int) -> bool:
+	var t: Token = tokens[i]
+	var j: int = i - 1
+	while j >= 0 and tokens[j].type == T.COMMENT:
+		j -= 1
+	var prev: Token = tokens[j] if j >= 0 else null
+	if prev != null and prev.type == T.OP and prev.value == ".":
+		return true
+	match t.value:
+		"match":
+			return prev != null and not (prev.type in [T.NEWLINE, T.INDENT, T.DEDENT]
+				or (prev.type == T.OP and prev.value == ";"))
+		"when":
+			if prev == null:
+				return true
+			var after_pattern: bool = prev.type in [T.IDENT, T.NUMBER, T.STRING, T.NODEPATH] \
+				or (prev.type == T.OP and prev.value in [")", "]", "}"]) \
+				or (prev.type == T.KEYWORD and prev.value in ["true", "false", "null"])
+			return not after_pattern
+	return true
 
 
 func _is_word_start(c: String) -> bool:

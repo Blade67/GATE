@@ -9,6 +9,7 @@ down to.
 ## Table of Content
 - [Type names](#type-names)
 - [Declarations](#declarations)
+- [Statements and lines](#statements-and-lines)
 - [Nullable types](#nullable-types)
 - [Unions and tuples](#unions-and-tuples)
 - [Typed callables](#typed-callables)
@@ -39,6 +40,24 @@ Lowercase shorthands. Canonical names still work, and engine classes keep theirs
 | `quat` `xform2d` `xform3d` | `Quaternion` `Transform2D` `Transform3D` |
 | `color` `aabb` `plane` `basis` `proj` | `Color` `AABB` `Plane` `Basis` `Projection` |
 | `nodepath` `rid` `sname` `any` | `NodePath` `RID` `StringName` `Variant` |
+
+A class, enum or constant you declare with one of these names, or a `class_name` anywhere in
+the project, means your own type, as it does in GDScript.
+
+Another file's declarations are named directly: `Damage`, not a path or a preload. A struct
+or a class may also be named through its file's `class_name`, as in GDScript - `RcLib.Damage`
+- and means the same thing either way. Interfaces, traits and generics take the direct name
+only.
+
+The project index is flat, so a struct, class, interface, trait, generic or namespace
+declared at the top level of two files is ambiguous the moment a third file names it, and
+that is a compile error naming all three. Rename one, or move it inside a class or a
+namespace. A `class_name` declared by two files is an error on its own, because Godot
+registers one of them and the other will not load.
+
+Names beginning with `__g`, and members named `_gate_*`, belong to the generated code: GATE
+writes its temporaries and helpers there, and reads them back when it recompiles its own
+output. Declaring one of your own is the one way to confuse it.
 
 ## Declarations
 
@@ -111,6 +130,38 @@ Use `i64` or `f64` to keep the full width. The packed array is then a `PackedInt
 @packed f64[] precise   # PackedFloat64Array
 f64[][] grid            # Array[PackedFloat64Array]
 ```
+
+## Statements and lines
+
+GATE adds nothing here. It enforces what GDScript enforces, because a `.gate` file never
+reaches Godot's parser and a line GATE quietly threw away was a line nobody reported.
+
+A line holds one statement. `out += "x" "y"` and `a() b()` are errors: a missing operator or
+comma reads as a second statement, and the second half used to be dropped in silence.
+Separate two statements with `;` or a line break. What GATE deliberately does not model still
+passes through: Godot 3's `setget`, its parenthesis-free `assert`, and `@tool class_name X`
+on one line.
+
+An indented line must belong to a block. One that opens nothing, in a class body, is an error
+rather than raw text in the output.
+
+A file indents with one character, as in Godot. The first indented line of code decides
+whether it is tabs or spaces; blank lines, comment lines, the inside of a string and lines
+inside brackets or after a `\` do not count. A later line indented with the other character
+is an error in Godot's own words, `Used tab character for indentation instead of space as
+used before in the file.`, and a line indented with both is `Mixed use of tabs and spaces
+for indentation.` Nothing after the first such line is read.
+
+A `\` outside a string must end its line. Text, a space, a comment or the end of the file
+after it is an error, in Godot's own words: `Expected new line after "\".`
+
+Inside a string a `\` escapes what follows it, in a `"""` block as in a `"` string, so
+`"""a\"""b"""` is one string and `"""a\\"""` ends at its own closing quotes. A `\` at the
+end of a line inside a string swallows the line break, which is why an escape never
+carries into the next line.
+
+An indented block under a header GATE does not read - a Godot 3 `remote func`, for instance -
+is kept whole, as the source text it was, and comes out exactly as it went in.
 
 ## Nullable types
 
@@ -456,10 +507,20 @@ class Enemy extends CharacterBody2D implements Damageable:
 |---|---|
 | `pub` | public, and the default for a type-first declaration |
 | `priv` | private; the emitted name is prefixed with `_` |
-| `override` | checked against the parent, and an error if no such member exists |
-| `virtual` | declared without a body; an implementor must provide one |
+| `override` | checked against every class up the chain, and an error if none declares it |
+| `virtual` | declared without a body; calling it on a class that does not override it reports an error at run time |
 | `final` | cannot be overridden |
 | `operator` | operator overload, rewritten where the operand type is known |
+
+`override`, `virtual` and `final` apply to methods. On a variable, constant, signal, enum or
+class they are an error: GDScript has no way to override a field, so there they could only be
+decoration.
+
+`priv` prefixes the underscore GDScript uses for a private member, so `priv int x` is emitted
+as `_x`, and that name has to be free. A `pub int _x` beside it, one in a base class, one
+inlined from a trait, or a member of the engine class the script extends, is a compile error:
+two members of one name do not load, and `priv func ready()` on a Node would quietly become
+Godot's `_ready` and run on tree entry.
 
 Methods may be overloaded by argument count. Two overloads taking the same number of
 arguments are a compile error.

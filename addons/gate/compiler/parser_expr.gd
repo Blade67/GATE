@@ -675,15 +675,18 @@ func _build_fstring(t: GateLexer.Token) -> GateAST.Expr:
 			if buf != "":
 				fs.parts.append(buf)
 				buf = ""
-			var depth: int = 1
-			var j: int = i + 1
-			while j < body.length() and depth > 0:
-				if body[j] == "{": depth += 1
-				elif body[j] == "}": depth -= 1
-				if depth == 0: break
-				j += 1
-			var inner: String = body.substr(i + 1, j - i - 1)
-			fs.parts.append(_parse_subexpression(inner, t.line))
+			var j: int = _placeholder_end(body, i + 1)
+			if j < 0:
+				diagnostics.error("this f-string placeholder is never closed", t.line, t.col,
+					"write `{{` and `}}` for braces in the text. A quote of the same kind as the "
+					+ "f-string's own must be escaped inside a placeholder")
+				return fs
+			var inner: String = body.substr(i + 1, j - i - 1).strip_edges()
+			if inner == "":
+				diagnostics.error("this f-string placeholder has no expression", t.line, t.col,
+					"write `{{}}` for a literal pair of braces")
+			else:
+				fs.parts.append(_parse_subexpression(_unescape_quotes(inner, fs.quote), t.line))
 			i = j + 1
 			continue
 		if c == "}" and i + 1 < body.length() and body[i + 1] == "}":
@@ -695,6 +698,78 @@ func _build_fstring(t: GateLexer.Token) -> GateAST.Expr:
 	if buf != "":
 		fs.parts.append(buf)
 	return fs
+
+
+static func _unescape_quotes(src: String, quote: String) -> String:
+	if not src.contains("\\"):
+		return src
+	var q: String = quote.substr(0, 1)
+	var out: String = ""
+	var i: int = 0
+	while i < src.length():
+		var c: String = src[i]
+		if c != "\\" or i + 1 >= src.length():
+			out += c
+			i += 1
+			continue
+		var nxt: String = src[i + 1]
+		out += nxt if (nxt == q or nxt == "\\") else c + nxt
+		i += 2
+	return out
+
+
+static func _placeholder_end(body: String, from: int) -> int:
+	var depth: int = 1
+	var i: int = from
+	while i < body.length():
+		var c: String = body[i]
+		if c == "\\" and i + 1 < body.length() and (body[i + 1] == "\"" or body[i + 1] == "'"):
+			i = _escaped_string_end(body, i)
+			if i < 0:
+				return -1
+			continue
+		if c == "\\":
+			i += 2
+			continue
+		if c == "\"" or c == "'":
+			i = _string_end(body, i)
+			if i < 0:
+				return -1
+			continue
+		if c == "{":
+			depth += 1
+		elif c == "}":
+			depth -= 1
+			if depth == 0:
+				return i
+		i += 1
+	return -1
+
+
+static func _string_end(body: String, i: int) -> int:
+	var quote: String = body[i]
+	var j: int = i + 1
+	while j < body.length():
+		if body[j] == "\\":
+			j += 2
+			continue
+		if body[j] == quote:
+			return j + 1
+		j += 1
+	return -1
+
+
+static func _escaped_string_end(body: String, i: int) -> int:
+	var quote: String = body[i + 1]
+	var j: int = i + 2
+	while j < body.length():
+		if body[j] != "\\" or j + 1 >= body.length():
+			j += 1
+			continue
+		if body[j + 1] == quote:
+			return j + 2
+		j += 2
+	return -1
 
 
 func _parse_subexpression(src: String, line: int) -> GateAST.Expr:

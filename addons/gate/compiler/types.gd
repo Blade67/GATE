@@ -52,7 +52,36 @@ const VECTOR_FLOAT := {2: "Vector2", 3: "Vector3", 4: "Vector4"}
 const VECTOR_INT := {2: "Vector2i", 3: "Vector3i", 4: "Vector4i"}
 
 
+## Shorthand names the file or the project declares itself: a `class vec2` means that
+## class, as it does in GDScript. Set for each file before it is parsed.
+static var shadowed: Dictionary = {}
+
+
+static func shadow_declared(tokens: Array, class_names: Dictionary = {}) -> void:
+	shadowed = {}
+	for i in tokens.size() - 1:
+		var t: GateLexer.Token = tokens[i]
+		if t.type != GateLexer.T.KEYWORD:
+			continue
+		if t.value in ["class", "class_name", "enum", "const", "struct", "interface", "trait", "namespace"]:
+			var nx: GateLexer.Token = tokens[i + 1]
+			if nx.type == GateLexer.T.IDENT and SHORTHAND.has(nx.value):
+				shadowed[nx.value] = true
+	for cn in class_names:
+		if SHORTHAND.has(cn):
+			shadowed[cn] = true
+	for entry in ProjectSettings.get_global_class_list():
+		if SHORTHAND.has(String(entry["class"])):
+			shadowed[String(entry["class"])] = true
+
+
+static func is_shorthand(name: String) -> bool:
+	return SHORTHAND.has(name) and not shadowed.has(name)
+
+
 static func canonical(name: String) -> String:
+	if shadowed.has(name):
+		return name
 	return SHORTHAND.get(name, name)
 
 

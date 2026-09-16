@@ -38,6 +38,7 @@ func compile(src_in: String, path: String, registry = null) -> Result:
 
 	var lexer: GateLexer = GateLexer.new()
 	var tokens: Array[GateLexer.Token] = lexer.tokenize(src, diags)
+	GateTypes.shadow_declared(tokens, registry.script_class_names if registry != null else {})
 
 	var parser: GateParser = GateParser.new()
 	if registry != null:
@@ -69,8 +70,12 @@ func compile(src_in: String, path: String, registry = null) -> Result:
 	if registry != null:
 		emitter.set_external_structs(registry.structs)
 	emitter.set_registry(registry, path)
-	emitter.set_overloads(_build_overload_map(mod))
-	emitter.set_overload_owners(_build_overload_owners(mod))
+	emitter.set_base_chain(chain)
+	var overloads: Dictionary = _build_overload_map(mod)
+	var overload_owners: Dictionary = _build_overload_owners(mod)
+	_registry_overloads(registry, path, overloads, overload_owners)
+	emitter.set_overloads(overloads)
+	emitter.set_overload_owners(overload_owners)
 	var out: Dictionary = emitter.emit(mod, diags, path)
 
 	res.ok = not diags.has_errors()
@@ -118,6 +123,65 @@ func _scan_overloads(members: Array, map: Dictionary, _owner: String) -> void:
 				map[fd.name][GateChecker.REST_ARITY if rest else fd.params.size()] = fd.mangled_name
 		elif m is GateAST.ClassDecl:
 			_scan_overloads((m as GateAST.ClassDecl).members, map, (m as GateAST.ClassDecl).name)
+
+
+static func _registry_overloads(registry, path: String, map: Dictionary, owners: Dictionary) -> void:
+	if registry == null:
+		return
+	var tables: Array = [registry.classes]
+	if "script_class_decls" in registry:
+		tables.append(registry.script_class_decls)
+	for ti in tables.size():
+		var table: Dictionary = tables[ti]
+		for cname in table:
+			var origin: String = String(registry.origin.get(cname, "")) if ti == 0 \
+				else String(registry.script_class_names.get(cname, ""))
+			if origin == path:
+				continue
+			var named: Array = _mangle_overloads((table[cname] as GateAST.ClassDecl).members)
+			for pair in named:
+				var fd: GateAST.FuncDecl = pair[0]
+				var rest: bool = (not fd.params.is_empty()
+					and (fd.params[fd.params.size() - 1] as GateAST.Param).is_rest)
+				if not map.has(fd.name):
+					map[fd.name] = {}
+				if not (map[fd.name] as Dictionary).has(GateChecker.REST_ARITY if rest else fd.params.size()):
+					map[fd.name][GateChecker.REST_ARITY if rest else fd.params.size()] = pair[1]
+				if not owners.has(fd.name):
+					owners[fd.name] = {}
+				owners[fd.name][String(cname)] = true
+
+
+static func _mangle_overloads(members: Array) -> Array:
+	var by_name: Dictionary = {}
+	var taken: Dictionary = {}
+	for m in members:
+		if m is GateAST.FuncDecl:
+			var fd: GateAST.FuncDecl = m
+			if not by_name.has(fd.name):
+				by_name[fd.name] = []
+			by_name[fd.name].append(fd)
+			taken[fd.name] = true
+	var out: Array = []
+	for name in by_name:
+		var group: Array = by_name[name]
+		if group.size() < 2 or String(name).begins_with(GateChecker.ENGINE_PREFIX):
+			continue
+		var by_arity: Dictionary = {}
+		for f in group:
+			var fd2: GateAST.FuncDecl = f
+			var variadic: bool = (not fd2.params.is_empty()
+				and (fd2.params[fd2.params.size() - 1] as GateAST.Param).is_rest)
+			var arity: int = GateChecker.REST_ARITY if variadic else fd2.params.size()
+			if by_arity.has(arity):
+				continue
+			by_arity[arity] = fd2
+			var mangled: String = "__%s_%s" % [name, "rest" if variadic else str(arity)]
+			while taken.has(mangled):
+				mangled = "_" + mangled
+			taken[mangled] = true
+			out.append([fd2, mangled])
+	return out
 
 
 static func write_sourcemap(gd_path: String, gate_path: String, map: Array[int]) -> void:
