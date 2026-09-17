@@ -42,6 +42,20 @@ Rename `foo.gd` to `foo.gate` and leave `foo.gd.uid` where it is. Godot referenc
 by uid, so deleting it makes every `ext_resource` fall back to a text path with a warning.
 GATE regenerates `foo.gd` and never touches the uid.
 
+The first time you open a project after renaming its scripts, expect a burst of errors
+in the Output panel. Godot loads the scripts your open scenes use before GATE has written
+their `.gd` files, so each of those fails to parse once, and GATE says once for every file
+it could not check yet: about 1,600 lines for Pixelorama, 200 for GodSVG. Nothing is
+wrong. Close the editor and open it again; the second session is quiet.
+
+On a large project the first two opens are also slow, while GATE builds every file and
+Godot registers the classes it wrote. Pixelorama, 211 files, took about 130 s the first
+time and about 50 s the second, measured; after that, opening it unchanged takes about 10 s.
+
+Leave `script_templates/` alone. Godot keeps a `.gdignore` in that folder, and GATE does
+not compile anything under a `.gdignore`, so a template renamed to `.gate` is never turned
+back into a `.gd` and simply disappears from the Script Create dialog.
+
 ## Usage
 
 Write `.gate`, get `.gd`. The output is ordinary GDScript with a header naming its source,
@@ -72,8 +86,31 @@ func hurt(amount: int) -> void:
 		target.notify_damage(amount)
 ```
 
-Delete the `.gate` file and the header, and what remains is a normal script you can
-maintain by hand. There is no runtime, no dependency, and nothing to ship.
+The output is indented the way the rest of your project is. In the editor, the indent type
+and size come from *Editor Settings -> Text Editor -> Behavior -> Indent*. With no editor
+running, a headless build takes the first indented line of the `.gate` file itself, so a
+renamed `.gd` keeps the look it had. A tab is the last resort. Changing the setting rewrites
+the outputs on the next build.
+
+Delete the header, then the `.gate` file, and what remains is a normal script you can
+maintain by hand: the leftover `.gd.map` can go with them, and the `.gd.uid` stays. There
+is no runtime, no dependency, and nothing to ship.
+
+### What gets rebuilt
+
+What proves a file up to date is kept in `.godot/gate/`, so opening a project nothing has
+changed in compiles nothing. Deleting that folder costs one full build and nothing else.
+
+A file is rebuilt when something it reads changes. From another `.gate` it reads the
+declarations, struct field defaults, signal parameter types, and what each function may set
+to null. A comment, or an edit inside a function body that changes none of those, rebuilds
+only the file it was made in. A hand-written `.gd` counts only for the `.gate` files that
+reach it, by `class_name`, as a base, as an autoload or by path, and only through its
+declarations. Of `project.godot`, only the autoloads and the `debug/gdscript` warning
+settings count, so switching a plugin on or off builds nothing.
+
+*Project -> Tools -> Recompile all GATE files* ignores all of this and looks at every
+`.gate` again.
 
 ## Features
 
@@ -311,8 +348,9 @@ iterate, so it pays off only if you make more than about one pass per rebuild.
   GDScript, so it runs out of stack long before Godot's own parser does. Past the cap it
   reports one clear error.
 - **A file that references a `class_name` declared by another file in the same build** is
-  written but not validated until the next build. Godot resolves global class names from
-  the editor's class list, which only updates after the file is on disk.
+  written with a warning and validated once that class is registered, usually by the next
+  build. Godot resolves global class names from the editor's class list, which only updates
+  after the file is on disk.
 - **Interfaces do not fall back to structural checks.** `x is SomeInterface` is false for a
   class GATE did not compile.
 - **Namespaced classes cannot be attached to nodes** as their script.

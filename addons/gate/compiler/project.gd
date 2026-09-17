@@ -75,17 +75,49 @@ class Registry extends RefCounted:
 					origin.get(n, ""), top_level.has(n), cd.lowering,
 					cd.vector_type,
 					cd.extends_type.name if cd.extends_type != null else ""])
-				for m in cd.members:
-					if m is GateAST.VarDecl:
-						var vd: GateAST.VarDecl = m
-						parts.append(" v:%s:%s" % [vd.name, _type_sig(vd.type)])
-					elif m is GateAST.FuncDecl:
-						var fdm: GateAST.FuncDecl = m
-						var ps: PackedStringArray = PackedStringArray()
-						for pp in fdm.params:
-							ps.append(_type_sig((pp as GateAST.Param).type))
-						parts.append(" f:%s(%s):%s" % [fdm.name, ",".join(ps),
-							_type_sig(fdm.return_type)])
+				_member_sigs(parts, cd.members)
+				if trait_text.has(n):
+					parts.append(" t:" + String(trait_text[n]))
+		var gnames: Array = gd_class_names.keys()
+		gnames.sort()
+		for gn in gnames:
+			parts.append("GDCN:%s:%s" % [gn, gd_class_names[gn]])
+		var cnames: Array = script_class_names.keys()
+		cnames.sort()
+		for cn in cnames:
+			parts.append("CN:%s:%s" % [cn, script_class_names[cn]])
+		var scnames: Array = script_class_decls.keys()
+		scnames.sort()
+		for sc in scnames:
+			var scd: GateAST.ClassDecl = script_class_decls[sc]
+			parts.append("SC|%s|%s" % [sc, scd.extends_type.name if scd.extends_type != null else ""])
+			_member_sigs(parts, scd.members)
+		if injects:
+			var skeys: Array = script_modules.keys()
+			skeys.sort()
+			for sk in skeys:
+				var info: Dictionary = script_modules[sk]
+				parts.append("S:%s:%s:%s" % [sk, info["extends"],
+					",".join(PackedStringArray(info["defines"]))])
+			var gkeys: Array = gd_bases.keys()
+			gkeys.sort()
+			for gk in gkeys:
+				parts.append("G:%s:%s" % [gk, gd_bases[gk]])
+		var anames: Array = aliases.keys()
+		anames.sort()
+		for an in anames:
+			parts.append("alias|%s|%s|%s" % [an, ",".join(PackedStringArray(alias_files.get(an, []))),
+				_type_sig(aliases[an])])
+		var mpaths: Array = []
+		for sn in structs:
+			var sp: String = String(origin.get(sn, ""))
+			if module_names.has(sp) and not mpaths.has(sp):
+				mpaths.append(sp)
+		mpaths.sort()
+		for mp in mpaths:
+			var mnames: Array = (module_names[mp] as Dictionary).keys()
+			mnames.sort()
+			parts.append("N:%s:%s" % [mp, ",".join(PackedStringArray(mnames))])
 		for label in [["F", fields], ["B", bases]]:
 			var keys: Array = (label[1] as Dictionary).keys()
 			keys.sort()
@@ -103,6 +135,24 @@ class Registry extends RefCounted:
 		gu.sort()
 		parts.append_array(gu)
 		return "\n".join(parts)
+
+	static func _member_sigs(parts: PackedStringArray, members: Array) -> void:
+		for m in members:
+			if m is GateAST.VarDecl:
+				var vd: GateAST.VarDecl = m
+				parts.append(" v:%s:%s" % [vd.name, _type_sig(vd.type)])
+			elif m is GateAST.FuncDecl:
+				var fdm: GateAST.FuncDecl = m
+				var ps: PackedStringArray = PackedStringArray()
+				for pp in fdm.params:
+					var par: GateAST.Param = pp
+					ps.append("%s%s%s" % [_type_sig(par.type), "=" if par.default != null else "",
+						"..." if par.is_rest else ""])
+				parts.append(" f:%s/%d(%s):%s" % [fdm.name, ps.size(), ",".join(ps),
+					_type_sig(fdm.return_type)])
+		var writes: Array = GateInject.will_define(members)
+		if not writes.is_empty():
+			parts.append(" w:" + ",".join(PackedStringArray(writes)))
 
 	static func _type_sig(t) -> String:
 		if not (t is GateAST.TypeRef):
@@ -163,9 +213,238 @@ func index(root: String = "res://") -> Registry:
 	return registry
 
 
-func _index_file(path: String) -> void:
-	var f: FileAccess = FileAccess.open(path, FileAccess.READ)
-	if f == null:
+func _index_gd_bases() -> void:
+	var globals: Dictionary = {}
+	for c in ProjectSettings.get_global_class_list():
+		globals[String(c["class"])] = String(c["path"])
+	_chain_memo = {}
+	for p in registry.script_modules:
+		_add_chain(String(p), _follow_gd(String(registry.script_modules[p]["extends"]), String(p), globals, 0))
+	for cname in registry.classes:
+		var cd: GateAST.ClassDecl = registry.classes[cname]
+		if cd.extends_type != null:
+			var origin: String = String(registry.origin.get(cname, ""))
+			_add_chain(origin, _follow_gd(cd.extends_type.name, origin, globals, 0))
+
+
+var _chain_memo: Dictionary = {}
+
+
+func _add_chain(gate_path: String, chain: String) -> void:
+	if chain != "" and not String(registry.gd_chain.get(gate_path, "")).contains(chain):
+		registry.gd_chain[gate_path] = String(registry.gd_chain.get(gate_path, "")) + chain
+
+
+func _follow_gd(ext: String, from: String, globals: Dictionary, depth: int) -> String:
+	if ext == "" or depth > 32:
+		return ""
+	var path: String = ""
+	if ext.begins_with("\"") or ext.begins_with("'"):
+		path = String(GateChecker.split_extends_path(ext)[0])
+		if not path.begins_with("res://"):
+			path = from.get_base_dir().path_join(path).simplify_path()
+	elif globals.has(ext):
+		path = globals[ext]
+	if _chain_memo.has(path):
+		return _chain_memo[path]
+	if (path.get_extension().to_lower() != "gd" or not FileAccess.file_exists(path)
+			or FileAccess.file_exists(path.get_basename() + ".gate")
+			or FileAccess.file_exists(path.get_basename() + ".GATE")):
+		return ""
+	_chain_memo[path] = ""   # a cycle ends here
+	var text: String = FileAccess.get_file_as_string(path)
+	registry.gd_bases[path] = gd_surface(text)
+	var chain: String = "%s=%s;" % [path, registry.gd_bases[path]]
+	var re: RegEx = RegEx.create_from_string(
+		"(?m)^(?:class_name\\s+\\w+\\s+)?extends\\s+(\"[^\"]*\"|'[^']*'|[^\\s#:]+)")
+	var m: RegExMatch = re.search(text)
+	if m != null:
+		chain += _follow_gd(m.get_string(1), path, globals, depth + 1)
+	_chain_memo[path] = chain
+	return chain
+
+
+var _file_names: Dictionary = {}
+
+static var _lexed_memo: Dictionary = {}
+static var _parsed_memo: Dictionary = {}
+
+
+static func forget_parsed() -> void:
+	_lexed_memo.clear()
+	_parsed_memo.clear()
+	_surface_memo.clear()
+
+
+static var _surface_memo: Dictionary = {}
+static var _func_re: RegEx = null
+
+
+static func gd_surface(text: String) -> String:
+	var sum: String = text.md5_text()
+	if _surface_memo.has(sum):
+		return _surface_memo[sum]
+	if _func_re == null:
+		_func_re = RegEx.create_from_string("^(?:@\\S+\\s+)*(?:static\\s+)?func\\b")
+	var kept: PackedStringArray = PackedStringArray()
+	var body_at: int = -1
+	var func_at: int = -1
+	var header: bool = false
+	var depth: int = 0
+	for raw in GateBuilder._code_only(text).split("\n"):
+		var line: String = String(raw).strip_edges(false, true)
+		var code: String = line.strip_edges()
+		if code == "":
+			continue
+		var at: int = line.length() - line.lstrip("\t ").length()
+		if body_at >= 0:
+			if at > body_at:
+				continue
+			body_at = -1
+		kept.append("%d|%s" % [at, code])
+		if not header:
+			if _func_re.search(code) == null:
+				continue
+			header = true
+			func_at = at
+			depth = 0
+		var colon: bool = false
+		for ch in code:
+			if ch == "(" or ch == "[" or ch == "{":
+				depth += 1
+			elif ch == ")" or ch == "]" or ch == "}":
+				depth -= 1
+			elif ch == ":" and depth <= 0:
+				colon = true
+		if depth <= 0 and colon:
+			header = false
+			body_at = func_at
+	var out: String = "\n".join(kept).md5_text()
+	_surface_memo[sum] = out
+	return out
+	_warm_stage = 0
+
+
+static var _warm_stage: int = 0
+static var _warm_files: Array[String] = []
+static var _warm_at: int = 0
+static var _warm_generics: Dictionary = {}
+static var _warm_aliases: Dictionary = {}
+
+
+static func warm_step(root: String, budget_usec: int) -> bool:
+	var until: int = Time.get_ticks_usec() + budget_usec
+	if _warm_stage == 0:
+		_warm_files = find_gate_files(root)
+		_warm_at = 0
+		_warm_generics = {}
+		_warm_aliases = {}
+		_warm_stage = 1
+	while _warm_stage < 3 and Time.get_ticks_usec() < until:
+		if _warm_at >= _warm_files.size():
+			_warm_at = 0
+			_warm_stage += 1
+			continue
+		var path: String = _warm_files[_warm_at]
+		_warm_at += 1
+		if not FileAccess.file_exists(path) or not is_utf8(path):
+			continue
+		var src: String = FileAccess.get_file_as_string(path)
+		var sum: String = src.md5_text()
+		var kept: Array = _lexed(path, src, sum, GateDiagnostics.new())
+		if _warm_stage == 1:
+			_warm_generics.merge(kept[3])
+			_warm_aliases.merge(kept[4])
+			continue
+		GateTypes.shadow_declared(kept[1])
+		var key: String = "%s|%s|%s|%s" % [sum, ",".join(PackedStringArray(_sorted_keys(_warm_generics))),
+			",".join(PackedStringArray(_sorted_keys(_warm_aliases))),
+			",".join(PackedStringArray(_sorted_keys(GateTypes.shadowed)))]
+		var parsed: Array = _parsed_memo.get(path, [])
+		if parsed.is_empty() or String(parsed[0]) != key:
+			var parser: GateParser = GateParser.new()
+			parser.known_generics = _warm_generics
+			parser.known_aliases = _warm_aliases
+			_parsed_memo[path] = [key, parser.parse(kept[1], src, GateDiagnostics.new())]
+		GateTypes.shadowed.clear()
+	return _warm_stage >= 3
+
+
+static func _lexed(path: String, src: String, sum: String, diags: GateDiagnostics) -> Array:
+	var kept: Array = _lexed_memo.get(path, [])
+	if not kept.is_empty() and String(kept[0]) == sum and kept.size() > 5:
+		return kept
+	var tokens: Array[GateLexer.Token] = []
+	if not kept.is_empty() and String(kept[0]) == sum:
+		tokens = kept[1]
+	else:
+		tokens = GateLexer.new().tokenize(src, diags)
+	var generics: Dictionary = {}
+	var aliases: Dictionary = {}
+	_scan_declared_names(tokens, generics, aliases)
+	GateTypes.shadow_declared(tokens)
+	var own: Dictionary = {}
+	for n in GateTypes.shadowed:
+		own[n] = true
+	for c in ProjectSettings.get_global_class_list():
+		own.erase(String(c["class"]))
+	GateTypes.shadowed.clear()
+	kept = [sum, tokens, _tokens_hash(tokens), generics, aliases, own]
+	_lexed_memo[path] = kept
+	return kept
+
+
+static func _shadowing_classes() -> Dictionary:
+	var out: Dictionary = {}
+	for c in ProjectSettings.get_global_class_list():
+		if GateTypes.SHORTHAND.has(String(c["class"])):
+			out[String(c["class"])] = true
+	return out
+
+
+static func token_hash(path: String) -> String:
+	var kept: Array = _lexed_memo.get(path, [])
+	return String(kept[2]) if kept.size() > 2 else ""
+
+
+static func _tokens_hash(tokens: Array) -> String:
+	var parts: PackedStringArray = PackedStringArray()
+	var last: int = -1
+	for t in tokens:
+		var tk: GateLexer.Token = t
+		if tk.type == GateLexer.T.COMMENT or (tk.type == GateLexer.T.NEWLINE and last == GateLexer.T.NEWLINE):
+			continue
+		last = tk.type
+		parts.append("%d|%s|%s" % [tk.type, tk.value, tk.extra])
+	return "~".join(parts).md5_text()
+
+
+static func _sorted_keys(d: Dictionary) -> Array:
+	var keys: Array = d.keys()
+	keys.sort()
+	return keys
+var _generic_use_paths: Array = []
+
+
+func _scope_for(path: String) -> Dictionary:
+	return GateChecker.shadowed(registry.aliases, _file_names.get(path, {}))
+
+
+static func _scan_declared_names(tokens: Array, generics: Dictionary, aliases: Dictionary) -> void:
+	var n: int = tokens.size()
+	for i in n - 2:
+		var t: GateLexer.Token = tokens[i]
+		var nx: GateLexer.Token = tokens[i + 1]
+		if nx.type != GateLexer.T.IDENT:
+			continue
+		if (t.is_kw("class") or t.is_kw("struct")) and tokens[i + 2].is_op("<"):
+			generics[nx.value] = true
+		elif t.type == GateLexer.T.IDENT and t.value == "type" and tokens[i + 2].is_op("="):
+			aliases[nx.value] = true
+
+
+func _resolve_aliases() -> void:
+	if registry.alias_decls.is_empty():
 		return
 	var taken: Dictionary = GateChecker.project_names(registry, "", true)
 	var usable: Array = []
@@ -321,6 +600,44 @@ func _collect(members: Array, path: String) -> void:
 				if fvd.type != null:
 					registry.fields["%s.%s" % [cd.name, fvd.name]] = fvd.type
 		_collect(cd.members, path)
+
+
+func _index_trait_text(members: Array, lines: PackedStringArray, whole: String) -> void:
+	for i in members.size():
+		if not (members[i] is GateAST.ClassDecl):
+			continue
+		var cd: GateAST.ClassDecl = members[i]
+		if cd.form != "trait":
+			_index_trait_text_nested(cd.members, whole)
+			continue
+		var last: int = lines.size()
+		for j in range(i + 1, members.size()):
+			var next_line: int = int(members[j].line) if "line" in members[j] else 0
+			if next_line > cd.line:
+				last = next_line - 1
+				break
+		var text: String = "\n".join(lines.slice(maxi(cd.line - 1, 0), last))
+		registry.trait_text[cd.name] = "%d:%d" % [text.hash(), text.length()]
+
+
+func _index_trait_text_nested(members: Array, whole: String) -> void:
+	for m in members:
+		if m is GateAST.ClassDecl:
+			var cd: GateAST.ClassDecl = m
+			if cd.form == "trait":
+				registry.trait_text[cd.name] = "%d:%d" % [whole.hash(), whole.length()]
+			_index_trait_text_nested(cd.members, whole)
+
+
+static func _injects(members: Array) -> bool:
+	for m in members:
+		if m is GateAST.ClassDecl and _injects((m as GateAST.ClassDecl).members):
+			return true
+		if m is GateAST.VarDecl:
+			for a in (m as GateAST.VarDecl).annotations:
+				if (a as GateAST.Annotation).name in ["required", "export_if"]:
+					return true
+	return false
 
 
 func _compute_struct_lowering(cd: GateAST.ClassDecl) -> void:
