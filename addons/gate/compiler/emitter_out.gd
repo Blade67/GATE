@@ -242,8 +242,8 @@ const HEADER_LINES := [
 	"# this project, anything you change here is overwritten the next time",
 	"# %s is compiled - edit that file instead.",
 	"#",
-	"# To stop using GATE for this script, delete the .gate file and this header;",
-	"# what remains is ordinary GDScript you can maintain by hand.",
+	"# To stop using GATE for this script, delete this header first, then the .gate",
+	"# file; what remains is ordinary GDScript you can maintain by hand.",
 ]
 
 

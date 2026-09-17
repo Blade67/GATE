@@ -24,6 +24,7 @@ loads, and behaves identically. Recompiling GATE's own output gives back the sam
    * [Swizzling and object initialisers](#swizzling-and-object-initialisers)
    * [Editor annotations](#editor-annotations)
    * [Expressions](#expressions)
+- [In the editor](#in-the-editor)
 - [Performance](#performance)
 - [Known limitations](#known-limitations)
 - [Verification](#verification)
@@ -318,6 +319,98 @@ a, b = b, a                             # swap
 for i, item in enumerate(items):        # index and value
 for k, v in scores:                     # dictionary key and value
 ```
+
+## In the editor
+
+With the plugin enabled, Godot treats `.gate` as a language of its own.
+
+- **`.gate` files appear in the FileSystem dock**, with their own icon. Before this they
+  were invisible: Godot did not track the extension at all.
+- **Double-clicking one opens the real script editor**, with GATE's syntax colours -
+  type-first declarations, `T?`, `T[]`, unions, f-strings, `struct`, `interface`,
+  `namespace` and the rest. Every type name colours, short or canonical, and so does
+  the name a `struct`, `interface`, `trait`, `namespace`, `type` or `class` declares
+  and a generic's parameter. A name starting with `_` is dimmed. The colours come from
+  your own editor theme, and follow it when you change it.
+- **Some errors are underlined as you type** - an unterminated string, inconsistent
+  indentation - the ones decidable from the file in front of you. A quote you left open
+  is reported where you opened it, not where the file stops making sense. Anything that
+  needs the rest of the project is left to the build, which reports to the Output panel
+  as before.
+- **Godot's own warnings show in the `.gate`**, in the same warnings panel and in the
+  same words: unused variable, unused local constant, unused parameter, unused signal,
+  and a local, parameter or `for` variable that shadows a member of this class or of a
+  base - another `.gate`, a hand-written `.gd`, or an engine class. Before this they
+  existed only against the generated `.gd`, which you are told never to open.
+  `@warning_ignore`, `@warning_ignore_start`/`_restore` and the switches under
+  *Project Settings -> Debug -> GDScript* are honoured, so a warning you turned off
+  stays off. The warnings that need the whole project, and the ones about types, are
+  still the build's.
+- **Ctrl-click, or F1, goes to the declaration** - across files. A struct, class,
+  interface, trait, namespace, generic or alias declared anywhere in the project, a
+  `class_name` in another `.gate` or in a hand-written `.gd`, a member of any of
+  those including one it inherits, and locals, parameters and fields in the file you
+  are in. It goes through autoloads, so `Global.current_project.frames` reaches the
+  field's declaration: a script autoload stands for its script, and a scene autoload for
+  its root node's script, or the root's engine class when it has none. A base written as
+  a path, `extends "res://base.gd"`, is followed like a named one. An engine class opens
+  its documentation instead. Where GATE cannot place a word it says so by not
+  underlining it.
+- **Breakpoints work.** Set one in a `.gate` and the running game stops there, and
+  the stop is shown in the `.gate` with the line marked, not in the generated `.gd`.
+  Stepping follows. A breakpoint on a line that compiles to nothing - a comment, a
+  blank, a declaration that lowers away - is taken back with a toast saying why,
+  rather than left sitting there never firing. Godot's own debugger panels still name
+  the `.gd`.
+- **Autocompletion knows GATE's own forms.** After a dot it offers the members of
+  whatever is on the left - a struct from another `.gate`, a `T?` field, a
+  `class_name`, a hand-written `.gd` class, an autoload, an engine class - including
+  everything inherited, all the way up, through a base written as a path too. `?.` is
+  the same. `String`, `Array`, `Vector2` and the engine's other built-in types offer
+  their methods, properties and constants, from a table generated from Godot 4.7.2's API.
+  What a typed container holds carries through an index, the `Array` and `Dictionary`
+  methods that return an element, and a `for` loop's variable, so with `Frame[] frames`
+  both `frames[0].` and `f.` inside `for f in frames:` offer what a `Frame` has. A
+  variable declared with `:=`, or a constant, takes its type from its initialiser; one
+  declared with a plain `=` is still untyped. Unqualified, it offers locals, parameters, the file's own members and
+  everything it inherits, the autoloads, every type in the project, GATE's type
+  shorthands and keywords, and the engine's classes. After `@` it offers the
+  annotations, GATE's and Godot's. On another object a dot leaves out the methods that
+  start with an underscore, such as `_ready`, since those are there to be overridden;
+  on `self` they are offered.
+- **Open `.gate` tabs come back next session.** Godot's own layout never holds them;
+  GATE keeps them and reopens them itself. That is so a session with GATE switched off
+  finds nothing to reopen: without GATE, Godot would open a `.gate` as plain text and
+  rewrite its indentation on exit, badly enough that it no longer compiles. Switching
+  GATE off from the Plugins tab closes its tabs, saving any unsaved edit first, and a
+  session with GATE off never rewrites a `.gate`.
+- **Saving keeps the file's line endings.** A `.gate` that used CRLF is written back with
+  CRLF; a new file, or one that used LF, stays LF.
+- **New scripts.** *Script -> New Script* and the FileSystem dock's right-click
+  *Create -> New GATE Script...* both offer GATE as a language.
+- **Project -> Tools -> Recompile all GATE files** forgets what the build already knows
+  and looks at every `.gate` again.
+- **GATE stays out of the exported game.** `.gate` sources, their `.uid` files, the
+  `.gd.map` sourcemaps, the compiler and the editor integration are all left out of
+  the PCK; the compiled `.gd` is what ships. Four small scripts from
+  `addons/gate/editor/` do ship - `loader.gd`, `saver.gd`, `registry.gd` and
+  `script.gd` - because Godot's class list names the first two and a game that cannot
+  find them prints six errors at start-up. They do nothing in a game. If you exclude
+  `addons/gate/` in your export preset yourself, keep those four.
+
+Three things deliberately do not work.
+
+- **A `.gate` cannot be attached to a node.** *Attach Script* offers GATE and then
+  refuses, because the script a node runs has to be the compiled `.gd`. Create the
+  `.gate` first and attach the `.gd` that appears beside it.
+- **Autocompletion offers nothing rather than guess.** Where the type of what is
+  left of the dot cannot be worked out - a variable declared with a plain `=` and no
+  type, an untyped container after an index, the return of an engine method GATE
+  cannot follow - the list is empty rather than filled from somewhere else. It follows
+  a chain of names, calls and indexes, not arbitrary expressions.
+- **Ctrl-click only follows what GATE can type.** A member reached through a value
+  whose type GATE cannot see is not underlined, and neither is a member of an engine
+  class.
 
 ## Performance
 

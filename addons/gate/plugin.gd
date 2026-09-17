@@ -3,7 +3,14 @@ extends EditorPlugin
 
 ## GATE - compiles .gate files to .gd on save.
 
+const SourceFollow := preload("res://addons/gate/source_follow.gd")
+const Integration := preload("res://addons/gate/editor/integration.gd")
+const Tabs := preload("res://addons/gate/editor/tabs.gd")
+
+const RECOMPILE_ITEM: String = "Recompile all GATE files"
+
 var _builder: GateBuilder = GateBuilder.new()
+var _integration: Integration = Integration.new()
 var _compiling: bool = false
 var _fs: EditorFileSystem
 var _follow: SourceFollow = SourceFollow.new()
@@ -21,10 +28,37 @@ func _enter_tree() -> void:
 	_fs = EditorInterface.get_resource_filesystem()
 	if not _fs.filesystem_changed.is_connected(_on_fs_changed):
 		_fs.filesystem_changed.connect(_on_fs_changed)
+	_follow.attach()
+	_integration.attach(self)
+	add_tool_menu_item(RECOMPILE_ITEM, _recompile_all)
 	compile_all.call_deferred()
 
 
+## `.gate` tabs never stay in the saved layout, so a session without GATE cannot
+## reopen one as plain text and rewrite it on exit. See editor/tabs.gd.
+func _get_window_layout(configuration: ConfigFile) -> void:
+	Tabs.hide_from_layout(configuration)
+
+
+func _set_window_layout(configuration: ConfigFile) -> void:
+	Tabs.restore_from_layout(configuration)
+
+
+## Switched off from the Plugins tab, not at shutdown: the next layout save happens
+## without this plugin, so the tabs are closed now instead.
+func _disable_plugin() -> void:
+	Tabs.close_all()
+	queue_save_layout()
+
+
 func _exit_tree() -> void:
+	remove_tool_menu_item(RECOMPILE_ITEM)
+	# Before GATE's saver goes inactive. On the way out Godot converts each open tab's
+	# indentation and saves the tabs that changed; a `.gate` tab it cannot save makes it
+	# open an error dialog while the tree shuts down, twice per tab. The layout already
+	# holds these tabs in GATE's section, so they come back next session.
+	Tabs.close_all(false)
+	_integration.detach()
 	if _fs and _fs.filesystem_changed.is_connected(_on_fs_changed):
 		_fs.filesystem_changed.disconnect(_on_fs_changed)
 	_follow.detach()
