@@ -1170,6 +1170,7 @@ func compile_file(gate_path: String, registry = null, deferred = null, reg_sig: 
 
 	compiled_log.append(gate_path)
 	var compiler: GateCompiler = GateCompiler.new()
+	compiler.indent = unit
 	var res: GateCompiler.Result = compiler.compile(src, gate_path, registry)
 
 	if not res.ok:
@@ -1222,13 +1223,17 @@ func compile_file(gate_path: String, registry = null, deferred = null, reg_sig: 
 			var existing: String = prev.get_as_text()
 			prev_text = existing
 			prev.close()
-			if existing == res.source:
-				if not FileAccess.file_exists(map_path):
-					GateCompiler.write_sourcemap(out_path, gate_path, res.map)
+			if existing == res.source or _same_but_indent(existing, res.source):
+				if existing != res.source:
+					out_hashes[gate_path] = existing.md5_text()
+				if not _map_matches(map_path, gate_path, res.map, existing, src):
+					_write_map(out_path, gate_path, res.map, existing, src)
+				_proof[gate_path]["map"] = FileAccess.get_md5(map_path)
+				_proof[gate_path]["gd"] = FileAccess.get_md5(out_path)
 				_clear_rejected(out_path)
 				if deferred != null:
 					deferred[out_path] = {
-						"gate": gate_path, "source": res.source, "deps": res.deps,
+						"gate": gate_path, "source": existing, "deps": res.deps,
 						"prev": existing, "prev_map": _read_text(map_path),
 						"prev_map_existed": FileAccess.file_exists(map_path), "map": res.map, "h": h,
 						"existed": true, "was": 0,

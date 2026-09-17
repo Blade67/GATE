@@ -240,7 +240,7 @@ func compile(src_in: String, path: String, registry = null) -> Result:
 	var out: Dictionary = emitter.emit(mod, diags, path)
 
 	res.ok = not diags.has_errors()
-	res.source = out["source"]
+	res.source = reindent(String(out["source"]), indent if indent != "" else indent_of(src))
 	res.map = out["map"]
 	res.deps = out["deps"]
 	diags.sort_by_position()

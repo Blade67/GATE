@@ -11,4 +11,4 @@ extends RefCounted
 
 var value: int = 3
 func doubled() -> int:
-	return value * 2
+    return value * 2

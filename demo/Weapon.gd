@@ -13,4 +13,4 @@ var damage: int = 25
 var label: String = "sword"
 
 func describe() -> String:
-	return "%s (%s dmg)" % [label, damage]
+    return "%s (%s dmg)" % [label, damage]
