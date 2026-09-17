@@ -27,21 +27,21 @@ var _generic_uses: Array = []
 var _saw_nullable: bool = false
 
 
-func _peek(offset: int = 0) -> GateLexer.Token:
+func _peek(offset: int = 0) -> GateLexer.GateToken:
 	var idx: int = _i + offset
 	if idx >= _toks.size():
 		return _toks[_toks.size() - 1]
 	return _toks[idx]
 
 
-func _cur() -> GateLexer.Token: return _peek(0)
+func _cur() -> GateLexer.GateToken: return _peek(0)
 
 
 func _at_end() -> bool: return _cur().type == GateLexer.T.EOF
 
 
-func _advance() -> GateLexer.Token:
-	var t: GateLexer.Token = _cur()
+func _advance() -> GateLexer.GateToken:
+	var t: GateLexer.GateToken = _cur()
 	if not _at_end():
 		_i += 1
 	return t
@@ -69,7 +69,7 @@ func _at_name() -> bool:
 	return _is_name_token(_cur())
 
 
-func _is_name_token(t: GateLexer.Token) -> bool:
+func _is_name_token(t: GateLexer.GateToken) -> bool:
 	if t.type == GateLexer.T.IDENT:
 		return true
 	return t.type == GateLexer.T.KEYWORD and (GateLexer.is_gate_only_keyword(t.value)
@@ -107,7 +107,7 @@ func _expect_op(v: String, ctx: String) -> bool:
 
 
 func _err(msg: String, hint: String = "") -> void:
-	var t: GateLexer.Token = _cur()
+	var t: GateLexer.GateToken = _cur()
 	diagnostics.error(msg, t.line, t.col, hint)
 
 
@@ -119,7 +119,7 @@ func _skip_newlines() -> void:
 func _skip_to_statement_end() -> void:
 	var depth: int = 0
 	while not _at_end():
-		var t: GateLexer.Token = _cur()
+		var t: GateLexer.GateToken = _cur()
 		if t.type == GateLexer.T.OP:
 			if t.value in ["(", "[", "{"]: depth += 1
 			elif t.value in [")", "]", "}"]: depth -= 1
@@ -128,7 +128,7 @@ func _skip_to_statement_end() -> void:
 		_advance()
 
 
-func _span_text(a: GateLexer.Token, b: GateLexer.Token) -> String:
+func _span_text(a: GateLexer.GateToken, b: GateLexer.GateToken) -> String:
 	if a.line < 1 or a.line > _lines.size():
 		return ""
 	if a.line == b.line:
@@ -144,8 +144,8 @@ func _span_text(a: GateLexer.Token, b: GateLexer.Token) -> String:
 	return " ".join(parts)
 
 
-func _raw_from(start_line: int, end_line: int) -> GateAST.RawStmt:
-	var r: GateAST.RawStmt = GateAST.RawStmt.new()
+func _raw_from(start_line: int, end_line: int) -> GateAST.GateRawStmt:
+	var r: GateAST.GateRawStmt = GateAST.GateRawStmt.new()
 	var parts: PackedStringArray = PackedStringArray()
 	for i in range(start_line - 1, mini(end_line, _lines.size())):
 		if i >= 0 and i < _lines.size():
@@ -155,5 +155,5 @@ func _raw_from(start_line: int, end_line: int) -> GateAST.RawStmt:
 	return r
 
 
-func _rewind_to(_t: GateLexer.Token) -> bool:
+func _rewind_to(_t: GateLexer.GateToken) -> bool:
 	return false

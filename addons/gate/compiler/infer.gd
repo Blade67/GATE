@@ -8,7 +8,7 @@ extends "res://addons/gate/compiler/infer_core.gd"
 ## receiver and each parameter, so the null analysis invalidates only those.
 
 
-func build(mod: GateAST.Module, registry = null) -> void:
+func build(mod: GateAST.GateModule, registry = null) -> void:
 	fields.clear(); methods.clear(); bases.clear(); module_functions.clear()
 	if registry != null:
 		for k in registry.fields: fields[k] = registry.fields[k]
@@ -20,15 +20,15 @@ func build(mod: GateAST.Module, registry = null) -> void:
 	if mod.class_name_decl != "":
 		bases[mod.class_name_decl] = MODULE_CLASS
 	for m in mod.members:
-		if m is GateAST.FuncDecl:
-			var fd: GateAST.FuncDecl = m
+		if m is GateAST.GateFuncDecl:
+			var fd: GateAST.GateFuncDecl = m
 			if not module_functions.has(fd.name):
 				module_functions[fd.name] = []
 			module_functions[fd.name].append(fd)
 	_build_effects()
 
 
-class Effects extends RefCounted:
+class GateEffects extends RefCounted:
 	var self_paths: Array = []   ## suffixes relative to the receiver
 	var param_paths: Dictionary = {}        ## param index -> Array of suffixes
 
@@ -66,7 +66,7 @@ var _fx_owner: Dictionary = {}
 var _fields_by_class: Dictionary = {}
 
 
-func effects_of(fd) -> Effects:
+func effects_of(fd) -> GateEffects:
 	return _fx.get(fd, null)
 
 const MAX_EFFECT_PASSES := 12
@@ -93,12 +93,12 @@ func _build_effects() -> void:
 		var mcls: String = mkey.substr(0, mdot)
 		for f in methods[k2]:
 			_fx_owner[f] = mcls
-			_fx[f] = Effects.new()
+			_fx[f] = GateEffects.new()
 	for n in module_functions:
 		for f2 in module_functions[n]:
 			if not _fx.has(f2):
 				_fx_owner[f2] = ""
-				_fx[f2] = Effects.new()
+				_fx[f2] = GateEffects.new()
 
 	var limit: int = maxi(MAX_EFFECT_PASSES, _fx.size() + 1)
 	var still_moving: Dictionary = {}
@@ -114,10 +114,10 @@ func _build_effects() -> void:
 
 func _widen_effects(which: Dictionary) -> void:
 	for f in which:
-		var e: Effects = _fx[f]
+		var e: GateEffects = _fx[f]
 		e.self_paths = ["*"]
 		e.param_paths.clear()
-		var fd: GateAST.FuncDecl = f
+		var fd: GateAST.GateFuncDecl = f
 		for i in fd.params.size():
 			e.param_paths[i] = ["*"]
 
@@ -140,7 +140,7 @@ func _scan_effects(fd) -> bool:
 	if owner != "":
 		locals["self"] = _named(owner)
 	for i in fd.params.size():
-		var pp: GateAST.Param = fd.params[i]
+		var pp: GateAST.GateParam = fd.params[i]
 		params[pp.name] = i
 		if pp.type != null:
 			locals[pp.name] = pp.type
@@ -161,10 +161,10 @@ const MAX_REL_DEPTH := 24
 func _rel(e, ctx: Dictionary, depth: int = 0) -> Array:
 	if depth > MAX_REL_DEPTH:
 		return ["", -1, ""]
-	if e is GateAST.SelfExpr:
+	if e is GateAST.GateSelfExpr:
 		return ["self", -1, ""]
-	if e is GateAST.Ident:
-		var n: String = (e as GateAST.Ident).name
+	if e is GateAST.GateIdent:
+		var n: String = (e as GateAST.GateIdent).name
 		if n == "super":
 			return ["self", -1, ""]
 		if (ctx["params"] as Dictionary).has(n):
@@ -172,13 +172,13 @@ func _rel(e, ctx: Dictionary, depth: int = 0) -> Array:
 		if _has_field(ctx["cls"], n):
 			return ["self", -1, n]
 		return ["", -1, ""]
-	if e is GateAST.Member:
-		var m: GateAST.Member = e
+	if e is GateAST.GateMember:
+		var m: GateAST.GateMember = e
 		var b: Array = _rel(m.target, ctx, depth + 1)
 		if b[0] == "": return ["", -1, ""]
 		return [b[0], b[1], _join_suffix(b[2], m.name)]
-	if e is GateAST.Index:
-		var b2: Array = _rel((e as GateAST.Index).target, ctx, depth + 1)
+	if e is GateAST.GateIndex:
+		var b2: Array = _rel((e as GateAST.GateIndex).target, ctx, depth + 1)
 		if b2[0] == "": return ["", -1, ""]
 		return [b2[0], b2[1], _join_suffix(b2[2], "*")]
 	return ["", -1, ""]
@@ -203,7 +203,7 @@ func _cap_suffix(sfx: String) -> String:
 func _fx_add(ctx: Dictionary, kind: String, idx: int, sfx: String) -> void:
 	if kind == "" or sfx == "":
 		return
-	var fx: Effects = ctx["fx"]
+	var fx: GateEffects = ctx["fx"]
 	var bucket: Array = fx.self_paths if kind == "self" else fx.param_paths.get(idx, [])
 	if bucket.has("*"):
 		return
@@ -221,52 +221,52 @@ func _fx_add(ctx: Dictionary, kind: String, idx: int, sfx: String) -> void:
 
 func _fx_stmts(body: Array, ctx: Dictionary) -> void:
 	for s in body:
-		if s is GateAST.AssignStmt:
-			var a: GateAST.AssignStmt = s
+		if s is GateAST.GateAssignStmt:
+			var a: GateAST.GateAssignStmt = s
 			var r: Array = _rel(a.target, ctx)
 			_fx_add(ctx, r[0], r[1], r[2])
 			_fx_expr(a.target, ctx)
 			_fx_expr(a.value, ctx)
-		elif s is GateAST.VarDecl:
-			var vd: GateAST.VarDecl = s
+		elif s is GateAST.GateVarDecl:
+			var vd: GateAST.GateVarDecl = s
 			_fx_expr(vd.value, ctx)
 			if vd.type != null:
 				ctx["locals"][vd.name] = vd.type
 			else:
-				var it: GateAST.TypeRef = type_of(vd.value, ctx["locals"])
+				var it: GateAST.GateTypeRef = type_of(vd.value, ctx["locals"])
 				if it != null:
 					ctx["locals"][vd.name] = it
-		elif s is GateAST.ExprStmt:
-			_fx_expr((s as GateAST.ExprStmt).expr, ctx)
-		elif s is GateAST.ReturnStmt:
-			_fx_expr((s as GateAST.ReturnStmt).value, ctx)
-		elif s is GateAST.IfStmt:
-			var i: GateAST.IfStmt = s
+		elif s is GateAST.GateExprStmt:
+			_fx_expr((s as GateAST.GateExprStmt).expr, ctx)
+		elif s is GateAST.GateReturnStmt:
+			_fx_expr((s as GateAST.GateReturnStmt).value, ctx)
+		elif s is GateAST.GateIfStmt:
+			var i: GateAST.GateIfStmt = s
 			_fx_expr(i.cond, ctx)
 			_fx_stmts(i.then_body, ctx)
 			for pair in i.elifs:
 				_fx_expr(pair[0], ctx)
 				_fx_stmts(pair[1], ctx)
 			_fx_stmts(i.else_body, ctx)
-		elif s is GateAST.ForStmt:
-			var fo: GateAST.ForStmt = s
+		elif s is GateAST.GateForStmt:
+			var fo: GateAST.GateForStmt = s
 			_fx_expr(fo.iterable, ctx)
 			if not fo.var_names.is_empty():
-				var et: GateAST.TypeRef = fo.var_type
+				var et: GateAST.GateTypeRef = fo.var_type
 				if et == null:
 					et = element_type(type_of(fo.iterable, ctx["locals"]))
 				if et != null:
 					ctx["locals"][fo.var_names[fo.var_names.size() - 1]] = et
 			_fx_stmts(fo.body, ctx)
-		elif s is GateAST.WhileStmt:
-			_fx_expr((s as GateAST.WhileStmt).cond, ctx)
-			_fx_stmts((s as GateAST.WhileStmt).body, ctx)
-		elif s is GateAST.MatchStmt:
-			_fx_expr((s as GateAST.MatchStmt).subject, ctx)
-			for br in (s as GateAST.MatchStmt).branches:
+		elif s is GateAST.GateWhileStmt:
+			_fx_expr((s as GateAST.GateWhileStmt).cond, ctx)
+			_fx_stmts((s as GateAST.GateWhileStmt).body, ctx)
+		elif s is GateAST.GateMatchStmt:
+			_fx_expr((s as GateAST.GateMatchStmt).subject, ctx)
+			for br in (s as GateAST.GateMatchStmt).branches:
 				_fx_stmts(br[2], ctx)
-		elif s is GateAST.MultiAssign:
-			var ma: GateAST.MultiAssign = s
+		elif s is GateAST.GateMultiAssign:
+			var ma: GateAST.GateMultiAssign = s
 			for t in ma.targets:
 				var r2: Array = _rel(t, ctx)
 				_fx_add(ctx, r2[0], r2[1], r2[2])
@@ -277,69 +277,69 @@ func _fx_stmts(body: Array, ctx: Dictionary) -> void:
 func _fx_expr(e, ctx: Dictionary) -> void:
 	if e == null:
 		return
-	if e is GateAST.Call:
-		var c: GateAST.Call = e
+	if e is GateAST.GateCall:
+		var c: GateAST.GateCall = e
 		_fx_expr(c.callee, ctx)
 		for a in c.args:
 			_fx_expr(a, ctx)
 		_fx_call(c, ctx)
 		return
-	if e is GateAST.Binary:
+	if e is GateAST.GateBinary:
 		var spine: Array = []
 		var cur = e
-		while cur is GateAST.Binary:
+		while cur is GateAST.GateBinary:
 			spine.append(cur)
-			cur = (cur as GateAST.Binary).left
+			cur = (cur as GateAST.GateBinary).left
 		_fx_expr(cur, ctx)
 		for n in spine:
-			_fx_expr((n as GateAST.Binary).right, ctx)
-	elif e is GateAST.NullCoalesce:
-		_fx_expr((e as GateAST.NullCoalesce).left, ctx)
-		_fx_expr((e as GateAST.NullCoalesce).right, ctx)
-	elif e is GateAST.Ternary:
-		var te: GateAST.Ternary = e
+			_fx_expr((n as GateAST.GateBinary).right, ctx)
+	elif e is GateAST.GateNullCoalesce:
+		_fx_expr((e as GateAST.GateNullCoalesce).left, ctx)
+		_fx_expr((e as GateAST.GateNullCoalesce).right, ctx)
+	elif e is GateAST.GateTernary:
+		var te: GateAST.GateTernary = e
 		_fx_expr(te.cond, ctx); _fx_expr(te.if_true, ctx); _fx_expr(te.if_false, ctx)
-	elif e is GateAST.Member or e is GateAST.Index:
+	elif e is GateAST.GateMember or e is GateAST.GateIndex:
 		var pspine: Array = []
 		var pcur = e
-		while pcur is GateAST.Member or pcur is GateAST.Index:
+		while pcur is GateAST.GateMember or pcur is GateAST.GateIndex:
 			pspine.append(pcur)
-			pcur = (pcur as GateAST.Member).target if pcur is GateAST.Member else (pcur as GateAST.Index).target
+			pcur = (pcur as GateAST.GateMember).target if pcur is GateAST.GateMember else (pcur as GateAST.GateIndex).target
 		_fx_expr(pcur, ctx)
 		for pn in pspine:
-			if pn is GateAST.Index:
-				_fx_expr((pn as GateAST.Index).index, ctx)
-	elif e is GateAST.Unary:
-		_fx_expr((e as GateAST.Unary).operand, ctx)
-	elif e is GateAST.AwaitExpr:
-		_fx_expr((e as GateAST.AwaitExpr).operand, ctx)
-	elif e is GateAST.CastExpr:
-		_fx_expr((e as GateAST.CastExpr).operand, ctx)
-	elif e is GateAST.IsExpr:
-		_fx_expr((e as GateAST.IsExpr).operand, ctx)
-	elif e is GateAST.ArrayLit:
-		for el in (e as GateAST.ArrayLit).elements: _fx_expr(el, ctx)
-	elif e is GateAST.DictLit:
-		for k in (e as GateAST.DictLit).keys: _fx_expr(k, ctx)
-		for v in (e as GateAST.DictLit).values: _fx_expr(v, ctx)
-	elif e is GateAST.ObjectInit:
-		for v2 in (e as GateAST.ObjectInit).values: _fx_expr(v2, ctx)
-	elif e is GateAST.FString:
-		for part in (e as GateAST.FString).parts:
+			if pn is GateAST.GateIndex:
+				_fx_expr((pn as GateAST.GateIndex).index, ctx)
+	elif e is GateAST.GateUnary:
+		_fx_expr((e as GateAST.GateUnary).operand, ctx)
+	elif e is GateAST.GateAwaitExpr:
+		_fx_expr((e as GateAST.GateAwaitExpr).operand, ctx)
+	elif e is GateAST.GateCastExpr:
+		_fx_expr((e as GateAST.GateCastExpr).operand, ctx)
+	elif e is GateAST.GateIsExpr:
+		_fx_expr((e as GateAST.GateIsExpr).operand, ctx)
+	elif e is GateAST.GateArrayLit:
+		for el in (e as GateAST.GateArrayLit).elements: _fx_expr(el, ctx)
+	elif e is GateAST.GateDictLit:
+		for k in (e as GateAST.GateDictLit).keys: _fx_expr(k, ctx)
+		for v in (e as GateAST.GateDictLit).values: _fx_expr(v, ctx)
+	elif e is GateAST.GateObjectInit:
+		for v2 in (e as GateAST.GateObjectInit).values: _fx_expr(v2, ctx)
+	elif e is GateAST.GateFString:
+		for part in (e as GateAST.GateFString).parts:
 			if not (part is String): _fx_expr(part, ctx)
-	elif e is GateAST.Lambda:
-		var lam: GateAST.Lambda = e
+	elif e is GateAST.GateLambda:
+		var lam: GateAST.GateLambda = e
 		_fx_stmts(lam.body, ctx)
 		_fx_expr(lam.expr_body, ctx)
 
 
-func _fx_call(c: GateAST.Call, ctx: Dictionary) -> void:
+func _fx_call(c: GateAST.GateCall, ctx: Dictionary) -> void:
 	var recv: Array = ["", -1, ""]
 	var callee_fd = null
 	var uname: String = ""
 
-	if c.callee is GateAST.Ident:
-		var n: String = (c.callee as GateAST.Ident).name
+	if c.callee is GateAST.GateIdent:
+		var n: String = (c.callee as GateAST.GateIdent).name
 		callee_fd = _pick(module_functions.get(n, []), c.args.size())
 		if callee_fd != null:
 			recv = ["self", -1, ""]
@@ -351,15 +351,15 @@ func _fx_call(c: GateAST.Call, ctx: Dictionary) -> void:
 			uname = n
 			if not is_engine_method(engine_root(String(ctx["cls"])), n):
 				recv = ["self", -1, ""]
-	elif c.callee is GateAST.Member:
-		var m: GateAST.Member = c.callee
+	elif c.callee is GateAST.GateMember:
+		var m: GateAST.GateMember = c.callee
 		if m.name == "new":
 			return
 		recv = _rel(m.target, ctx)
-		if m.target is GateAST.Ident and (m.target as GateAST.Ident).name == "super":
+		if m.target is GateAST.GateIdent and (m.target as GateAST.GateIdent).name == "super":
 			callee_fd = _pick(
 				method_candidates(String(bases.get(ctx["cls"], "")), m.name), c.args.size())
-		var rt: GateAST.TypeRef = type_of(m.target, ctx["locals"])
+		var rt: GateAST.GateTypeRef = type_of(m.target, ctx["locals"])
 		if callee_fd == null and rt != null and rt.array_depth == 0 and not rt.is_dict():
 			callee_fd = _pick(method_candidates(rt.name, m.name), c.args.size())
 		if callee_fd == null:
@@ -368,7 +368,7 @@ func _fx_call(c: GateAST.Call, ctx: Dictionary) -> void:
 		return
 
 	if callee_fd != null and _fx.has(callee_fd):
-		var e2: Effects = _fx[callee_fd]
+		var e2: GateEffects = _fx[callee_fd]
 		for sfx in e2.self_paths:
 			_fx_add(ctx, recv[0], recv[1], _join_suffix(recv[2], sfx))
 		for j in e2.param_paths:

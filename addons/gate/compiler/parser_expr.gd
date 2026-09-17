@@ -21,9 +21,9 @@ func _parse_lambda_inline_body(_limit_line: int = 0) -> Array:
 const MAX_EXPR_DEPTH := 48
 
 
-func _parse_expr() -> GateAST.Expr:
+func _parse_expr() -> GateAST.GateExpr:
 	if _expr_depth >= MAX_EXPR_DEPTH:
-		var t: GateLexer.Token = _cur()
+		var t: GateLexer.GateToken = _cur()
 		if not _depth_reported:
 			diagnostics.error(
 				"expression nests more than %d levels deep" % MAX_EXPR_DEPTH, t.line, t.col,
@@ -33,25 +33,25 @@ func _parse_expr() -> GateAST.Expr:
 			_depth_reported = true
 			_panic = true
 			diagnostics.seal()
-		var bad: GateAST.Literal = GateAST.Literal.new()
+		var bad: GateAST.GateLiteral = GateAST.GateLiteral.new()
 		bad.at(t.line, t.col)
 		bad.raw = "null"
 		return bad
 	_expr_depth += 1
-	var e: GateAST.Expr = _parse_cast()
+	var e: GateAST.GateExpr = _parse_cast()
 	_expr_depth -= 1
 	return e
 
 
-func _parse_ternary() -> GateAST.Expr:
-	var e: GateAST.Expr = _parse_coalesce()
-	if e is GateAST.Lambda and (e as GateAST.Lambda).block_body:
+func _parse_ternary() -> GateAST.GateExpr:
+	var e: GateAST.GateExpr = _parse_coalesce()
+	if e is GateAST.GateLambda and (e as GateAST.GateLambda).block_body:
 		return e
 	if _in_inline_lambda > 0 and _check_kw("if") and _if_opens_a_block():
 		return e
 	if _check_kw("if"):
 		_advance()
-		var t: GateAST.Ternary = GateAST.Ternary.new()
+		var t: GateAST.GateTernary = GateAST.GateTernary.new()
 		t.at(e.line, e.col)
 		t.if_true = e
 		t.cond = _parse_ternary()
@@ -63,11 +63,11 @@ func _parse_ternary() -> GateAST.Expr:
 	return e
 
 
-func _parse_coalesce() -> GateAST.Expr:
-	var left: GateAST.Expr = _parse_or()
+func _parse_coalesce() -> GateAST.GateExpr:
+	var left: GateAST.GateExpr = _parse_or()
 	while _check_op("??"):
-		var t: GateLexer.Token = _advance()
-		var n: GateAST.NullCoalesce = GateAST.NullCoalesce.new()
+		var t: GateLexer.GateToken = _advance()
+		var n: GateAST.GateNullCoalesce = GateAST.GateNullCoalesce.new()
 		n.at(t.line, t.col)
 		n.left = left
 		n.right = _parse_or()
@@ -75,26 +75,26 @@ func _parse_coalesce() -> GateAST.Expr:
 	return left
 
 
-func _parse_or() -> GateAST.Expr:
-	var left: GateAST.Expr = _parse_and()
+func _parse_or() -> GateAST.GateExpr:
+	var left: GateAST.GateExpr = _parse_and()
 	while _check_kw("or") or _check_op("||"):
-		var t: GateLexer.Token = _advance()
+		var t: GateLexer.GateToken = _advance()
 		left = _mk_binary("or", left, _parse_and(), t)
 	return left
 
 
-func _parse_and() -> GateAST.Expr:
-	var left: GateAST.Expr = _parse_not()
+func _parse_and() -> GateAST.GateExpr:
+	var left: GateAST.GateExpr = _parse_not()
 	while _check_kw("and") or _check_op("&&"):
-		var t: GateLexer.Token = _advance()
+		var t: GateLexer.GateToken = _advance()
 		left = _mk_binary("and", left, _parse_not(), t)
 	return left
 
 
-func _parse_not() -> GateAST.Expr:
+func _parse_not() -> GateAST.GateExpr:
 	if _check_kw("not") or _check_op("!"):
-		var t: GateLexer.Token = _advance()
-		var u: GateAST.Unary = GateAST.Unary.new()
+		var t: GateLexer.GateToken = _advance()
+		var u: GateAST.GateUnary = GateAST.GateUnary.new()
 		u.at(t.line, t.col)
 		u.op = "not"
 		u.operand = _parse_not()
@@ -104,15 +104,15 @@ func _parse_not() -> GateAST.Expr:
 const CMP_OPS := ["==", "!=", "<", ">", "<=", ">="]
 
 
-func _parse_content_test() -> GateAST.Expr:
-	var left: GateAST.Expr = _parse_comparison()
+func _parse_content_test() -> GateAST.GateExpr:
+	var left: GateAST.GateExpr = _parse_comparison()
 	while true:
 		if _check_kw("in"):
-			var t: GateLexer.Token = _advance()
+			var t: GateLexer.GateToken = _advance()
 			left = _mk_binary("in", left, _parse_comparison(), t)
 			continue
 		if _check_kw("not") and _peek(1).is_kw("in"):
-			var t2: GateLexer.Token = _advance()
+			var t2: GateLexer.GateToken = _advance()
 			_advance()
 			left = _mk_binary("not in", left, _parse_comparison(), t2)
 			continue
@@ -121,10 +121,10 @@ func _parse_content_test() -> GateAST.Expr:
 
 ## Left-associative, as in GDScript. There is no comparison chaining: `a == b == c`
 ## is `(a == b) == c`, which is legal and useful when `c` is a bool.
-func _parse_comparison() -> GateAST.Expr:
-	var left: GateAST.Expr = _parse_bitor()
+func _parse_comparison() -> GateAST.GateExpr:
+	var left: GateAST.GateExpr = _parse_bitor()
 	while _check(GateLexer.T.OP) and _cur().value in CMP_OPS:
-		var t: GateLexer.Token = _advance()
+		var t: GateLexer.GateToken = _advance()
 		left = _mk_binary(t.value, left, _parse_bitor(), t)
 	return left
 
@@ -133,11 +133,11 @@ func _parse_comparison() -> GateAST.Expr:
 ## comparison. Verified against Godot 4.7.2:
 ##
 ##   "%s" % V is int  ->  "%s" % (V is int)  ->  "true"
-func _parse_type_test() -> GateAST.Expr:
-	var operand: GateAST.Expr = _parse_await_level()
+func _parse_type_test() -> GateAST.GateExpr:
+	var operand: GateAST.GateExpr = _parse_await_level()
 	while _check_kw("is"):
-		var t: GateLexer.Token = _advance()
-		var ise: GateAST.IsExpr = GateAST.IsExpr.new()
+		var t: GateLexer.GateToken = _advance()
+		var ise: GateAST.GateIsExpr = GateAST.GateIsExpr.new()
 		ise.at(t.line, t.col)
 		if _check_kw("not"):
 			_advance()
@@ -148,8 +148,8 @@ func _parse_type_test() -> GateAST.Expr:
 	return operand
 
 
-func _mk_binary(op: String, l: GateAST.Expr, r: GateAST.Expr, t: GateLexer.Token) -> GateAST.Binary:
-	var b: GateAST.Binary = GateAST.Binary.new()
+func _mk_binary(op: String, l: GateAST.GateExpr, r: GateAST.GateExpr, t: GateLexer.GateToken) -> GateAST.GateBinary:
+	var b: GateAST.GateBinary = GateAST.GateBinary.new()
 	b.at(t.line, t.col)
 	b.op = op
 	b.left = l
@@ -157,80 +157,80 @@ func _mk_binary(op: String, l: GateAST.Expr, r: GateAST.Expr, t: GateLexer.Token
 	return b
 
 
-func _parse_bitor() -> GateAST.Expr:
-	var l: GateAST.Expr = _parse_bitxor()
+func _parse_bitor() -> GateAST.GateExpr:
+	var l: GateAST.GateExpr = _parse_bitxor()
 	while _check_op("|"):
-		var t: GateLexer.Token = _advance()
+		var t: GateLexer.GateToken = _advance()
 		l = _mk_binary("|", l, _parse_bitxor(), t)
 	return l
 
 
-func _parse_bitxor() -> GateAST.Expr:
-	var l: GateAST.Expr = _parse_bitand()
+func _parse_bitxor() -> GateAST.GateExpr:
+	var l: GateAST.GateExpr = _parse_bitand()
 	while _check_op("^"):
-		var t: GateLexer.Token = _advance()
+		var t: GateLexer.GateToken = _advance()
 		l = _mk_binary("^", l, _parse_bitand(), t)
 	return l
 
 
-func _parse_bitand() -> GateAST.Expr:
-	var l: GateAST.Expr = _parse_shift()
+func _parse_bitand() -> GateAST.GateExpr:
+	var l: GateAST.GateExpr = _parse_shift()
 	while _check_op("&"):
-		var t: GateLexer.Token = _advance()
+		var t: GateLexer.GateToken = _advance()
 		l = _mk_binary("&", l, _parse_shift(), t)
 	return l
 
 
-func _parse_shift() -> GateAST.Expr:
-	var l: GateAST.Expr = _parse_additive()
+func _parse_shift() -> GateAST.GateExpr:
+	var l: GateAST.GateExpr = _parse_additive()
 	while _check_op("<<") or _check_op(">>"):
-		var t: GateLexer.Token = _advance()
+		var t: GateLexer.GateToken = _advance()
 		l = _mk_binary(t.value, l, _parse_additive(), t)
 	return l
 
 
-func _parse_additive() -> GateAST.Expr:
-	var l: GateAST.Expr = _parse_multiplicative()
+func _parse_additive() -> GateAST.GateExpr:
+	var l: GateAST.GateExpr = _parse_multiplicative()
 	while (_check_op("+") or _check_op("-")) and _continues_line():
-		var t: GateLexer.Token = _advance()
+		var t: GateLexer.GateToken = _advance()
 		l = _mk_binary(t.value, l, _parse_multiplicative(), t)
 	return l
 
 
-func _parse_multiplicative() -> GateAST.Expr:
-	var l: GateAST.Expr = _parse_unary()
+func _parse_multiplicative() -> GateAST.GateExpr:
+	var l: GateAST.GateExpr = _parse_unary()
 	while (_check_op("*") or _check_op("/") or _check_op("%")) and _continues_line():
-		var t: GateLexer.Token = _advance()
+		var t: GateLexer.GateToken = _advance()
 		l = _mk_binary(t.value, l, _parse_unary(), t)
 	return l
 
 
-func _is_adjacent(a: GateLexer.Token, b: GateLexer.Token) -> bool:
+func _is_adjacent(a: GateLexer.GateToken, b: GateLexer.GateToken) -> bool:
 	return a.line == b.line and b.col == a.col + a.value.length()
 
 
-func _parse_unary() -> GateAST.Expr:
+func _parse_unary() -> GateAST.GateExpr:
 	if _check_kw("not") or _check_op("!"):
-		var nt: GateLexer.Token = _advance()
-		var nu: GateAST.Unary = GateAST.Unary.new()
+		var nt: GateLexer.GateToken = _advance()
+		var nu: GateAST.GateUnary = GateAST.GateUnary.new()
 		nu.at(nt.line, nt.col)
 		nu.op = "not"
 		nu.operand = _parse_content_test()
 		return nu
 	if _check_op("-") or _check_op("+") or _check_op("~"):
-		var t: GateLexer.Token = _advance()
+		var t: GateLexer.GateToken = _advance()
 		if (t.value != "~" and _check(GateLexer.T.NUMBER)
 				and _peek(1).is_op("**") and _is_adjacent(t, _cur())):
-			var num: GateLexer.Token = _advance()
-			var lit: GateAST.Literal = GateAST.Literal.new()
+			var num: GateLexer.GateToken = _advance()
+			var lit: GateAST.GateLiteral = GateAST.GateLiteral.new()
 			lit.at(t.line, t.col)
 			lit.raw = t.value + num.value
-			var base: GateAST.Expr = lit
+			var base: GateAST.GateExpr = lit
 			while _check_op("**"):
-				var pt: GateLexer.Token = _advance()
+				var pt: GateLexer.GateToken = _advance()
 				base = _mk_binary("**", base, _parse_power_operand(), pt)
 			return base
-		var u: GateAST.Unary = GateAST.Unary.new()
+		var u: GateAST.GateUnary = GateAST.GateUnary.new()
 		u.at(t.line, t.col)
 		u.op = t.value
 		u.tight = _check(GateLexer.T.NUMBER) and _is_adjacent(t, _cur())
@@ -239,25 +239,25 @@ func _parse_unary() -> GateAST.Expr:
 	return _parse_power()
 
 
-func _parse_power() -> GateAST.Expr:
-	var base: GateAST.Expr = _parse_type_test()
+func _parse_power() -> GateAST.GateExpr:
+	var base: GateAST.GateExpr = _parse_type_test()
 	while _check_op("**"):
-		var t: GateLexer.Token = _advance()
+		var t: GateLexer.GateToken = _advance()
 		base = _mk_binary("**", base, _parse_power_operand(), t)
 	return base
 
 
-func _parse_power_operand() -> GateAST.Expr:
+func _parse_power_operand() -> GateAST.GateExpr:
 	if _check_kw("not") or _check_op("!"):
-		var nt: GateLexer.Token = _advance()
-		var nu: GateAST.Unary = GateAST.Unary.new()
+		var nt: GateLexer.GateToken = _advance()
+		var nu: GateAST.GateUnary = GateAST.GateUnary.new()
 		nu.at(nt.line, nt.col)
 		nu.op = "not"
 		nu.operand = _parse_content_test()
 		return nu
 	if _check_op("-") or _check_op("+") or _check_op("~"):
-		var t: GateLexer.Token = _advance()
-		var u: GateAST.Unary = GateAST.Unary.new()
+		var t: GateLexer.GateToken = _advance()
+		var u: GateAST.GateUnary = GateAST.GateUnary.new()
 		u.at(t.line, t.col)
 		u.op = t.value
 		u.operand = _parse_power_operand()
@@ -265,10 +265,10 @@ func _parse_power_operand() -> GateAST.Expr:
 	return _parse_type_test()
 
 
-func _parse_await_level() -> GateAST.Expr:
+func _parse_await_level() -> GateAST.GateExpr:
 	if _check_kw("await"):
-		var t: GateLexer.Token = _advance()
-		var a: GateAST.AwaitExpr = GateAST.AwaitExpr.new()
+		var t: GateLexer.GateToken = _advance()
+		var a: GateAST.GateAwaitExpr = GateAST.GateAwaitExpr.new()
 		a.at(t.line, t.col)
 		a.operand = _parse_await_level()
 		return a
@@ -278,13 +278,13 @@ func _parse_await_level() -> GateAST.Expr:
 ## Verified against Godot 4.7.2:
 ##
 ##   1 == 1 as int  ->  (1 == 1) as int  ->  1
-func _parse_cast() -> GateAST.Expr:
-	var e: GateAST.Expr = _parse_ternary()
+func _parse_cast() -> GateAST.GateExpr:
+	var e: GateAST.GateExpr = _parse_ternary()
 	if not _check_kw("as"):
 		return e
 	while _check_kw("as"):
-		var t: GateLexer.Token = _advance()
-		var c: GateAST.CastExpr = GateAST.CastExpr.new()
+		var t: GateLexer.GateToken = _advance()
+		var c: GateAST.GateCastExpr = GateAST.GateCastExpr.new()
 		c.at(t.line, t.col)
 		c.operand = e
 		c.type = _parse_type()
@@ -297,7 +297,7 @@ func _if_opens_a_block() -> bool:
 	var depth: int = 0
 	var i: int = _i + 1
 	while i < _toks.size():
-		var t: GateLexer.Token = _toks[i]
+		var t: GateLexer.GateToken = _toks[i]
 		if t.type == GateLexer.T.OP:
 			if t.value in ["(", "[", "{"]:
 				depth += 1
@@ -315,12 +315,12 @@ func _if_opens_a_block() -> bool:
 	return false
 
 
-func _parse_cast_tail(e: GateAST.Expr) -> GateAST.Expr:
+func _parse_cast_tail(e: GateAST.GateExpr) -> GateAST.GateExpr:
 	while true:
-		var before: GateAST.Expr = e
+		var before: GateAST.GateExpr = e
 		if _check_kw("is"):
-			var it: GateLexer.Token = _advance()
-			var ise: GateAST.IsExpr = GateAST.IsExpr.new()
+			var it: GateLexer.GateToken = _advance()
+			var ise: GateAST.GateIsExpr = GateAST.GateIsExpr.new()
 			ise.at(it.line, it.col)
 			if _check_kw("not"):
 				_advance()
@@ -331,8 +331,8 @@ func _parse_cast_tail(e: GateAST.Expr) -> GateAST.Expr:
 			continue
 		e = _parse_binary_tail(e, 1)
 		if _check_op("??"):
-			var qt: GateLexer.Token = _advance()
-			var nc: GateAST.NullCoalesce = GateAST.NullCoalesce.new()
+			var qt: GateLexer.GateToken = _advance()
+			var nc: GateAST.GateNullCoalesce = GateAST.GateNullCoalesce.new()
 			nc.at(qt.line, qt.col)
 			nc.left = e
 			nc.right = _parse_or()
@@ -342,7 +342,7 @@ func _parse_cast_tail(e: GateAST.Expr) -> GateAST.Expr:
 			break
 		if _check_kw("if"):
 			_advance()
-			var tern: GateAST.Ternary = GateAST.Ternary.new()
+			var tern: GateAST.GateTernary = GateAST.GateTernary.new()
 			tern.at(e.line, e.col)
 			tern.if_true = e
 			tern.cond = _parse_ternary()
@@ -369,7 +369,7 @@ const BINARY_PREC := {
 
 
 func _binary_op_here() -> String:
-	var t: GateLexer.Token = _cur()
+	var t: GateLexer.GateToken = _cur()
 	if t.type == GateLexer.T.OP and BINARY_PREC.has(t.value):
 		return t.value
 	if t.is_kw("and") or t.is_kw("or") or t.is_kw("in"):
@@ -379,15 +379,15 @@ func _binary_op_here() -> String:
 	return ""
 
 
-func _parse_binary_tail(lhs: GateAST.Expr, min_prec: int) -> GateAST.Expr:
+func _parse_binary_tail(lhs: GateAST.GateExpr, min_prec: int) -> GateAST.GateExpr:
 	while true:
 		var op: String = _binary_op_here()
 		if op == "" or int(BINARY_PREC[op]) < min_prec:
 			break
-		var t: GateLexer.Token = _advance()
+		var t: GateLexer.GateToken = _advance()
 		if op == "not in":
 			_advance()
-		var rhs: GateAST.Expr = _parse_unary()
+		var rhs: GateAST.GateExpr = _parse_unary()
 		while true:
 			var op2: String = _binary_op_here()
 			if op2 == "" or int(BINARY_PREC[op2]) <= int(BINARY_PREC[op]):
@@ -397,22 +397,22 @@ func _parse_binary_tail(lhs: GateAST.Expr, min_prec: int) -> GateAST.Expr:
 	return lhs
 
 
-func _parse_postfix() -> GateAST.Expr:
-	var e: GateAST.Expr = _parse_primary()
+func _parse_postfix() -> GateAST.GateExpr:
+	var e: GateAST.GateExpr = _parse_primary()
 	while true:
 		if (_check_op("(") or _check_op("[")) and not _continues_line():
 			break
 		if _check_op("."):
-			var t: GateLexer.Token = _advance()
-			var m: GateAST.Member = GateAST.Member.new()
+			var t: GateLexer.GateToken = _advance()
+			var m: GateAST.GateMember = GateAST.GateMember.new()
 			m.at(t.line, t.col)
 			m.target = e
 			if _check(GateLexer.T.IDENT) or _check(GateLexer.T.KEYWORD):
 				m.name = _advance().value
 			e = m
 		elif _check_op("?."):
-			var t2: GateLexer.Token = _advance()
-			var m2: GateAST.Member = GateAST.Member.new()
+			var t2: GateLexer.GateToken = _advance()
+			var m2: GateAST.GateMember = GateAST.GateMember.new()
 			m2.at(t2.line, t2.col)
 			m2.target = e
 			m2.safe = true
@@ -420,8 +420,8 @@ func _parse_postfix() -> GateAST.Expr:
 				m2.name = _advance().value
 			e = m2
 		elif _check_op("["):
-			var t3: GateLexer.Token = _advance()
-			var ix: GateAST.Index = GateAST.Index.new()
+			var t3: GateLexer.GateToken = _advance()
+			var ix: GateAST.GateIndex = GateAST.GateIndex.new()
 			ix.at(t3.line, t3.col)
 			ix.target = e
 			_skip_newlines()
@@ -430,8 +430,8 @@ func _parse_postfix() -> GateAST.Expr:
 			_expect_op("]", "to close the index")
 			e = ix
 		elif _check_op("?["):
-			var t4: GateLexer.Token = _advance()
-			var ix2: GateAST.Index = GateAST.Index.new()
+			var t4: GateLexer.GateToken = _advance()
+			var ix2: GateAST.GateIndex = GateAST.GateIndex.new()
 			ix2.at(t4.line, t4.col)
 			ix2.target = e
 			ix2.safe = true
@@ -441,8 +441,8 @@ func _parse_postfix() -> GateAST.Expr:
 			_expect_op("]", "to close the index")
 			e = ix2
 		elif _check_op("("):
-			var t5: GateLexer.Token = _advance()
-			var c: GateAST.Call = GateAST.Call.new()
+			var t5: GateLexer.GateToken = _advance()
+			var c: GateAST.GateCall = GateAST.GateCall.new()
 			c.at(t5.line, t5.col)
 			c.callee = e
 			_skip_newlines()
@@ -456,12 +456,12 @@ func _parse_postfix() -> GateAST.Expr:
 				_skip_newlines()
 			_expect_op(")", "to close the call")
 			e = c
-		elif _check_op("{") and e is GateAST.Ident and _is_type_looking((e as GateAST.Ident).name):
-			var t6: GateLexer.Token = _advance()
-			var oi: GateAST.ObjectInit = GateAST.ObjectInit.new()
+		elif _check_op("{") and e is GateAST.GateIdent and _is_type_looking((e as GateAST.GateIdent).name):
+			var t6: GateLexer.GateToken = _advance()
+			var oi: GateAST.GateObjectInit = GateAST.GateObjectInit.new()
 			oi.at(t6.line, t6.col)
-			var tr: GateAST.TypeRef = GateAST.TypeRef.new()
-			tr.name = (e as GateAST.Ident).name
+			var tr: GateAST.GateTypeRef = GateAST.GateTypeRef.new()
+			tr.name = (e as GateAST.GateIdent).name
 			oi.type = tr
 			_skip_newlines()
 			while not _at_end() and not _check_op("}"):
@@ -482,17 +482,17 @@ func _parse_postfix() -> GateAST.Expr:
 	return e
 
 
-func _parse_primary() -> GateAST.Expr:
-	var t: GateLexer.Token = _cur()
+func _parse_primary() -> GateAST.GateExpr:
+	var t: GateLexer.GateToken = _cur()
 
 	if t.type == GateLexer.T.NUMBER:
 		_advance()
-		var l: GateAST.Literal = GateAST.Literal.new()
+		var l: GateAST.GateLiteral = GateAST.GateLiteral.new()
 		l.at(t.line, t.col); l.raw = t.value; l.kind = "number"
 		return l
 	if t.type == GateLexer.T.STRING:
 		_advance()
-		var s: GateAST.Literal = GateAST.Literal.new()
+		var s: GateAST.GateLiteral = GateAST.GateLiteral.new()
 		s.at(t.line, t.col)
 		s.raw = t.prefix + t.extra + t.value + t.extra
 		s.kind = "string"
@@ -502,38 +502,38 @@ func _parse_primary() -> GateAST.Expr:
 		return _build_fstring(t)
 	if t.type == GateLexer.T.NODEPATH:
 		_advance()
-		var np: GateAST.NodePathExpr = GateAST.NodePathExpr.new()
+		var np: GateAST.GateNodePathExpr = GateAST.GateNodePathExpr.new()
 		np.at(t.line, t.col); np.raw = t.value
 		return np
 	if t.type == GateLexer.T.ANNOTATION:
 		_advance()
-		var ai: GateAST.Ident = GateAST.Ident.new()
+		var ai: GateAST.GateIdent = GateAST.GateIdent.new()
 		ai.at(t.line, t.col); ai.name = t.value
 		return ai
 	if t.is_kw("true") or t.is_kw("false"):
 		_advance()
-		var b: GateAST.Literal = GateAST.Literal.new()
+		var b: GateAST.GateLiteral = GateAST.GateLiteral.new()
 		b.at(t.line, t.col); b.raw = t.value; b.kind = "bool"
 		return b
 	if t.is_kw("null"):
 		_advance()
-		var n: GateAST.Literal = GateAST.Literal.new()
+		var n: GateAST.GateLiteral = GateAST.GateLiteral.new()
 		n.at(t.line, t.col); n.raw = "null"; n.kind = "null"
 		return n
 	if t.is_kw("self"):
 		_advance()
-		var se: GateAST.SelfExpr = GateAST.SelfExpr.new()
+		var se: GateAST.GateSelfExpr = GateAST.GateSelfExpr.new()
 		se.at(t.line, t.col)
 		return se
 	if t.is_kw("super") or t.is_kw("preload") or t.is_kw("assert") or t.is_kw("is") or t.is_kw("in"):
 		_advance()
-		var kid: GateAST.Ident = GateAST.Ident.new()
+		var kid: GateAST.GateIdent = GateAST.GateIdent.new()
 		kid.at(t.line, t.col); kid.name = t.value
 		return kid
 	if t.type == GateLexer.T.IDENT:
 		if _check_generic_instantiation():
 			_advance()
-			var gtype: GateAST.TypeRef = GateAST.TypeRef.new()
+			var gtype: GateAST.GateTypeRef = GateAST.GateTypeRef.new()
 			gtype.at(t.line, t.col)
 			gtype.name = t.value
 			_advance()  # '<'
@@ -543,25 +543,25 @@ func _parse_primary() -> GateAST.Expr:
 					break
 			_expect_op(">", "to close generic arguments")
 			_generic_uses.append(gtype)
-			var gid: GateAST.Ident = GateAST.Ident.new()
+			var gid: GateAST.GateIdent = GateAST.GateIdent.new()
 			gid.at(t.line, t.col)
 			gid.name = mangle_generic(gtype)
 			gid.generic_base = gtype.name
 			return gid
 		_advance()
-		var id: GateAST.Ident = GateAST.Ident.new()
+		var id: GateAST.GateIdent = GateAST.GateIdent.new()
 		id.at(t.line, t.col); id.name = t.value
 		return id
 	if t.is_op("("):
 		_advance()
 		_skip_newlines()
-		var inner: GateAST.Expr = _parse_expr()
+		var inner: GateAST.GateExpr = _parse_expr()
 		_skip_newlines()
 		_expect_op(")", "to close the group")
 		return inner
 	if t.is_op("["):
 		_advance()
-		var arr: GateAST.ArrayLit = GateAST.ArrayLit.new()
+		var arr: GateAST.GateArrayLit = GateAST.GateArrayLit.new()
 		arr.at(t.line, t.col)
 		_skip_newlines()
 		while not _at_end() and not _check_op("]"):
@@ -576,13 +576,13 @@ func _parse_primary() -> GateAST.Expr:
 		return arr
 	if t.is_op("{"):
 		_advance()
-		var d: GateAST.DictLit = GateAST.DictLit.new()
+		var d: GateAST.GateDictLit = GateAST.GateDictLit.new()
 		d.at(t.line, t.col)
 		_skip_newlines()
 		while not _at_end() and not _check_op("}"):
 			_skip_newlines()
 			if _check_op("}"): break
-			var k: GateAST.Expr = _parse_expr()
+			var k: GateAST.GateExpr = _parse_expr()
 			if _match_op(":"):
 				d.keys.append(k)
 				d.lua_keys.append(false)
@@ -609,22 +609,22 @@ func _parse_primary() -> GateAST.Expr:
 	if t.type == GateLexer.T.KEYWORD and (GateLexer.is_gate_only_keyword(t.value)
 			or GateLexer.is_contextual_keyword(t.value)):
 		_advance()
-		var kid: GateAST.Ident = GateAST.Ident.new()
+		var kid: GateAST.GateIdent = GateAST.GateIdent.new()
 		kid.at(t.line, t.col)
 		kid.name = t.value
 		return kid
 
 	_err("unexpected token '%s'" % t.value)
 	_advance()
-	var re: GateAST.RawExpr = GateAST.RawExpr.new()
+	var re: GateAST.GateRawExpr = GateAST.GateRawExpr.new()
 	re.at(t.line, t.col)
 	re.text = t.value
 	return re
 
 
-func _parse_lambda() -> GateAST.Expr:
-	var kw: GateLexer.Token = _advance()
-	var lam: GateAST.Lambda = GateAST.Lambda.new()
+func _parse_lambda() -> GateAST.GateExpr:
+	var kw: GateLexer.GateToken = _advance()
+	var lam: GateAST.GateLambda = GateAST.GateLambda.new()
 	lam.at(kw.line, kw.col)
 	if _check(GateLexer.T.IDENT):
 		lam.name = _advance().value  # optional lambda name
@@ -633,7 +633,7 @@ func _parse_lambda() -> GateAST.Expr:
 	_expect_op(")", "to close the lambda parameters")
 	if _match_op("->"):
 		lam.return_type = _parse_type()
-	var colon: GateLexer.Token = _cur()
+	var colon: GateLexer.GateToken = _cur()
 	_expect_op(":", "before the lambda body")
 	if _check(GateLexer.T.COMMENT):
 		_advance()
@@ -646,8 +646,8 @@ func _parse_lambda() -> GateAST.Expr:
 	return lam
 
 
-func _build_fstring(t: GateLexer.Token) -> GateAST.Expr:
-	var fs: GateAST.FString = GateAST.FString.new()
+func _build_fstring(t: GateLexer.GateToken) -> GateAST.GateExpr:
+	var fs: GateAST.GateFString = GateAST.GateFString.new()
 	fs.at(t.line, t.col)
 	fs.quote = t.extra
 	var body: String = t.value
@@ -685,22 +685,22 @@ func _build_fstring(t: GateLexer.Token) -> GateAST.Expr:
 	return fs
 
 
-func _parse_subexpression(src: String, line: int) -> GateAST.Expr:
+func _parse_subexpression(src: String, line: int) -> GateAST.GateExpr:
 	var lx: GateLexer = GateLexer.new()
 	var sub_diags: GateDiagnostics = GateDiagnostics.new()
 	sub_diags.file = diagnostics.file
-	var toks: Array[GateLexer.Token] = lx.tokenize(src, sub_diags)
+	var toks: Array[GateLexer.GateToken] = lx.tokenize(src, sub_diags)
 	var p: GateParser = GateParser.new()
 	p.diagnostics = sub_diags
 	p._toks = toks
 	p._i = 0
 	p._lines = PackedStringArray([src])
-	var e: GateAST.Expr = p._parse_expr()
+	var e: GateAST.GateExpr = p._parse_expr()
 	for d in sub_diags.items:
 		d.line = line
 		diagnostics.items.append(d)
 	if e == null:
-		var re: GateAST.RawExpr = GateAST.RawExpr.new()
+		var re: GateAST.GateRawExpr = GateAST.GateRawExpr.new()
 		re.text = src
 		return re
 	return e
@@ -713,12 +713,12 @@ func _parse_params() -> Array:
 		_skip_newlines()
 		if _check_op(")"):
 			break
-		var p: GateAST.Param = GateAST.Param.new()
+		var p: GateAST.GateParam = GateAST.GateParam.new()
 		if _match_op("..."):
 			p.is_rest = true
 		if not (_check(GateLexer.T.IDENT) or _check(GateLexer.T.KEYWORD)):
 			break
-		var nt: GateLexer.Token = _advance()
+		var nt: GateLexer.GateToken = _advance()
 		p.name = nt.value
 		p.at(nt.line, nt.col)
 		if _check_op(":"):

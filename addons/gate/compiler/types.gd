@@ -74,14 +74,14 @@ static func is_gd_nullable(mapped: String) -> bool:
 	return not BUILTIN.has(mapped)
 
 
-static func resolve(t: GateAST.TypeRef, diags: GateDiagnostics = null, packed_hint := false) -> String:
+static func resolve(t: GateAST.GateTypeRef, diags: GateDiagnostics = null, packed_hint := false) -> String:
 	var mapped: String = _resolve_core(t, diags, packed_hint)
 	if t != null and t.nullable and not is_gd_nullable(mapped):
 		return "Variant"
 	return mapped
 
 
-static func _resolve_core(t: GateAST.TypeRef, diags: GateDiagnostics, packed_hint: bool) -> String:
+static func _resolve_core(t: GateAST.GateTypeRef, diags: GateDiagnostics, packed_hint: bool) -> String:
 	if t == null:
 		return ""
 
@@ -131,7 +131,7 @@ static func _resolve_core(t: GateAST.TypeRef, diags: GateDiagnostics, packed_hin
 	return base
 
 
-static func _resolve_nested(t: GateAST.TypeRef, diags: GateDiagnostics) -> String:
+static func _resolve_nested(t: GateAST.GateTypeRef, diags: GateDiagnostics) -> String:
 	if t == null:
 		return "Variant"
 	if t.is_dict() or t.is_set():
@@ -144,7 +144,7 @@ static func _resolve_nested(t: GateAST.TypeRef, diags: GateDiagnostics) -> Strin
 	return canonical(t.name)
 
 
-static func _outer_only(t: GateAST.TypeRef) -> String:
+static func _outer_only(t: GateAST.GateTypeRef) -> String:
 	if t == null:
 		return "Variant"
 	if t.is_dict():
@@ -154,7 +154,7 @@ static func _outer_only(t: GateAST.TypeRef) -> String:
 	return canonical(t.name)
 
 
-static func _packed_of_annotation(current: String, elem: String, diags: GateDiagnostics, t: GateAST.TypeRef) -> String:
+static func _packed_of_annotation(current: String, elem: String, diags: GateDiagnostics, t: GateAST.GateTypeRef) -> String:
 	if has_packed(elem):
 		return packed_for(elem)
 	if diags:
@@ -164,7 +164,7 @@ static func _packed_of_annotation(current: String, elem: String, diags: GateDiag
 	return "Array"
 
 
-static func default_value(t: GateAST.TypeRef) -> String:
+static func default_value(t: GateAST.GateTypeRef) -> String:
 	if t == null:
 		return ""
 	if t.nullable:

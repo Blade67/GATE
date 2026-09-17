@@ -186,7 +186,7 @@ func compile_file(gate_path: String, registry = null, deferred = null, reg_sig: 
 		return 0
 
 	var compiler: GateCompiler = GateCompiler.new()
-	var res: GateCompiler.Result = compiler.compile(src, gate_path, registry)
+	var res: GateCompiler.GateResult = compiler.compile(src, gate_path, registry)
 
 	if not res.ok:
 		for d in res.diagnostics.items:

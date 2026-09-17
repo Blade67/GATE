@@ -5,12 +5,12 @@ extends "res://addons/gate/compiler/parser_cursor.gd"
 ## type-first declaration from an expression statement.
 
 
-func _parse_extends_type() -> GateAST.TypeRef:
+func _parse_extends_type() -> GateAST.GateTypeRef:
 	if _check(GateLexer.T.STRING):
-		var t: GateLexer.Token = _cur()
+		var t: GateLexer.GateToken = _cur()
 		_advance()
 		var q: String = t.extra if t.extra != "" else "\""
-		var tr: GateAST.TypeRef = GateAST.TypeRef.new()
+		var tr: GateAST.GateTypeRef = GateAST.GateTypeRef.new()
 		tr.at(t.line, t.col)
 		tr.name = q + t.value + q
 		tr.is_path_literal = true
@@ -18,13 +18,13 @@ func _parse_extends_type() -> GateAST.TypeRef:
 	return _parse_type()
 
 
-func _parse_type() -> GateAST.TypeRef:
-	var t: GateAST.TypeRef = GateAST.TypeRef.new()
-	var start: GateLexer.Token = _cur()
+func _parse_type() -> GateAST.GateTypeRef:
+	var t: GateAST.GateTypeRef = GateAST.GateTypeRef.new()
+	var start: GateLexer.GateToken = _cur()
 	t.at(start.line, start.col)
 
 	if _match_op("{"):
-		var first: GateAST.TypeRef = _parse_type()
+		var first: GateAST.GateTypeRef = _parse_type()
 		if _match_op(","):
 			t.dict_key = first
 			t.dict_value = _parse_type()
@@ -80,17 +80,17 @@ func _parse_type() -> GateAST.TypeRef:
 
 
 func _looks_like_typed_decl() -> bool:
-	var t: GateLexer.Token = _cur()
+	var t: GateLexer.GateToken = _cur()
 	if t.is_op("{"):
 		var j: int = _i
 		var depth: int = 0
 		while j < _toks.size():
-			var tk: GateLexer.Token = _toks[j]
+			var tk: GateLexer.GateToken = _toks[j]
 			if tk.type == GateLexer.T.OP and tk.value == "{": depth += 1
 			elif tk.type == GateLexer.T.OP and tk.value == "}":
 				depth -= 1
 				if depth == 0:
-					var nxt: GateLexer.Token = _toks[j + 1] if j + 1 < _toks.size() else null
+					var nxt: GateLexer.GateToken = _toks[j + 1] if j + 1 < _toks.size() else null
 					return nxt != null and nxt.type == GateLexer.T.IDENT
 			elif tk.type == GateLexer.T.NEWLINE:
 				return false
@@ -102,16 +102,16 @@ func _looks_like_typed_decl() -> bool:
 
 	var j2: int = _i + 1
 	while j2 < _toks.size():
-		var tk2: GateLexer.Token = _toks[j2]
+		var tk2: GateLexer.GateToken = _toks[j2]
 		if tk2.type == GateLexer.T.OP and (tk2.value == "[" or tk2.value == "?["):
-			var nxt2: GateLexer.Token = _toks[j2 + 1] if j2 + 1 < _toks.size() else null
+			var nxt2: GateLexer.GateToken = _toks[j2 + 1] if j2 + 1 < _toks.size() else null
 			if nxt2 != null and nxt2.type == GateLexer.T.OP and nxt2.value == "]":
 				j2 += 2
 				continue
 			var d3: int = 0
 			var k3: int = j2
 			while k3 < _toks.size():
-				var b: GateLexer.Token = _toks[k3]
+				var b: GateLexer.GateToken = _toks[k3]
 				if b.type == GateLexer.T.NEWLINE:
 					return false
 				if b.type == GateLexer.T.OP and (b.value == "[" or b.value == "?["): d3 += 1
@@ -133,7 +133,7 @@ func _looks_like_typed_decl() -> bool:
 				return false
 			var depth2: int = 0
 			while j2 < _toks.size():
-				var g: GateLexer.Token = _toks[j2]
+				var g: GateLexer.GateToken = _toks[j2]
 				if g.type == GateLexer.T.OP and g.value == "<": depth2 += 1
 				elif g.type == GateLexer.T.OP and g.value == ">":
 					depth2 -= 1
@@ -147,16 +147,16 @@ func _looks_like_typed_decl() -> bool:
 		break
 	if j2 >= _toks.size():
 		return false
-	var name_tok: GateLexer.Token = _toks[j2]
+	var name_tok: GateLexer.GateToken = _toks[j2]
 	if not _is_name_token(name_tok):
 		return false
 	if j2 == _i + 1 and not _is_type_looking(t.value):
 		return false
-	var after: GateLexer.Token = _toks[j2 + 1] if j2 + 1 < _toks.size() else null
+	var after: GateLexer.GateToken = _toks[j2 + 1] if j2 + 1 < _toks.size() else null
 	if after == null:
 		return false
 	if after.type == GateLexer.T.OP and after.value == "{":
-		var inner: GateLexer.Token = _toks[j2 + 2] if j2 + 2 < _toks.size() else null
+		var inner: GateLexer.GateToken = _toks[j2 + 2] if j2 + 2 < _toks.size() else null
 		return inner != null and inner.value in ["get", "set"]
 	# A comment is a token, so a trailing one sits where the NEWLINE would be.
 	return after.type == GateLexer.T.NEWLINE \
@@ -185,13 +185,13 @@ func _check_generic_instantiation() -> bool:
 	var j: int = _i + 1
 	var depth: int = 0
 	while j < _toks.size():
-		var tk: GateLexer.Token = _toks[j]
+		var tk: GateLexer.GateToken = _toks[j]
 		if tk.type == GateLexer.T.OP and tk.value == "<":
 			depth += 1
 		elif tk.type == GateLexer.T.OP and tk.value == ">":
 			depth -= 1
 			if depth == 0:
-				var nxt: GateLexer.Token = _toks[j + 1] if j + 1 < _toks.size() else null
+				var nxt: GateLexer.GateToken = _toks[j + 1] if j + 1 < _toks.size() else null
 				return nxt != null and nxt.type == GateLexer.T.OP and nxt.value in [".", "("]
 		elif tk.type == GateLexer.T.NEWLINE:
 			return false
@@ -212,7 +212,7 @@ func _closes_generic_args() -> bool:
 	var depth: int = 0
 	var i: int = _i
 	while i < _toks.size():
-		var t: GateLexer.Token = _toks[i]
+		var t: GateLexer.GateToken = _toks[i]
 		if t.type == GateLexer.T.NEWLINE or t.type == GateLexer.T.EOF:
 			return false
 		if t.type == GateLexer.T.OP:
@@ -230,7 +230,7 @@ func _closes_generic_args() -> bool:
 	return false
 
 
-static func mangle_generic(t: GateAST.TypeRef) -> String:
+static func mangle_generic(t: GateAST.GateTypeRef) -> String:
 	var parts: PackedStringArray = PackedStringArray()
 	for g in t.generic_args:
 		var one: String = String(g.name).replace(".", "_")

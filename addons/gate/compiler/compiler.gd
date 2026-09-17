@@ -5,7 +5,7 @@ extends RefCounted
 ## Pipeline driver: lex -> parse -> check -> emit.
 
 
-class Result extends RefCounted:
+class GateResult extends RefCounted:
 	var ok: bool = false
 	var source: String = ""
 	var map: Array[int] = []
@@ -27,20 +27,20 @@ static func strip_header(src: String) -> String:
 	return "\n".join(kept)
 
 
-func compile(src_in: String, path: String, registry = null) -> Result:
+func compile(src_in: String, path: String, registry = null) -> GateResult:
 	# Normalise line endings once, before anything reads the text. Constructs
 	# re-emitted as raw source would otherwise carry a bare CR into the output.
 	var src: String = src_in.replace("\r\n", "\n").replace("\r", "\n")
-	var res: Result = Result.new()
+	var res: GateResult = GateResult.new()
 	var diags: GateDiagnostics = GateDiagnostics.new()
 	diags.file = path
 	res.diagnostics = diags
 
 	var lexer: GateLexer = GateLexer.new()
-	var tokens: Array[GateLexer.Token] = lexer.tokenize(src, diags)
+	var tokens: Array[GateLexer.GateToken] = lexer.tokenize(src, diags)
 
 	var parser: GateParser = GateParser.new()
-	var mod: GateAST.Module = parser.parse(tokens, src, diags)
+	var mod: GateAST.GateModule = parser.parse(tokens, src, diags)
 	mod.path = path
 
 	var checker: GateChecker = GateChecker.new()
@@ -74,13 +74,13 @@ func compile(src_in: String, path: String, registry = null) -> Result:
 	return res
 
 
-func _build_overload_map(mod: GateAST.Module) -> Dictionary:
+func _build_overload_map(mod: GateAST.GateModule) -> Dictionary:
 	var map: Dictionary = {}
 	_scan_overloads(mod.members, map, "")
 	return map
 
 
-func _build_overload_owners(mod: GateAST.Module) -> Dictionary:
+func _build_overload_owners(mod: GateAST.GateModule) -> Dictionary:
 	var owners: Dictionary = {}
 	_scan_overload_owners(mod.members, owners, "")
 	return owners
@@ -88,29 +88,29 @@ func _build_overload_owners(mod: GateAST.Module) -> Dictionary:
 
 func _scan_overload_owners(members: Array, owners: Dictionary, owner: String) -> void:
 	for m in members:
-		if m is GateAST.FuncDecl:
-			var fd: GateAST.FuncDecl = m
+		if m is GateAST.GateFuncDecl:
+			var fd: GateAST.GateFuncDecl = m
 			if fd.mangled_name != "":
 				if not owners.has(fd.name):
 					owners[fd.name] = {}
 				owners[fd.name][owner] = true
-		elif m is GateAST.ClassDecl:
-			var cd: GateAST.ClassDecl = m
+		elif m is GateAST.GateClassDecl:
+			var cd: GateAST.GateClassDecl = m
 			_scan_overload_owners(cd.members, owners, cd.name)
 
 
 func _scan_overloads(members: Array, map: Dictionary, _owner: String) -> void:
 	for m in members:
-		if m is GateAST.FuncDecl:
-			var fd: GateAST.FuncDecl = m
+		if m is GateAST.GateFuncDecl:
+			var fd: GateAST.GateFuncDecl = m
 			if fd.mangled_name != "":
 				if not map.has(fd.name):
 					map[fd.name] = {}
 				var rest: bool = (not fd.params.is_empty()
-					and (fd.params[fd.params.size() - 1] as GateAST.Param).is_rest)
+					and (fd.params[fd.params.size() - 1] as GateAST.GateParam).is_rest)
 				map[fd.name][GateChecker.REST_ARITY if rest else fd.params.size()] = fd.mangled_name
-		elif m is GateAST.ClassDecl:
-			_scan_overloads((m as GateAST.ClassDecl).members, map, (m as GateAST.ClassDecl).name)
+		elif m is GateAST.GateClassDecl:
+			_scan_overloads((m as GateAST.GateClassDecl).members, map, (m as GateAST.GateClassDecl).name)
 
 
 static func write_sourcemap(gd_path: String, gate_path: String, map: Array[int]) -> void:

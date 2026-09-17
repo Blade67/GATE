@@ -15,19 +15,19 @@ const MODULE_CLASS := "@module"
 
 func _index(members: Array, owner: String) -> void:
 	for m in members:
-		if m is GateAST.FuncDecl:
-			var key: String = "%s.%s" % [owner, (m as GateAST.FuncDecl).name]
+		if m is GateAST.GateFuncDecl:
+			var key: String = "%s.%s" % [owner, (m as GateAST.GateFuncDecl).name]
 			if not methods.has(key):
 				methods[key] = []
 			methods[key].append(m)
-		elif m is GateAST.VarDecl:
-			var vd: GateAST.VarDecl = m
+		elif m is GateAST.GateVarDecl:
+			var vd: GateAST.GateVarDecl = m
 			if vd.type != null:
 				fields["%s.%s" % [owner, vd.name]] = vd.type
 				if vd.is_static:
 					static_fields["%s.%s" % [owner, vd.name]] = vd.type
-		elif m is GateAST.ClassDecl:
-			var cd: GateAST.ClassDecl = m
+		elif m is GateAST.GateClassDecl:
+			var cd: GateAST.GateClassDecl = m
 			if cd.extends_type != null:
 				bases[cd.name] = cd.extends_type.name
 			_index(cd.members, cd.name)
@@ -45,9 +45,9 @@ func _lookup(table: Dictionary, cls: String, key_suffix: String):
 	return null
 
 
-func field_type(cls: String, field: String) -> GateAST.TypeRef:
+func field_type(cls: String, field: String) -> GateAST.GateTypeRef:
 	var t = _lookup(fields, cls, field)
-	return t if t is GateAST.TypeRef else null
+	return t if t is GateAST.GateTypeRef else null
 
 const CALLABLE_INVOKERS := ["call", "callv", "rpc", "rpc_id", "emit"]
 
@@ -92,7 +92,7 @@ func method_candidates(cls: String, name: String) -> Array:
 		var here = methods.get("%s.%s" % [c, name], null)
 		if here is Array:
 			for f in here:
-				var fd: GateAST.FuncDecl = f
+				var fd: GateAST.GateFuncDecl = f
 				var n: int = fd.params.size()
 				if arities.has(n):
 					continue
@@ -110,13 +110,13 @@ const PACKED_ELEM := {
 }
 
 
-func element_type(t: GateAST.TypeRef) -> GateAST.TypeRef:
+func element_type(t: GateAST.GateTypeRef) -> GateAST.GateTypeRef:
 	if t == null:
 		return null
 	if t.is_dict():
 		return t.dict_value
 	if t.array_depth > 0:
-		var inner: GateAST.TypeRef = GateAST.TypeRef.new()
+		var inner: GateAST.GateTypeRef = GateAST.GateTypeRef.new()
 		inner.name = t.name
 		inner.array_depth = t.array_depth - 1
 		inner.generic_args = t.generic_args
@@ -143,79 +143,79 @@ func has_class(cls: String) -> bool:
 	return false
 
 
-func type_of(e, locals: Dictionary) -> GateAST.TypeRef:
+func type_of(e, locals: Dictionary) -> GateAST.GateTypeRef:
 	if e == null:
 		return null
 
-	if e is GateAST.Ident:
-		var n: String = (e as GateAST.Ident).name
+	if e is GateAST.GateIdent:
+		var n: String = (e as GateAST.GateIdent).name
 		if locals.has(n):
 			return locals[n]
 		return null
 
-	if e is GateAST.SelfExpr:
+	if e is GateAST.GateSelfExpr:
 		return locals.get("self", null)
 
-	if e is GateAST.Literal:
-		var lit: GateAST.Literal = e
+	if e is GateAST.GateLiteral:
+		var lit: GateAST.GateLiteral = e
 		return _prim(lit.kind)
 
-	if e is GateAST.ObjectInit:
-		return (e as GateAST.ObjectInit).type
+	if e is GateAST.GateObjectInit:
+		return (e as GateAST.GateObjectInit).type
 
-	if e is GateAST.CastExpr:
-		return (e as GateAST.CastExpr).type
+	if e is GateAST.GateCastExpr:
+		return (e as GateAST.GateCastExpr).type
 
-	if e is GateAST.FString:
+	if e is GateAST.GateFString:
 		return _named("String")
 
-	if e is GateAST.ArrayLit:
+	if e is GateAST.GateArrayLit:
 		return _named("Array")
 
-	if e is GateAST.DictLit:
+	if e is GateAST.GateDictLit:
 		return _named("Dictionary")
 
-	if e is GateAST.NullCoalesce:
-		return type_of((e as GateAST.NullCoalesce).right, locals)
+	if e is GateAST.GateNullCoalesce:
+		return type_of((e as GateAST.GateNullCoalesce).right, locals)
 
-	if e is GateAST.AwaitExpr:
+	if e is GateAST.GateAwaitExpr:
 		return null
 
-	if e is GateAST.Index:
-		var ix: GateAST.Index = e
+	if e is GateAST.GateIndex:
+		var ix: GateAST.GateIndex = e
 		return element_type(type_of(ix.target, locals))
 
-	if e is GateAST.Lambda:
-		var lam: GateAST.Lambda = e
-		var ct: GateAST.TypeRef = _named("Callable")
+	if e is GateAST.GateLambda:
+		var lam: GateAST.GateLambda = e
+		var ct: GateAST.GateTypeRef = _named("Callable")
 		ct.callable_return = lam.return_type
 		return ct
 
-	if e is GateAST.Member:
-		var m: GateAST.Member = e
-		var base: GateAST.TypeRef = type_of(m.target, locals)
+	if e is GateAST.GateMember:
+		var m: GateAST.GateMember = e
+		var base: GateAST.GateTypeRef = type_of(m.target, locals)
 		if base == null or base.array_depth > 0 or base.is_dict():
 			return null
 		return field_type(base.name, m.name)
 
-	if e is GateAST.Call:
-		var c: GateAST.Call = e
-		if c.callee is GateAST.Member:
-			var cm: GateAST.Member = c.callee
-			if cm.name == "new" and cm.target is GateAST.Ident:
-				return _named((cm.target as GateAST.Ident).name)
-			var recv: GateAST.TypeRef = type_of(cm.target, locals)
+	if e is GateAST.GateCall:
+		var c: GateAST.GateCall = e
+		if c.callee is GateAST.GateMember:
+			var cm: GateAST.GateMember = c.callee
+			if cm.name == "new" and cm.target is GateAST.GateIdent:
+				return _named((cm.target as GateAST.GateIdent).name)
+			var recv: GateAST.GateTypeRef = type_of(cm.target, locals)
 			if recv != null and cm.name in ["call", "callv", "bind"] and GateTypes.canonical(recv.name) == "Callable":
 				return recv.callable_return
 			if recv != null and recv.array_depth == 0 and not recv.is_dict():
 				var cands: Array = method_candidates(recv.name, cm.name)
-				var fd: GateAST.FuncDecl = _pick(cands, c.args.size())
+				var fd: GateAST.GateFuncDecl = _pick(cands, c.args.size())
 				if fd != null:
 					return fd.return_type
 			return null
-		if c.callee is GateAST.Ident:
-			var fname: String = (c.callee as GateAST.Ident).name
-			var fd2: GateAST.FuncDecl = _pick(module_functions.get(fname, []), c.args.size())
+		if c.callee is GateAST.GateIdent:
+			var fname: String = (c.callee as GateAST.GateIdent).name
+			var fd2: GateAST.GateFuncDecl = _pick(module_functions.get(fname, []), c.args.size())
 			if fd2 != null:
 				return fd2.return_type
 			return null
@@ -224,13 +224,13 @@ func type_of(e, locals: Dictionary) -> GateAST.TypeRef:
 	return null
 
 
-func _pick(cands: Array, arity: int) -> GateAST.FuncDecl:
+func _pick(cands: Array, arity: int) -> GateAST.GateFuncDecl:
 	for f in cands:
-		var fd: GateAST.FuncDecl = f
+		var fd: GateAST.GateFuncDecl = f
 		var required: int = 0
 		var has_rest: bool = false
 		for p in fd.params:
-			var pp: GateAST.Param = p
+			var pp: GateAST.GateParam = p
 			if pp.is_rest: has_rest = true
 			elif pp.default == null: required += 1
 		if arity >= required and (has_rest or arity <= fd.params.size()):
@@ -238,7 +238,7 @@ func _pick(cands: Array, arity: int) -> GateAST.FuncDecl:
 	return null
 
 
-func _prim(kind: String) -> GateAST.TypeRef:
+func _prim(kind: String) -> GateAST.GateTypeRef:
 	match kind:
 		"number": return _named("int")
 		"string": return _named("String")
@@ -246,7 +246,7 @@ func _prim(kind: String) -> GateAST.TypeRef:
 	return null
 
 
-func _named(n: String) -> GateAST.TypeRef:
-	var t: GateAST.TypeRef = GateAST.TypeRef.new()
+func _named(n: String) -> GateAST.GateTypeRef:
+	var t: GateAST.GateTypeRef = GateAST.GateTypeRef.new()
 	t.name = GateTypes.canonical(n)
 	return t

@@ -15,7 +15,7 @@ var classes: Dictionary = {}      ## name -> ClassDecl
 const ENGINE_PREFIX := "_"
 
 
-func check(mod: GateAST.Module, diags: GateDiagnostics, registry = null) -> void:
+func check(mod: GateAST.GateModule, diags: GateDiagnostics, registry = null) -> void:
 	diagnostics = diags
 	interfaces.clear(); traits.clear(); structs.clear(); classes.clear()
 
@@ -39,20 +39,20 @@ func check(mod: GateAST.Module, diags: GateDiagnostics, registry = null) -> void
 
 func _check_type_names(members: Array, known: Dictionary) -> void:
 	for m in members:
-		if m is GateAST.ClassDecl:
-			var cd: GateAST.ClassDecl = m
+		if m is GateAST.GateClassDecl:
+			var cd: GateAST.GateClassDecl = m
 			var inner: Dictionary = known.duplicate()
 			for gp in cd.generic_params:
 				inner[String(gp)] = true
 			_check_type_names(cd.members, inner)
-		elif m is GateAST.VarDecl:
-			var vd: GateAST.VarDecl = m
+		elif m is GateAST.GateVarDecl:
+			var vd: GateAST.GateVarDecl = m
 			if vd.type != null and vd.type.strict:
 				_verify_type_name(vd.type, known)
-		elif m is GateAST.FuncDecl:
-			var fd: GateAST.FuncDecl = m
+		elif m is GateAST.GateFuncDecl:
+			var fd: GateAST.GateFuncDecl = m
 			for p in fd.params:
-				var pp: GateAST.Param = p
+				var pp: GateAST.GateParam = p
 				if pp.type != null and pp.type.strict:
 					_verify_type_name(pp.type, known)
 			if fd.return_type != null and fd.return_type.strict:
@@ -60,7 +60,7 @@ func _check_type_names(members: Array, known: Dictionary) -> void:
 			_check_type_names(fd.body, known)
 
 
-func _verify_type_name(t: GateAST.TypeRef, known: Dictionary) -> void:
+func _verify_type_name(t: GateAST.GateTypeRef, known: Dictionary) -> void:
 	if t == null or t.is_path_literal:
 		return
 	for g in t.generic_args:
@@ -97,33 +97,33 @@ func _check_generated_names(members: Array, in_struct: bool) -> void:
 	var names: Dictionary = {}
 	var signals: Dictionary = {}
 	for m in members:
-		if m is GateAST.VarDecl:
-			names[(m as GateAST.VarDecl).name] = true
-		elif m is GateAST.SignalDecl:
-			signals[(m as GateAST.SignalDecl).name] = true
+		if m is GateAST.GateVarDecl:
+			names[(m as GateAST.GateVarDecl).name] = true
+		elif m is GateAST.GateSignalDecl:
+			signals[(m as GateAST.GateSignalDecl).name] = true
 
 	for m in members:
-		if m is GateAST.ClassDecl:
-			var cd: GateAST.ClassDecl = m
+		if m is GateAST.GateClassDecl:
+			var cd: GateAST.GateClassDecl = m
 			_check_generated_names(cd.members, cd.form == "struct")
 			continue
-		if not (m is GateAST.VarDecl):
+		if not (m is GateAST.GateVarDecl):
 			continue
-		var vd: GateAST.VarDecl = m
+		var vd: GateAST.GateVarDecl = m
 		if _annotated(vd, "observable"):
 			_check_observable(vd, names, signals, in_struct)
 		elif _annotated(vd, "soa"):
 			_check_soa_names(vd, names)
 
 
-func _annotated(vd: GateAST.VarDecl, what: String) -> bool:
+func _annotated(vd: GateAST.GateVarDecl, what: String) -> bool:
 	for a in vd.annotations:
-		if (a as GateAST.Annotation).name == what:
+		if (a as GateAST.GateAnnotation).name == what:
 			return true
 	return false
 
 
-func _check_observable(vd: GateAST.VarDecl, names: Dictionary, signals: Dictionary, in_struct: bool) -> void:
+func _check_observable(vd: GateAST.GateVarDecl, names: Dictionary, signals: Dictionary, in_struct: bool) -> void:
 	if in_struct:
 		diagnostics.error("@observable is not available on a struct field", vd.line, vd.col,
 			"a struct lowers to a Vector or to a plain data class, and neither can carry "
@@ -150,14 +150,14 @@ func _check_observable(vd: GateAST.VarDecl, names: Dictionary, signals: Dictiona
 			"remove the hand-written signal - @observable emits this one itself.")
 
 
-func _check_soa_names(vd: GateAST.VarDecl, names: Dictionary) -> void:
+func _check_soa_names(vd: GateAST.GateVarDecl, names: Dictionary) -> void:
 	if vd.type == null or not structs.has(vd.type.name):
 		return
-	var sd: GateAST.ClassDecl = structs[vd.type.name]
+	var sd: GateAST.GateClassDecl = structs[vd.type.name]
 	for f in sd.members:
-		if not (f is GateAST.VarDecl):
+		if not (f is GateAST.GateVarDecl):
 			continue
-		var generated: String = "%s_%s" % [vd.name, (f as GateAST.VarDecl).name]
+		var generated: String = "%s_%s" % [vd.name, (f as GateAST.GateVarDecl).name]
 		if names.has(generated):
 			diagnostics.error("@soa on '%s' needs the name '%s', which is already declared"
 				% [vd.name, generated], vd.line, vd.col,
@@ -167,8 +167,8 @@ func _check_soa_names(vd: GateAST.VarDecl, names: Dictionary) -> void:
 
 func _collect(members: Array) -> void:
 	for m in members:
-		if m is GateAST.ClassDecl:
-			var cd: GateAST.ClassDecl = m
+		if m is GateAST.GateClassDecl:
+			var cd: GateAST.GateClassDecl = m
 			match cd.form:
 				"interface": interfaces[cd.name] = cd
 				"trait": traits[cd.name] = cd
@@ -177,10 +177,10 @@ func _collect(members: Array) -> void:
 			_collect(cd.members)
 
 
-func _process(node: GateAST.Stmt) -> void:
-	if not (node is GateAST.ClassDecl):
+func _process(node: GateAST.GateStmt) -> void:
+	if not (node is GateAST.GateClassDecl):
 		return
-	var cd: GateAST.ClassDecl = node
+	var cd: GateAST.GateClassDecl = node
 
 	match cd.form:
 		"struct":
@@ -205,7 +205,7 @@ func _process(node: GateAST.Stmt) -> void:
 	_process_overloads(cd.members)
 
 
-func _apply_traits(cd: GateAST.ClassDecl) -> void:
+func _apply_traits(cd: GateAST.GateClassDecl) -> void:
 	if cd.traits.is_empty():
 		return
 	var seen: Dictionary = {}
@@ -220,7 +220,7 @@ func _apply_traits(cd: GateAST.ClassDecl) -> void:
 			diagnostics.error("unknown trait '%s'" % tname, cd.line, cd.col,
 				"traits must be declared with `trait %s:` before use" % tname)
 			continue
-		var tr: GateAST.ClassDecl = traits[tname]
+		var tr: GateAST.GateClassDecl = traits[tname]
 
 		for req in tr.requires:
 			if not seen.has(req):
@@ -255,22 +255,22 @@ func _apply_traits(cd: GateAST.ClassDecl) -> void:
 
 
 func _member_name(m) -> String:
-	if m is GateAST.FuncDecl: return (m as GateAST.FuncDecl).name
-	if m is GateAST.VarDecl: return (m as GateAST.VarDecl).name
-	if m is GateAST.SignalDecl: return (m as GateAST.SignalDecl).name
+	if m is GateAST.GateFuncDecl: return (m as GateAST.GateFuncDecl).name
+	if m is GateAST.GateVarDecl: return (m as GateAST.GateVarDecl).name
+	if m is GateAST.GateSignalDecl: return (m as GateAST.GateSignalDecl).name
 	return ""
 
 
-func _check_interface_decl(cd: GateAST.ClassDecl) -> void:
+func _check_interface_decl(cd: GateAST.GateClassDecl) -> void:
 	for m in cd.members:
-		if m is GateAST.FuncDecl:
-			var fd: GateAST.FuncDecl = m
+		if m is GateAST.GateFuncDecl:
+			var fd: GateAST.GateFuncDecl = m
 			if not fd.body.is_empty():
 				diagnostics.warn("interface method '%s' has a body; it will be ignored" % fd.name,
 					fd.line, fd.col, "interfaces declare signatures only")
 
 
-func _flatten_interfaces(cd: GateAST.ClassDecl) -> void:
+func _flatten_interfaces(cd: GateAST.GateClassDecl) -> void:
 	var names: Array = []
 	var queue: Array = cd.implements.duplicate()
 	while not queue.is_empty():
@@ -279,7 +279,7 @@ func _flatten_interfaces(cd: GateAST.ClassDecl) -> void:
 			continue
 		names.append(n)
 		if interfaces.has(n):
-			var idecl: GateAST.ClassDecl = interfaces[n]
+			var idecl: GateAST.GateClassDecl = interfaces[n]
 			for parent in idecl.implements:
 				queue.append(parent)
 		else:
@@ -288,24 +288,24 @@ func _flatten_interfaces(cd: GateAST.ClassDecl) -> void:
 	cd.interface_names = names
 
 
-func _verify_conformance(cd: GateAST.ClassDecl) -> void:
+func _verify_conformance(cd: GateAST.GateClassDecl) -> void:
 	if cd.interface_names.is_empty():
 		return
 	var provided: Dictionary = {}
 	for m in cd.members:
-		if m is GateAST.FuncDecl:
-			var fd: GateAST.FuncDecl = m
+		if m is GateAST.GateFuncDecl:
+			var fd: GateAST.GateFuncDecl = m
 			provided[fd.name] = fd
-		elif m is GateAST.VarDecl:
-			provided[(m as GateAST.VarDecl).name] = m
+		elif m is GateAST.GateVarDecl:
+			provided[(m as GateAST.GateVarDecl).name] = m
 
 	for iname in cd.interface_names:
 		if not interfaces.has(iname):
 			continue
-		var idecl: GateAST.ClassDecl = interfaces[iname]
+		var idecl: GateAST.GateClassDecl = interfaces[iname]
 		for im in idecl.members:
-			if im is GateAST.VarDecl:
-				var ivd: GateAST.VarDecl = im
+			if im is GateAST.GateVarDecl:
+				var ivd: GateAST.GateVarDecl = im
 				if not provided.has(ivd.name):
 					var tn: String = ivd.type.describe() if ivd.type != null else "Variant"
 					var acc: String = ""
@@ -316,8 +316,8 @@ func _verify_conformance(cd: GateAST.ClassDecl) -> void:
 						cd.line, cd.col,
 						"add: %s %s%s" % [tn, ivd.name, acc])
 				continue
-			if im is GateAST.FuncDecl:
-				var ifd: GateAST.FuncDecl = im
+			if im is GateAST.GateFuncDecl:
+				var ifd: GateAST.GateFuncDecl = im
 				if not provided.has(ifd.name):
 					diagnostics.error(
 						"'%s' does not implement '%s.%s'" % [cd.name, iname, ifd.name],
@@ -327,8 +327,8 @@ func _verify_conformance(cd: GateAST.ClassDecl) -> void:
 							GateTypes.resolve(ifd.return_type) if ifd.return_type else "void"])
 					continue
 				var got = provided[ifd.name]
-				if got is GateAST.FuncDecl:
-					var gfd: GateAST.FuncDecl = got
+				if got is GateAST.GateFuncDecl:
+					var gfd: GateAST.GateFuncDecl = got
 					if gfd.params.size() != ifd.params.size():
 						diagnostics.error(
 							"'%s.%s' takes %d parameter(s) but '%s' declares %d" % [
@@ -339,27 +339,27 @@ func _verify_conformance(cd: GateAST.ClassDecl) -> void:
 func _params_sig(params: Array) -> String:
 	var parts: PackedStringArray = PackedStringArray()
 	for p in params:
-		var pp: GateAST.Param = p
+		var pp: GateAST.GateParam = p
 		parts.append("%s: %s" % [pp.name, GateTypes.resolve(pp.type) if pp.type else "Variant"])
 	return ", ".join(parts)
 
 
-func _verify_overrides(cd: GateAST.ClassDecl) -> void:
+func _verify_overrides(cd: GateAST.GateClassDecl) -> void:
 	for m in cd.members:
-		if not (m is GateAST.FuncDecl):
+		if not (m is GateAST.GateFuncDecl):
 			continue
-		var fd: GateAST.FuncDecl = m
+		var fd: GateAST.GateFuncDecl = m
 		if not fd.is_override:
 			continue
 		if fd.name.begins_with(ENGINE_PREFIX):
 			continue
 		var found: bool = false
 		if cd.extends_type != null and classes.has(cd.extends_type.name):
-			var parent: GateAST.ClassDecl = classes[cd.extends_type.name]
+			var parent: GateAST.GateClassDecl = classes[cd.extends_type.name]
 			for pm in parent.members:
-				if pm is GateAST.FuncDecl and (pm as GateAST.FuncDecl).name == fd.name:
+				if pm is GateAST.GateFuncDecl and (pm as GateAST.GateFuncDecl).name == fd.name:
 					found = true
-					if (pm as GateAST.FuncDecl).is_final:
+					if (pm as GateAST.GateFuncDecl).is_final:
 						diagnostics.error(
 							"cannot override '%s': it is declared final in '%s'" % [fd.name, parent.name],
 							fd.line, fd.col)
@@ -373,20 +373,20 @@ func _verify_overrides(cd: GateAST.ClassDecl) -> void:
 				"check the spelling, or remove `override`")
 
 
-func _check_struct(cd: GateAST.ClassDecl) -> void:
+func _check_struct(cd: GateAST.GateClassDecl) -> void:
 	var field_types: Array = []
 	var fields: Array = []
 	for m in cd.members:
-		if m is GateAST.VarDecl:
-			var vd: GateAST.VarDecl = m
+		if m is GateAST.GateVarDecl:
+			var vd: GateAST.GateVarDecl = m
 			fields.append(vd)
 			if vd.type != null:
 				field_types.append(vd.type.name)
 			else:
 				field_types.append("Variant")
-		elif m is GateAST.FuncDecl:
+		elif m is GateAST.GateFuncDecl:
 			pass
-		elif m is GateAST.CommentStmt:
+		elif m is GateAST.GateCommentStmt:
 			pass
 
 	if fields.is_empty():
@@ -396,7 +396,7 @@ func _check_struct(cd: GateAST.ClassDecl) -> void:
 
 	var has_methods: bool = false
 	for m2 in cd.members:
-		if m2 is GateAST.FuncDecl:
+		if m2 is GateAST.GateFuncDecl:
 			has_methods = true
 			break
 
@@ -422,10 +422,10 @@ func _check_struct(cd: GateAST.ClassDecl) -> void:
 			+ "This one allocates on each copy - use `class` if you want reference semantics.")
 
 
-func _check_namespace(cd: GateAST.ClassDecl) -> void:
+func _check_namespace(cd: GateAST.GateClassDecl) -> void:
 	for m in cd.members:
-		if m is GateAST.ClassDecl:
-			var inner: GateAST.ClassDecl = m
+		if m is GateAST.GateClassDecl:
+			var inner: GateAST.GateClassDecl = m
 			if inner.extends_type != null:
 				var base: String = GateTypes.canonical(inner.extends_type.name)
 				if base.begins_with("Node") or base.ends_with("Body2D") or base.ends_with("Body3D"):
@@ -440,9 +440,9 @@ const REST_ARITY := -1
 
 func _link_inherited_overloads(members: Array) -> void:
 	for m in members:
-		if not (m is GateAST.ClassDecl):
+		if not (m is GateAST.GateClassDecl):
 			continue
-		var cd: GateAST.ClassDecl = m
+		var cd: GateAST.GateClassDecl = m
 		_link_inherited_overloads(cd.members)
 		if cd.extends_type == null:
 			continue
@@ -451,44 +451,44 @@ func _link_inherited_overloads(members: Array) -> void:
 		while base_name != "" and not seen.has(base_name):
 			seen[base_name] = true
 			var bcd = classes.get(base_name, null)
-			if not (bcd is GateAST.ClassDecl):
+			if not (bcd is GateAST.GateClassDecl):
 				break
-			for bm in (bcd as GateAST.ClassDecl).members:
-				if not (bm is GateAST.FuncDecl):
+			for bm in (bcd as GateAST.GateClassDecl).members:
+				if not (bm is GateAST.GateFuncDecl):
 					continue
-				var bfd: GateAST.FuncDecl = bm
+				var bfd: GateAST.GateFuncDecl = bm
 				if bfd.mangled_name == "":
 					continue
 				for dm in cd.members:
-					if not (dm is GateAST.FuncDecl):
+					if not (dm is GateAST.GateFuncDecl):
 						continue
-					var dfd: GateAST.FuncDecl = dm
+					var dfd: GateAST.GateFuncDecl = dm
 					if (dfd.mangled_name == "" and dfd.name == bfd.name
 							and dfd.params.size() == bfd.params.size()):
 						dfd.mangled_name = bfd.mangled_name
-			var bx = (bcd as GateAST.ClassDecl).extends_type
+			var bx = (bcd as GateAST.GateClassDecl).extends_type
 			base_name = bx.name if bx != null else ""
 
 
 func _process_overloads(members: Array) -> void:
 	var by_name: Dictionary = {}
 	for m in members:
-		if m is GateAST.FuncDecl:
-			var fd: GateAST.FuncDecl = m
+		if m is GateAST.GateFuncDecl:
+			var fd: GateAST.GateFuncDecl = m
 			if not by_name.has(fd.name):
 				by_name[fd.name] = []
 			by_name[fd.name].append(fd)
 
 	var taken: Dictionary = {}
 	for m2 in members:
-		if m2 is GateAST.FuncDecl:
-			taken[(m2 as GateAST.FuncDecl).name] = true
+		if m2 is GateAST.GateFuncDecl:
+			taken[(m2 as GateAST.GateFuncDecl).name] = true
 
 	for name in by_name:
 		var group: Array = by_name[name]
 		if group.size() < 2:
 			continue
-		var first: GateAST.FuncDecl = group[0]
+		var first: GateAST.GateFuncDecl = group[0]
 		if String(name).begins_with(ENGINE_PREFIX):
 			diagnostics.error(
 				"cannot overload '%s': names starting with '_' are reachable from the engine" % name,
@@ -498,9 +498,9 @@ func _process_overloads(members: Array) -> void:
 			continue
 		var by_arity: Dictionary = {}
 		for f in group:
-			var fd2: GateAST.FuncDecl = f
+			var fd2: GateAST.GateFuncDecl = f
 			var is_variadic: bool = (not fd2.params.is_empty()
-				and (fd2.params[fd2.params.size() - 1] as GateAST.Param).is_rest)
+				and (fd2.params[fd2.params.size() - 1] as GateAST.GateParam).is_rest)
 			var arity: int = REST_ARITY if is_variadic else fd2.params.size()
 			if by_arity.has(arity):
 				if is_variadic:

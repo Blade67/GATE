@@ -8,7 +8,7 @@ extends "res://addons/gate/compiler/emitter_expr.gd"
 ## can't read back: it breaks the fixed point.
 
 
-func emit(mod: GateAST.Module, diags: GateDiagnostics, path: String) -> Dictionary:
+func emit(mod: GateAST.GateModule, diags: GateDiagnostics, path: String) -> Dictionary:
 	diagnostics = diags
 	source_path = path
 	_out = []
@@ -93,7 +93,7 @@ func emit(mod: GateAST.Module, diags: GateDiagnostics, path: String) -> Dictiona
 func _emit_monomorphised() -> void:
 	for mangled in _instantiations:
 		var pair: Array = _instantiations[mangled]
-		var cd: GateAST.ClassDecl = pair[0]
+		var cd: GateAST.GateClassDecl = pair[0]
 		_subst = pair[1]
 		_subst_depth = pair[2] if pair.size() > 2 else {}
 		var saved_name: String = cd.name
@@ -110,25 +110,25 @@ func _emit_monomorphised() -> void:
 func _emit_member(m) -> void:
 	if m != null and "line" in m:
 		_blank_gap(m.line)
-	if m is GateAST.CommentStmt:
-		_line((m as GateAST.CommentStmt).text, m.line)
-	elif m is GateAST.ClassDecl:
+	if m is GateAST.GateCommentStmt:
+		_line((m as GateAST.GateCommentStmt).text, m.line)
+	elif m is GateAST.GateClassDecl:
 		_emit_class(m)
-	elif m is GateAST.FuncDecl:
+	elif m is GateAST.GateFuncDecl:
 		_emit_func(m)
-	elif m is GateAST.VarDecl:
+	elif m is GateAST.GateVarDecl:
 		_emit_var(m)
-	elif m is GateAST.SignalDecl:
+	elif m is GateAST.GateSignalDecl:
 		_emit_signal(m)
-	elif m is GateAST.EnumDecl:
+	elif m is GateAST.GateEnumDecl:
 		_emit_enum(m)
-	elif m is GateAST.RawStmt:
+	elif m is GateAST.GateRawStmt:
 		_emit_raw(m)
 	else:
 		_emit_statement(m)
 
 
-func _emit_raw(r: GateAST.RawStmt) -> void:
+func _emit_raw(r: GateAST.GateRawStmt) -> void:
 	var lines: PackedStringArray = r.text.split("\n")
 	var i: int = 0
 	for l in lines:
@@ -141,12 +141,12 @@ func _emit_raw(r: GateAST.RawStmt) -> void:
 		i += 1
 
 
-func _emit_signal(s: GateAST.SignalDecl) -> void:
+func _emit_signal(s: GateAST.GateSignalDecl) -> void:
 	for a in s.annotations:
 		_emit_annotation(a)
 	var parts: PackedStringArray = PackedStringArray()
 	for p in s.params:
-		var pp: GateAST.Param = p
+		var pp: GateAST.GateParam = p
 		if pp.type != null:
 			parts.append("%s: %s" % [pp.name, _map_type(pp.type)])
 		else:
@@ -157,7 +157,7 @@ func _emit_signal(s: GateAST.SignalDecl) -> void:
 		_line("signal %s(%s)" % [s.name, ", ".join(parts)], s.line)
 
 
-func _emit_enum(e: GateAST.EnumDecl) -> void:
+func _emit_enum(e: GateAST.GateEnumDecl) -> void:
 	for a in e.annotations:
 		_emit_annotation(a)
 	var parts: PackedStringArray = PackedStringArray()
@@ -169,7 +169,7 @@ func _emit_enum(e: GateAST.EnumDecl) -> void:
 	_line("enum %s { %s }" % [e.name, ", ".join(parts)], e.line)
 
 
-func _emit_class(cd: GateAST.ClassDecl) -> void:
+func _emit_class(cd: GateAST.GateClassDecl) -> void:
 	match cd.form:
 		"interface":
 			_emit_interface_doc(cd)
@@ -230,11 +230,11 @@ func _warn_narrowed(what: String, types: Array, line: int, col: int) -> void:
 		+ "full width (the struct is then emitted as a class). Reported once per file.")
 
 
-func _emit_interface_doc(_cd: GateAST.ClassDecl) -> void:
+func _emit_interface_doc(_cd: GateAST.GateClassDecl) -> void:
 	pass
 
 
-func _emit_interface_marker(cd: GateAST.ClassDecl) -> void:
+func _emit_interface_marker(cd: GateAST.GateClassDecl) -> void:
 	if cd.interface_names.is_empty():
 		return
 	var quoted: PackedStringArray = PackedStringArray()
@@ -243,7 +243,7 @@ func _emit_interface_marker(cd: GateAST.ClassDecl) -> void:
 	_line("const __gate_impl := [%s]" % ", ".join(quoted), cd.line)
 
 
-func _emit_namespace(cd: GateAST.ClassDecl) -> void:
+func _emit_namespace(cd: GateAST.GateClassDecl) -> void:
 	_line("class %s:" % cd.name, cd.line)
 	_indent += 1
 	var saved_ns: bool = _in_namespace
@@ -251,7 +251,7 @@ func _emit_namespace(cd: GateAST.ClassDecl) -> void:
 	for m in cd.members:
 		# The namespace's own members are static so `Ns.f()` reaches them. A type
 		# declared inside it is a real type, and its members are not.
-		_in_namespace = not (m is GateAST.ClassDecl)
+		_in_namespace = not (m is GateAST.GateClassDecl)
 		_emit_member(m)
 	_in_namespace = saved_ns
 	if not _emitted_code_since(before):
@@ -272,12 +272,12 @@ func _emitted_code_since(mark: int) -> bool:
 	return false
 
 
-func _emit_struct(cd: GateAST.ClassDecl) -> void:
+func _emit_struct(cd: GateAST.GateClassDecl) -> void:
 	if cd.lowering == "vector":
 		var ftypes: Array = []
 		for f in cd.members:
-			if f is GateAST.VarDecl and (f as GateAST.VarDecl).type != null:
-				ftypes.append((f as GateAST.VarDecl).type.name)
+			if f is GateAST.GateVarDecl and (f as GateAST.GateVarDecl).type != null:
+				ftypes.append((f as GateAST.GateVarDecl).type.name)
 		_warn_narrowed("struct '%s' lowers to %s, which" % [cd.name, cd.vector_type],
 			ftypes, cd.line, cd.col)
 		return
@@ -287,18 +287,18 @@ func _emit_struct(cd: GateAST.ClassDecl) -> void:
 	_emit_interface_marker(cd)
 	var fields: Array = []
 	for m in cd.members:
-		if m is GateAST.VarDecl:
+		if m is GateAST.GateVarDecl:
 			fields.append(m)
 		_emit_member(m)
 	if not fields.is_empty():
 		_blank_line(cd.line)
 		var field_names: Array = []
 		for f in fields:
-			field_names.append((f as GateAST.VarDecl).name)
+			field_names.append((f as GateAST.GateVarDecl).name)
 		var pre: String = _free_prefix(field_names, "p_")
 		var ps: PackedStringArray = PackedStringArray()
 		for f in fields:
-			var fv: GateAST.VarDecl = f
+			var fv: GateAST.GateVarDecl = f
 			var ft: String = _map_type(fv.type) if fv.type != null else "Variant"
 			var dv: String = ""
 			if fv.value != null:
@@ -311,7 +311,7 @@ func _emit_struct(cd: GateAST.ClassDecl) -> void:
 		_line("func _init(%s) -> void:" % ", ".join(ps), cd.line)
 		_indent += 1
 		for f2 in fields:
-			var fv2: GateAST.VarDecl = f2
+			var fv2: GateAST.GateVarDecl = f2
 			_line("%s = %s%s" % [fv2.name, pre, fv2.name], cd.line)
 		_indent -= 1
 
@@ -321,11 +321,11 @@ func _emit_struct(cd: GateAST.ClassDecl) -> void:
 		_indent += 1
 		var names: Array = []
 		for f in fields:
-			names.append((f as GateAST.VarDecl).name)
+			names.append((f as GateAST.GateVarDecl).name)
 		var loc: String = _free_name(names, "__gate_copy")
 		_line("var %s := %s.new()" % [loc, cd.name], cd.line)
 		for f in fields:
-			var vd: GateAST.VarDecl = f
+			var vd: GateAST.GateVarDecl = f
 			_line("%s.%s = %s" % [loc, vd.name, vd.name], cd.line)
 		_line("return %s" % loc, cd.line)
 		_indent -= 1
@@ -354,7 +354,7 @@ func _free_name(names: Array, want: String) -> String:
 	return n
 
 
-func _emit_func(fd: GateAST.FuncDecl) -> void:
+func _emit_func(fd: GateAST.GateFuncDecl) -> void:
 	for a in fd.annotations:
 		_emit_annotation(a)
 
@@ -381,7 +381,7 @@ func _emit_func(fd: GateAST.FuncDecl) -> void:
 	var saved: Dictionary = _var_types.duplicate()
 	var saved_depths: Dictionary = _var_depths.duplicate()
 	for p in fd.params:
-		var pp: GateAST.Param = p
+		var pp: GateAST.GateParam = p
 		if pp.type != null:
 			_var_types[pp.name] = pp.type.name
 			_var_depths[pp.name] = pp.type.array_depth
@@ -421,13 +421,13 @@ func _emit_func(fd: GateAST.FuncDecl) -> void:
 	_blank_line(fd.line)
 
 
-func _emit_annotation(a: GateAST.Annotation) -> void:
+func _emit_annotation(a: GateAST.GateAnnotation) -> void:
 	if a.name == "observable":
 		return  # handled by _emit_var
 	_line(_annotation_text(a), a.line)
 
 
-func _annotation_text(a: GateAST.Annotation) -> String:
+func _annotation_text(a: GateAST.GateAnnotation) -> String:
 	if a.args.is_empty():
 		return "@" + a.name
 	var parts: PackedStringArray = PackedStringArray()
@@ -439,7 +439,7 @@ func _annotation_text(a: GateAST.Annotation) -> String:
 func _inline_annotation_prefix(node) -> String:
 	var out: String = ""
 	for a in node.annotations:
-		var an: GateAST.Annotation = a
+		var an: GateAST.GateAnnotation = a
 		if an.name in ["observable", "packed", "soa"]:
 			continue
 		if an.line != node.line:
@@ -448,18 +448,18 @@ func _inline_annotation_prefix(node) -> String:
 	return out
 
 
-func _emit_scalar_replaced(vd: GateAST.VarDecl) -> void:
+func _emit_scalar_replaced(vd: GateAST.GateVarDecl) -> void:
 	var sname: String = _scalar_repl[vd.name]
 	var st: Dictionary = _struct_of(sname)
 	var fields: Array = st["fields"]
 	var ftypes: Array = st["types"]
-	var args: Array = (vd.value as GateAST.Call).args
+	var args: Array = (vd.value as GateAST.GateCall).args
 	_flush_pending(vd.line)
 	for i in fields.size():
 		var trefs: Array = st.get("typerefs", [])
 		var tr = trefs[i] if i < trefs.size() and trefs[i] != null else null
 		if tr == null:
-			tr = GateAST.TypeRef.new()
+			tr = GateAST.GateTypeRef.new()
 			tr.name = String(ftypes[i]) if i < ftypes.size() else "Variant"
 		var mapped: String = _map_type(tr)
 		var defaults: Array = st.get("defaults", [])
@@ -478,7 +478,7 @@ func _emit_scalar_replaced(vd: GateAST.VarDecl) -> void:
 			_line("var %s = %s" % [local, value], vd.line)
 
 
-func _emit_var(vd: GateAST.VarDecl) -> void:
+func _emit_var(vd: GateAST.GateVarDecl) -> void:
 	var observable: bool = _has_annotation(vd, "observable")
 	var packed: bool = _has_annotation(vd, "packed")
 
@@ -487,7 +487,7 @@ func _emit_var(vd: GateAST.VarDecl) -> void:
 		return
 
 	for a in vd.annotations:
-		var va: GateAST.Annotation = a
+		var va: GateAST.GateAnnotation = a
 		if va.name in ["observable", "packed"]:
 			continue
 		if va.line == vd.line:
@@ -504,9 +504,9 @@ func _emit_var(vd: GateAST.VarDecl) -> void:
 		_var_types[name] = vd.type.name
 		_var_depths[name] = vd.type.array_depth
 		if GateTypes.canonical(vd.type.name) == "Dictionary" and vd.type.generic_args.size() == 2:
-			_var_dict_values[name] = (vd.type.generic_args[1] as GateAST.TypeRef).name
+			_var_dict_values[name] = (vd.type.generic_args[1] as GateAST.GateTypeRef).name
 		if GateTypes.canonical(vd.type.name) == "Array" and vd.type.generic_args.size() == 1:
-			var elem_t: GateAST.TypeRef = vd.type.generic_args[0] as GateAST.TypeRef
+			var elem_t: GateAST.GateTypeRef = vd.type.generic_args[0] as GateAST.GateTypeRef
 			if elem_t != null and elem_t.name != "":
 				_var_types[name] = elem_t.name
 				_var_depths[name] = elem_t.array_depth + 1
@@ -569,7 +569,7 @@ func _emit_var(vd: GateAST.VarDecl) -> void:
 	_emit_accessor_tail(vd)
 
 
-func _emit_soa_decl(vd: GateAST.VarDecl) -> void:
+func _emit_soa_decl(vd: GateAST.GateVarDecl) -> void:
 	if vd.type == null or vd.type.array_depth != 1:
 		diagnostics.error("@soa requires an array declaration such as `@soa Particle[] swarm`",
 			vd.line, vd.col)
@@ -616,7 +616,7 @@ func _emit_soa_decl(vd: GateAST.VarDecl) -> void:
 			_line("var %s: %s = %s()" % [arrays[i], container, container], vd.line)
 
 
-func _emit_accessor_tail(vd: GateAST.VarDecl) -> void:
+func _emit_accessor_tail(vd: GateAST.GateVarDecl) -> void:
 	if vd.setter == "":
 		return
 	var lines: PackedStringArray = vd.setter.split("\n")
@@ -686,7 +686,7 @@ static func _retab(line: String, base: int, unit: int, outer: int) -> String:
 	return "	".repeat(outer + levels) + line.substr(spaces)
 
 
-func _emit_observable(vd: GateAST.VarDecl, name: String, value_src: String) -> void:
+func _emit_observable(vd: GateAST.GateVarDecl, name: String, value_src: String) -> void:
 	var tname: String = _map_type(vd.type) if vd.type != null else ""
 	var sig_param: String = "value" + (": " + tname if tname != "" else "")
 	_flush_pending(vd.line)
@@ -720,16 +720,16 @@ func _emit_observable(vd: GateAST.VarDecl, name: String, value_src: String) -> v
 ## receiver is named twice, so it is rendered once and hoisted unless it is a bare
 ## name.
 func _emit_discarded_safe_call(e, line: int) -> bool:
-	if not (e is GateAST.Call):
+	if not (e is GateAST.GateCall):
 		return false
-	var c: GateAST.Call = e
-	if not (c.callee is GateAST.Member):
+	var c: GateAST.GateCall = e
+	if not (c.callee is GateAST.GateMember):
 		return false
-	var m: GateAST.Member = c.callee
+	var m: GateAST.GateMember = c.callee
 	if not m.safe:
 		return false
 	var base: String = ""
-	if m.target is GateAST.Ident or m.target is GateAST.SelfExpr:
+	if m.target is GateAST.GateIdent or m.target is GateAST.GateSelfExpr:
 		base = _expr(m.target)
 	else:
 		var recv: String = _copy_value(m.target)
@@ -754,75 +754,75 @@ func _emit_statement(s) -> void:
 		return
 	if "line" in s:
 		_blank_gap(s.line)
-	if s is GateAST.AnnotatedStmt:
-		var an: GateAST.AnnotatedStmt = s
+	if s is GateAST.GateAnnotatedStmt:
+		var an: GateAST.GateAnnotatedStmt = s
 		for a in an.annotations:
 			_emit_annotation(a)
 		_emit_statement(an.stmt)
 		return
 
-	if s is GateAST.CommentStmt:
-		_line((s as GateAST.CommentStmt).text, s.line)
-	elif s is GateAST.RawStmt:
+	if s is GateAST.GateCommentStmt:
+		_line((s as GateAST.GateCommentStmt).text, s.line)
+	elif s is GateAST.GateRawStmt:
 		_emit_raw(s)
-	elif s is GateAST.VarDecl:
+	elif s is GateAST.GateVarDecl:
 		_emit_var(s)
-	elif s is GateAST.FuncDecl:
+	elif s is GateAST.GateFuncDecl:
 		_emit_func(s)
-	elif s is GateAST.ClassDecl:
+	elif s is GateAST.GateClassDecl:
 		_emit_class(s)
-	elif s is GateAST.SimpleStmt:
-		_line((s as GateAST.SimpleStmt).keyword, s.line)
-	elif s is GateAST.ReturnStmt:
-		var r: GateAST.ReturnStmt = s
+	elif s is GateAST.GateSimpleStmt:
+		_line((s as GateAST.GateSimpleStmt).keyword, s.line)
+	elif s is GateAST.GateReturnStmt:
+		var r: GateAST.GateReturnStmt = s
 		if r.value != null:
 			var v: String = _copy_value(r.value)
 			_flush_pending(r.line)
 			_line("return " + v, r.line)
 		else:
 			_line("return", r.line)
-	elif s is GateAST.ExprStmt:
-		if _emit_discarded_safe_call((s as GateAST.ExprStmt).expr, s.line):
+	elif s is GateAST.GateExprStmt:
+		if _emit_discarded_safe_call((s as GateAST.GateExprStmt).expr, s.line):
 			return
-		var e: String = _expr((s as GateAST.ExprStmt).expr)
+		var e: String = _expr((s as GateAST.GateExprStmt).expr)
 		_flush_pending(s.line)
 		if e != "":
 			_line(e, s.line)
-	elif s is GateAST.AssignStmt:
+	elif s is GateAST.GateAssignStmt:
 		_emit_assign(s)
-	elif s is GateAST.MultiAssign:
+	elif s is GateAST.GateMultiAssign:
 		_emit_multi_assign(s)
-	elif s is GateAST.IfStmt:
+	elif s is GateAST.GateIfStmt:
 		_emit_if(s)
-	elif s is GateAST.ForStmt:
+	elif s is GateAST.GateForStmt:
 		_emit_for(s)
-	elif s is GateAST.WhileStmt:
+	elif s is GateAST.GateWhileStmt:
 		_emit_while(s)
-	elif s is GateAST.MatchStmt:
+	elif s is GateAST.GateMatchStmt:
 		_emit_match(s)
-	elif s is GateAST.SignalDecl:
+	elif s is GateAST.GateSignalDecl:
 		_emit_signal(s)
-	elif s is GateAST.EnumDecl:
+	elif s is GateAST.GateEnumDecl:
 		_emit_enum(s)
 	else:
 		diagnostics.warn("unhandled statement kind; emitting nothing", s.line, s.col)
 
 
-func _emit_assign(a: GateAST.AssignStmt) -> void:
+func _emit_assign(a: GateAST.GateAssignStmt) -> void:
 	var t: String = _expr(a.target)
 	var v: String = _copy_value(a.value) if a.op == "=" else _expr(a.value)
 	_flush_pending(a.line)
 	_line("%s %s %s" % [t, a.op, v], a.line)
 
 
-func _emit_multi_assign(m: GateAST.MultiAssign) -> void:
+func _emit_multi_assign(m: GateAST.GateMultiAssign) -> void:
 	if m.destructure:
 		var src: String = _expr(m.values[0])
 		_flush_pending(m.line)
 		var tmp: String = _new_tmp()
 		_line("var %s = %s" % [tmp, src], m.line)
 		for i in m.targets.size():
-			var name: String = (m.targets[i] as GateAST.Ident).name
+			var name: String = (m.targets[i] as GateAST.GateIdent).name
 			_line("var %s = %s[%d]" % [name, tmp, i], m.line)
 		return
 
@@ -855,14 +855,14 @@ func _emit_multi_assign(m: GateAST.MultiAssign) -> void:
 		_line("%s = %s" % [targets[i], tmps[i]], m.line)
 
 
-func _emit_if(st: GateAST.IfStmt) -> void:
+func _emit_if(st: GateAST.GateIfStmt) -> void:
 	var c: String = _expr(st.cond)
 	_flush_pending(st.line)
 	_line("if %s:" % c, st.line)
 	_emit_body(st.then_body, st.line)
 	var opened: int = 0
 	for pair in st.elifs:
-		var el: int = (pair[0] as GateAST.Expr).line
+		var el: int = (pair[0] as GateAST.GateExpr).line
 		var ec: String = _expr(pair[0])
 		if not _pending.is_empty():
 			_line("else:", el)
@@ -891,9 +891,9 @@ func _emit_body(body: Array, src_line: int) -> void:
 	_indent -= 1
 
 
-func _emit_for(st: GateAST.ForStmt) -> void:
+func _emit_for(st: GateAST.GateForStmt) -> void:
 	if st.is_enumerate and st.var_names.size() == 2:
-		var call: GateAST.Call = st.iterable
+		var call: GateAST.GateCall = st.iterable
 		var target: String = _expr(call.args[0]) if not call.args.is_empty() else "[]"
 		_flush_pending(st.line)
 		var tmp: String = _new_tmp()
@@ -938,8 +938,8 @@ func _emit_for(st: GateAST.ForStmt) -> void:
 		var elem: String = ""
 		if st.var_type != null:
 			elem = st.var_type.name
-		elif st.iterable is GateAST.Ident:
-			var an: String = (st.iterable as GateAST.Ident).name
+		elif st.iterable is GateAST.GateIdent:
+			var an: String = (st.iterable as GateAST.GateIdent).name
 			if int(_var_depths.get(an, 0)) == 1:
 				elem = String(_var_types.get(an, ""))
 		if elem != "":
@@ -962,7 +962,7 @@ func _emit_for(st: GateAST.ForStmt) -> void:
 	_emit_body(st.body, st.line)
 
 
-func _emit_while(st: GateAST.WhileStmt) -> void:
+func _emit_while(st: GateAST.GateWhileStmt) -> void:
 	var c: String = _expr(st.cond)
 	if _pending.is_empty():
 		_line("while %s:" % c, st.line)
@@ -979,7 +979,7 @@ func _emit_while(st: GateAST.WhileStmt) -> void:
 	_emit_body(st.body, st.line)
 
 
-func _emit_match(st: GateAST.MatchStmt) -> void:
+func _emit_match(st: GateAST.GateMatchStmt) -> void:
 	var subj: String = _expr(st.subject)
 	_flush_pending(st.line)
 	_line("match %s:" % subj, st.line)

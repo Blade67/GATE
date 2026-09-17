@@ -5,27 +5,27 @@ extends RefCounted
 ## AST node definitions. Every node carries a line and column.
 
 
-class ASTNode extends RefCounted:
+class GateASTNode extends RefCounted:
 	var line: int = 0
 	var col: int = 0
-	func at(l: int, c: int) -> ASTNode:
+	func at(l: int, c: int) -> GateASTNode:
 		line = l
 		col = c
 		return self
 
 
-class TypeRef extends ASTNode:
+class GateTypeRef extends GateASTNode:
 	var name: String = ""              ## canonical or shorthand base name
 	var array_depth: int = 0           ## `int[][]` -> 2
-	var dict_key: TypeRef = null       ## `{str, int}` -> key/value set
-	var dict_value: TypeRef = null
-	var set_elem: TypeRef = null       ## `{T}` reserved
+	var dict_key: GateTypeRef = null       ## `{str, int}` -> key/value set
+	var dict_value: GateTypeRef = null
+	var set_elem: GateTypeRef = null       ## `{T}` reserved
 	var nullable: bool = false
 	var strict: bool = false
 	var is_path_literal: bool = false
 	var elem_nullable: bool = false
 	var generic_args: Array = []       ## Array[TypeRef]
-	var callable_return: TypeRef = null
+	var callable_return: GateTypeRef = null
 
 	func is_dict() -> bool: return dict_key != null
 	func is_set() -> bool: return set_elem != null
@@ -45,134 +45,134 @@ class TypeRef extends ASTNode:
 		return s
 
 
-class Expr extends ASTNode:
+class GateExpr extends GateASTNode:
 	pass
 
 
-class Literal extends Expr:
+class GateLiteral extends GateExpr:
 	var raw: String = ""
 	var kind: String = ""              ## "number" | "string" | "bool" | "null"
 
 
-class Ident extends Expr:
+class GateIdent extends GateExpr:
 	var generic_base: String = ""
 	var name: String = ""
 
 
-class NodePathExpr extends Expr:
+class GateNodePathExpr extends GateExpr:
 	var raw: String = ""
 
 
-class SelfExpr extends Expr:
+class GateSelfExpr extends GateExpr:
 	pass
 
 
-class Unary extends Expr:
+class GateUnary extends GateExpr:
 	var tight: bool = false
 	var op: String = ""
-	var operand: Expr = null
+	var operand: GateExpr = null
 
 
-class Binary extends Expr:
+class GateBinary extends GateExpr:
 	var op: String = ""
-	var left: Expr = null
-	var right: Expr = null
+	var left: GateExpr = null
+	var right: GateExpr = null
 
 
-class NullCoalesce extends Expr:
-	var left: Expr = null
-	var right: Expr = null
+class GateNullCoalesce extends GateExpr:
+	var left: GateExpr = null
+	var right: GateExpr = null
 
 
-class Ternary extends Expr:
-	var cond: Expr = null
-	var if_true: Expr = null
-	var if_false: Expr = null
+class GateTernary extends GateExpr:
+	var cond: GateExpr = null
+	var if_true: GateExpr = null
+	var if_false: GateExpr = null
 
 
-class Member extends Expr:
-	var target: Expr = null
+class GateMember extends GateExpr:
+	var target: GateExpr = null
 	var name: String = ""
 	var safe: bool = false             ## `?.`
 
 
-class Index extends Expr:
-	var target: Expr = null
-	var index: Expr = null
+class GateIndex extends GateExpr:
+	var target: GateExpr = null
+	var index: GateExpr = null
 	var safe: bool = false             ## `?[`
 
 
-class Call extends Expr:
-	var callee: Expr = null
+class GateCall extends GateExpr:
+	var callee: GateExpr = null
 	var args: Array = []               ## Array[Expr]
 
 
-class ArrayLit extends Expr:
+class GateArrayLit extends GateExpr:
 	var elements: Array = []           ## Array[Expr]
 
 
-class DictLit extends Expr:
+class GateDictLit extends GateExpr:
 	var keys: Array = []               ## Array[Expr]
 	var values: Array = []             ## Array[Expr]
 	var lua_keys: Array = []           ## Array[bool]
 
 
-class Lambda extends Expr:
+class GateLambda extends GateExpr:
 	var name: String = ""
 	var params: Array = []             ## Array[Param]
-	var return_type: TypeRef = null
+	var return_type: GateTypeRef = null
 	var body: Array = []               ## Array[Node] (statements)
 	var is_expression_body: bool = false
-	var expr_body: Expr = null
+	var expr_body: GateExpr = null
 	var block_body: bool = false
 
 
-class AwaitExpr extends Expr:
-	var operand: Expr = null
+class GateAwaitExpr extends GateExpr:
+	var operand: GateExpr = null
 
 
-class CastExpr extends Expr:
-	var operand: Expr = null
-	var type: TypeRef = null
+class GateCastExpr extends GateExpr:
+	var operand: GateExpr = null
+	var type: GateTypeRef = null
 
 
-class IsExpr extends Expr:
-	var operand: Expr = null
-	var type: TypeRef = null
+class GateIsExpr extends GateExpr:
+	var operand: GateExpr = null
+	var type: GateTypeRef = null
 	var negated: bool = false
 
 
-class FString extends Expr:
+class GateFString extends GateExpr:
 	var parts: Array = []              ## alternating: String literals and Expr
 	var quote: String = "\""
 
 
-class ObjectInit extends Expr:
-	var type: TypeRef = null
+class GateObjectInit extends GateExpr:
+	var type: GateTypeRef = null
 	var keys: Array = []               ## Array[String]
 	var values: Array = []             ## Array[Expr]
 
 
-class RawExpr extends Expr:
+class GateRawExpr extends GateExpr:
 	var text: String = ""
 
 
-class Stmt extends ASTNode:
+class GateStmt extends GateASTNode:
 	pass
 
 
-class Param extends ASTNode:
+class GateParam extends GateASTNode:
 	var name: String = ""
-	var type: TypeRef = null
-	var default: Expr = null
+	var type: GateTypeRef = null
+	var default: GateExpr = null
 	var is_rest: bool = false
 	var inferred: bool = false        ## declared with `:=`
 
 
-class VarDecl extends Stmt:
+class GateVarDecl extends GateStmt:
 	var name: String = ""
-	var type: TypeRef = null
-	var value: Expr = null
+	var type: GateTypeRef = null
+	var value: GateExpr = null
 	var is_const: bool = false
 	var is_static: bool = false
 	var is_onready: bool = false
@@ -186,15 +186,15 @@ class VarDecl extends Stmt:
 	var accessor_requirement: Array = []
 
 
-class Annotation extends ASTNode:
+class GateAnnotation extends GateASTNode:
 	var name: String = ""              ## without the '@'
 	var args: Array = []               ## Array[Expr]
 
 
-class FuncDecl extends Stmt:
+class GateFuncDecl extends GateStmt:
 	var name: String = ""
 	var params: Array = []             ## Array[Param]
-	var return_type: TypeRef = null
+	var return_type: GateTypeRef = null
 	var body: Array = []               ## Array[Stmt]
 	var is_static: bool = false
 	var is_abstract: bool = false
@@ -208,23 +208,23 @@ class FuncDecl extends Stmt:
 	var mangled_name: String = ""
 
 
-class SignalDecl extends Stmt:
+class GateSignalDecl extends GateStmt:
 	var name: String = ""
 	var params: Array = []
 	var annotations: Array = []
 
 
-class EnumDecl extends Stmt:
+class GateEnumDecl extends GateStmt:
 	var name: String = ""
 	var keys: Array = []               ## Array[String]
 	var values: Array = []             ## Array[Expr] (may hold nulls)
 	var annotations: Array = []
 
 
-class ClassDecl extends Stmt:
+class GateClassDecl extends GateStmt:
 	var form: String = "class"
 	var name: String = ""
-	var extends_type: TypeRef = null
+	var extends_type: GateTypeRef = null
 	var implements: Array = []         ## Array[String]
 	var traits: Array = []             ## Array[String]
 	var requires: Array = []           ## Array[String] (traits only)
@@ -237,76 +237,76 @@ class ClassDecl extends Stmt:
 	var interface_names: Array = []    ## flattened
 
 
-class IfStmt extends Stmt:
-	var cond: Expr = null
+class GateIfStmt extends GateStmt:
+	var cond: GateExpr = null
 	var then_body: Array = []
 	var elifs: Array = []              ## Array[[Expr, Array]]
 	var else_body: Array = []
 	var else_line: int = 0                 ## the `else` keyword's own line
 
 
-class ForStmt extends Stmt:
+class GateForStmt extends GateStmt:
 	var var_names: Array = []          ## 1 = normal, 2 = `for k, v in dict`
-	var var_type: TypeRef = null
-	var iterable: Expr = null
+	var var_type: GateTypeRef = null
+	var iterable: GateExpr = null
 	var body: Array = []
 	var is_enumerate: bool = false     ## `for i, x in enumerate(y)`
 
 
-class WhileStmt extends Stmt:
-	var cond: Expr = null
+class GateWhileStmt extends GateStmt:
+	var cond: GateExpr = null
 	var body: Array = []
 
 
-class MatchStmt extends Stmt:
-	var subject: Expr = null
+class GateMatchStmt extends GateStmt:
+	var subject: GateExpr = null
 	var branches: Array = []           ## Array[[Array patterns, Expr guard, Array body]]
 
 
-class AnnotatedStmt extends Stmt:
+class GateAnnotatedStmt extends GateStmt:
 	var annotations: Array = []        ## Array[Annotation]
-	var stmt: Stmt = null
+	var stmt: GateStmt = null
 
 
-class ReturnStmt extends Stmt:
-	var value: Expr = null
+class GateReturnStmt extends GateStmt:
+	var value: GateExpr = null
 
 
-class SimpleStmt extends Stmt:
+class GateSimpleStmt extends GateStmt:
 	var keyword: String = ""           ## "pass" | "break" | "continue" | "breakpoint"
 
 
-class ExprStmt extends Stmt:
-	var expr: Expr = null
+class GateExprStmt extends GateStmt:
+	var expr: GateExpr = null
 
 
-class AssignStmt extends Stmt:
-	var target: Expr = null
+class GateAssignStmt extends GateStmt:
+	var target: GateExpr = null
 	var op: String = "="               ## "=", "+=", ...
-	var value: Expr = null
+	var value: GateExpr = null
 
 
-class MultiAssign extends Stmt:
+class GateMultiAssign extends GateStmt:
 	var targets: Array = []            ## Array[Expr] or names when declaring
 	var values: Array = []             ## Array[Expr]; single value = destructure
 	var declares: bool = false
 	var destructure: bool = false
 
 
-class RawStmt extends Stmt:
+class GateRawStmt extends GateStmt:
 	var text: String = ""
 
 
-class CommentStmt extends Stmt:
+class GateCommentStmt extends GateStmt:
 	var text: String = ""
 
 
-class Module extends ASTNode:
+class GateModule extends GateASTNode:
 	var path: String = ""
 	var class_name_decl: String = ""
 	var class_name_line: int = 1
 	var extends_line: int = 1
-	var extends_type: TypeRef = null
+	var extends_type: GateTypeRef = null
 	var icon: String = ""
 	var is_tool: bool = false
 	var members: Array = []            ## Array[Stmt]

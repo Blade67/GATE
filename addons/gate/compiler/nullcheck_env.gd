@@ -14,7 +14,7 @@ var _locals: Dictionary = {}
 var _local_names: Dictionary = {}
 var _field_names: Dictionary = {}
 var _cls: String = ""
-var _ret: GateAST.TypeRef = null
+var _ret: GateAST.GateTypeRef = null
 var _quiet: int = 0
 
 var _break_envs: Array = []
@@ -52,27 +52,27 @@ func _path_of(e, depth: int = 0) -> String:
 
 
 func _path_of_inner(e, depth: int) -> String:
-	if e is GateAST.SelfExpr:
+	if e is GateAST.GateSelfExpr:
 		return "self"
-	if e is GateAST.Ident:
-		var n: String = (e as GateAST.Ident).name
+	if e is GateAST.GateIdent:
+		var n: String = (e as GateAST.GateIdent).name
 		if n == "super":
 			return "self"
 		if not _local_names.has(n) and _field_names.has(n) and not _in_static:
 			return "self." + n
 		return n
-	if e is GateAST.Member:
-		var m: GateAST.Member = e
+	if e is GateAST.GateMember:
+		var m: GateAST.GateMember = e
 		if m.safe:
 			return ""
-		if m.target is GateAST.Ident and (m.target as GateAST.Ident).name == _cls and _field_names.has(m.name):
+		if m.target is GateAST.GateIdent and (m.target as GateAST.GateIdent).name == _cls and _field_names.has(m.name):
 			return m.name if _in_static else "self." + m.name
 		var base: String = _path_of(m.target, depth + 1)
 		if base == "":
 			return ""
 		return base + "." + m.name
-	if e is GateAST.Index:
-		var ix: GateAST.Index = e
+	if e is GateAST.GateIndex:
+		var ix: GateAST.GateIndex = e
 		if ix.safe:
 			return ""
 		var b: String = _path_of(ix.target, depth + 1)
@@ -86,26 +86,26 @@ func _path_of_inner(e, depth: int) -> String:
 
 
 func _index_key(e) -> String:
-	if e is GateAST.Literal:
-		var l: GateAST.Literal = e
+	if e is GateAST.GateLiteral:
+		var l: GateAST.GateLiteral = e
 		if l.kind == "number" or l.kind == "string":
 			return l.raw
 		return ""
-	if e is GateAST.Ident:
-		return (e as GateAST.Ident).name
-	if e is GateAST.Unary:
-		var u: GateAST.Unary = e
-		if u.op == "-" and u.operand is GateAST.Literal \
-			and (u.operand as GateAST.Literal).kind == "number":
-			return "-" + (u.operand as GateAST.Literal).raw
+	if e is GateAST.GateIdent:
+		return (e as GateAST.GateIdent).name
+	if e is GateAST.GateUnary:
+		var u: GateAST.GateUnary = e
+		if u.op == "-" and u.operand is GateAST.GateLiteral \
+			and (u.operand as GateAST.GateLiteral).kind == "number":
+			return "-" + (u.operand as GateAST.GateLiteral).raw
 	return ""
 
 
-func _type_of(e) -> GateAST.TypeRef:
-	if e is GateAST.Member:
-		var m: GateAST.Member = e
-		if not m.safe and m.target is GateAST.Ident:
-			var cls: String = (m.target as GateAST.Ident).name
+func _type_of(e) -> GateAST.GateTypeRef:
+	if e is GateAST.GateMember:
+		var m: GateAST.GateMember = e
+		if not m.safe and m.target is GateAST.GateIdent:
+			var cls: String = (m.target as GateAST.GateIdent).name
 			var sf = infer.static_fields.get("%s.%s" % [cls, m.name])
 			if sf != null:
 				return sf
@@ -113,7 +113,7 @@ func _type_of(e) -> GateAST.TypeRef:
 
 
 func _tracked(e) -> bool:
-	var t: GateAST.TypeRef = _type_of(e)
+	var t: GateAST.GateTypeRef = _type_of(e)
 	return t != null and t.nullable
 
 
@@ -206,10 +206,10 @@ func _kill_self_suffix(recv: String, sfx: String) -> void:
 
 
 func _kill_target(target) -> void:
-	if target is GateAST.Ident:
-		_kill_index_var((target as GateAST.Ident).name)
-	if target is GateAST.Index:
-		var ix: GateAST.Index = target
+	if target is GateAST.GateIdent:
+		_kill_index_var((target as GateAST.GateIdent).name)
+	if target is GateAST.GateIndex:
+		var ix: GateAST.GateIndex = target
 		_invalidate_siblings(_path_of(ix.target))
 	var p: String = _path_of(target)
 	if p != "":

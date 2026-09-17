@@ -6,7 +6,7 @@ extends RefCounted
 ## another.
 
 
-class Registry extends RefCounted:
+class GateRegistry extends RefCounted:
 	var interfaces: Dictionary = {}   ## name -> ClassDecl
 	var traits: Dictionary = {}       ## name -> ClassDecl
 	var structs: Dictionary = {}      ## name -> ClassDecl
@@ -36,20 +36,20 @@ class Registry extends RefCounted:
 			var names: Array = table.keys()
 			names.sort()
 			for n in names:
-				var cd: GateAST.ClassDecl = table[n]
+				var cd: GateAST.GateClassDecl = table[n]
 				parts.append("%s|%s|%s|%s|%s|%s|%s" % [table_name, n,
 					origin.get(n, ""), top_level.has(n), cd.lowering,
 					cd.vector_type,
 					cd.extends_type.name if cd.extends_type != null else ""])
 				for m in cd.members:
-					if m is GateAST.VarDecl:
-						var vd: GateAST.VarDecl = m
+					if m is GateAST.GateVarDecl:
+						var vd: GateAST.GateVarDecl = m
 						parts.append(" v:%s:%s" % [vd.name, _type_sig(vd.type)])
-					elif m is GateAST.FuncDecl:
-						var fdm: GateAST.FuncDecl = m
+					elif m is GateAST.GateFuncDecl:
+						var fdm: GateAST.GateFuncDecl = m
 						var ps: PackedStringArray = PackedStringArray()
 						for pp in fdm.params:
-							ps.append(_type_sig((pp as GateAST.Param).type))
+							ps.append(_type_sig((pp as GateAST.GateParam).type))
 						parts.append(" f:%s(%s):%s" % [fdm.name, ",".join(ps),
 							_type_sig(fdm.return_type)])
 		for label in [["F", fields], ["B", bases]]:
@@ -58,7 +58,7 @@ class Registry extends RefCounted:
 			for k in keys:
 				var v = (label[1] as Dictionary)[k]
 				parts.append("%s:%s:%s" % [label[0], k,
-					_type_sig(v) if v is GateAST.TypeRef else String(v)])
+					_type_sig(v) if v is GateAST.GateTypeRef else String(v)])
 		var mkeys: Array = methods.keys()
 		mkeys.sort()
 		for k2 in mkeys:
@@ -71,9 +71,9 @@ class Registry extends RefCounted:
 		return "\n".join(parts)
 
 	static func _type_sig(t) -> String:
-		if not (t is GateAST.TypeRef):
+		if not (t is GateAST.GateTypeRef):
 			return ""
-		var tr: GateAST.TypeRef = t
+		var tr: GateAST.GateTypeRef = t
 		var g: PackedStringArray = PackedStringArray()
 		for a in tr.generic_args:
 			g.append(_type_sig(a))
@@ -102,15 +102,15 @@ func _index_file(path: String) -> void:
 	var diags: GateDiagnostics = GateDiagnostics.new()
 	diags.file = path
 	var lexer: GateLexer = GateLexer.new()
-	var tokens: Array[GateLexer.Token] = lexer.tokenize(src, diags)
+	var tokens: Array[GateLexer.GateToken] = lexer.tokenize(src, diags)
 	var parser: GateParser = GateParser.new()
-	var mod: GateAST.Module = parser.parse(tokens, src, diags)
+	var mod: GateAST.GateModule = parser.parse(tokens, src, diags)
 
 	if mod.class_name_decl != "":
 		registry.script_class_names[mod.class_name_decl] = path
 	for m in mod.members:
-		if m is GateAST.ClassDecl:
-			registry.top_level[(m as GateAST.ClassDecl).name] = true
+		if m is GateAST.GateClassDecl:
+			registry.top_level[(m as GateAST.GateClassDecl).name] = true
 	_collect(mod.members, path)
 	for gu in mod.generic_uses:
 		registry.generic_uses.append(gu)
@@ -118,9 +118,9 @@ func _index_file(path: String) -> void:
 
 func _collect(members: Array, path: String) -> void:
 	for m in members:
-		if not (m is GateAST.ClassDecl):
+		if not (m is GateAST.GateClassDecl):
 			continue
-		var cd: GateAST.ClassDecl = m
+		var cd: GateAST.GateClassDecl = m
 		match cd.form:
 			"interface":
 				registry.interfaces[cd.name] = cd
@@ -144,26 +144,26 @@ func _collect(members: Array, path: String) -> void:
 		if cd.extends_type != null:
 			registry.bases[cd.name] = cd.extends_type.name
 		for mm in cd.members:
-			if mm is GateAST.FuncDecl:
-				var key: String = "%s.%s" % [cd.name, (mm as GateAST.FuncDecl).name]
+			if mm is GateAST.GateFuncDecl:
+				var key: String = "%s.%s" % [cd.name, (mm as GateAST.GateFuncDecl).name]
 				if not registry.methods.has(key):
 					registry.methods[key] = []
 				registry.methods[key].append(mm)
-			elif mm is GateAST.VarDecl:
-				var fvd: GateAST.VarDecl = mm
+			elif mm is GateAST.GateVarDecl:
+				var fvd: GateAST.GateVarDecl = mm
 				if fvd.type != null:
 					registry.fields["%s.%s" % [cd.name, fvd.name]] = fvd.type
 		_collect(cd.members, path)
 
 
-func _compute_struct_lowering(cd: GateAST.ClassDecl) -> void:
+func _compute_struct_lowering(cd: GateAST.GateClassDecl) -> void:
 	var field_types: Array = []
 	var has_methods: bool = false
 	for m in cd.members:
-		if m is GateAST.VarDecl:
-			var vd: GateAST.VarDecl = m
+		if m is GateAST.GateVarDecl:
+			var vd: GateAST.GateVarDecl = m
 			field_types.append(vd.type.name if vd.type != null else "Variant")
-		elif m is GateAST.FuncDecl:
+		elif m is GateAST.GateFuncDecl:
 			has_methods = true
 	var low: Dictionary = GateTypes.struct_lowering(field_types)
 	if low["kind"] == "vector" and not has_methods:

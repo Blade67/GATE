@@ -12,10 +12,10 @@ func _expr(e) -> String:
 	if e == null:
 		return "null"
 
-	if e is GateAST.Literal:
-		return (e as GateAST.Literal).raw
-	if e is GateAST.Ident:
-		var iname: String = (e as GateAST.Ident).name
+	if e is GateAST.GateLiteral:
+		return (e as GateAST.GateLiteral).raw
+	if e is GateAST.GateIdent:
+		var iname: String = (e as GateAST.GateIdent).name
 		if _soa_cursors.has(iname):
 			diagnostics.error(
 				"'%s' is a value view into the @soa array '%s' and cannot be stored"
@@ -33,7 +33,7 @@ func _expr(e) -> String:
 				% iname
 				+ "`for i in range(%s.size())` with `%s[i].field`." % [iname, iname])
 			return "null"
-		var gb: String = (e as GateAST.Ident).generic_base
+		var gb: String = (e as GateAST.GateIdent).generic_base
 		if gb != "":
 			if _generic_renames.has(iname):
 				iname = _generic_renames[iname]
@@ -44,31 +44,31 @@ func _expr(e) -> String:
 		if ialias != "":
 			return "%s.%s" % [ialias, iname]
 		return iname
-	if e is GateAST.SelfExpr:
+	if e is GateAST.GateSelfExpr:
 		return "self"
-	if e is GateAST.NodePathExpr:
-		return (e as GateAST.NodePathExpr).raw
-	if e is GateAST.RawExpr:
-		return (e as GateAST.RawExpr).text
+	if e is GateAST.GateNodePathExpr:
+		return (e as GateAST.GateNodePathExpr).raw
+	if e is GateAST.GateRawExpr:
+		return (e as GateAST.GateRawExpr).text
 
-	if e is GateAST.Unary:
-		var u: GateAST.Unary = e
+	if e is GateAST.GateUnary:
+		var u: GateAST.GateUnary = e
 		var op: String = u.op
 		if op == "not":
 			return "not %s" % _paren_below(u.operand, PREC_ATOM)
-		if u.operand is GateAST.Binary and (u.operand as GateAST.Binary).op == "**":
+		if u.operand is GateAST.GateBinary and (u.operand as GateAST.GateBinary).op == "**":
 			return "%s(%s)" % [op, _expr(u.operand)]
-		if op == "+" and not u.tight and u.operand is GateAST.Literal:
-			var raw: String = (u.operand as GateAST.Literal).raw
+		if op == "+" and not u.tight and u.operand is GateAST.GateLiteral:
+			var raw: String = (u.operand as GateAST.GateLiteral).raw
 			if raw.begins_with("0x") or raw.begins_with("0b") or raw.begins_with("0X") or raw.begins_with("0B"):
 				return "+(%s)" % raw
 		return "%s%s" % [op, _paren_below(u.operand, PREC_UNARY)]
 
-	if e is GateAST.Binary:
+	if e is GateAST.GateBinary:
 		return _emit_binary(e)
 
-	if e is GateAST.NullCoalesce:
-		var nc: GateAST.NullCoalesce = e
+	if e is GateAST.GateNullCoalesce:
+		var nc: GateAST.GateNullCoalesce = e
 		var lhs: String = _expr(nc.left)
 		if not _is_simple(nc.left) and not _is_bare_ident(lhs):
 			var t: String = _new_tmp()
@@ -76,8 +76,8 @@ func _expr(e) -> String:
 			lhs = t
 		return "(%s if %s != null else %s)" % [lhs, lhs, _expr(nc.right)]
 
-	if e is GateAST.Ternary:
-		var t3: GateAST.Ternary = e
+	if e is GateAST.GateTernary:
+		var t3: GateAST.GateTernary = e
 		var cond: String = _expr(t3.cond)
 		var saved_p: PackedStringArray = _pending
 		_pending = PackedStringArray()
@@ -87,12 +87,12 @@ func _expr(e) -> String:
 		var bv: String = _expr(t3.if_false)
 		var bp: PackedStringArray = _pending
 		_pending = saved_p
-		if t3.if_true is GateAST.Lambda:
+		if t3.if_true is GateAST.GateLambda:
 			av = "(%s)" % av
-		if t3.if_false is GateAST.Lambda:
+		if t3.if_false is GateAST.GateLambda:
 			bv = "(%s)" % bv
 		if ap.is_empty() and bp.is_empty():
-			if t3.if_false is GateAST.Ternary:
+			if t3.if_false is GateAST.GateTernary:
 				return "%s if %s else %s" % [av, cond, bv]
 			return "(%s if %s else %s)" % [av, cond, bv]
 		var tmp: String = _new_tmp()
@@ -107,21 +107,21 @@ func _expr(e) -> String:
 		_hoist("	%s = %s" % [tmp, bv])
 		return tmp
 
-	if e is GateAST.Member and (e as GateAST.Member).target is GateAST.Ident:
-		var sm: GateAST.Member = e
-		var skey: String = "%s.%s" % [(sm.target as GateAST.Ident).name, sm.name]
+	if e is GateAST.GateMember and (e as GateAST.GateMember).target is GateAST.GateIdent:
+		var sm: GateAST.GateMember = e
+		var skey: String = "%s.%s" % [(sm.target as GateAST.GateIdent).name, sm.name]
 		if _scalar_names.has(skey):
 			return _scalar_names[skey]
 
-	if e is GateAST.Member or e is GateAST.Index:
+	if e is GateAST.GateMember or e is GateAST.GateIndex:
 		var flat: String = _emit_postfix_spine(e)
 		if flat != "":
 			return flat
 
-	if e is GateAST.Member:
-		var m: GateAST.Member = e
-		if m.target is GateAST.Ident and _soa_cursors.has((m.target as GateAST.Ident).name):
-			var cur: Dictionary = _soa_cursors[(m.target as GateAST.Ident).name]
+	if e is GateAST.GateMember:
+		var m: GateAST.GateMember = e
+		if m.target is GateAST.GateIdent and _soa_cursors.has((m.target as GateAST.GateIdent).name):
+			var cur: Dictionary = _soa_cursors[(m.target as GateAST.GateIdent).name]
 			var cinfo: Dictionary = _soa[cur["soa"]]
 			var carr: String = _soa_field_array(cinfo, m.name)
 			if carr == "":
@@ -131,8 +131,8 @@ func _expr(e) -> String:
 						% ", ".join(PackedStringArray(cinfo["fields"])))
 				return "null"
 			return "%s[%s]" % [carr, cur["idx"]]
-		if m.target is GateAST.Index:
-			var mix: GateAST.Index = m.target
+		if m.target is GateAST.GateIndex:
+			var mix: GateAST.GateIndex = m.target
 			var sname: String = _soa_name(mix.target)
 			if sname != "":
 				var info: Dictionary = _soa[sname]
@@ -165,8 +165,8 @@ func _expr(e) -> String:
 			return res
 		return "%s.%s" % [base, m.name]
 
-	if e is GateAST.Index:
-		var ix: GateAST.Index = e
+	if e is GateAST.GateIndex:
+		var ix: GateAST.GateIndex = e
 		var base2: String = _postfix_base(ix.target)
 		var idx: String = _expr(ix.index)
 		if ix.safe:
@@ -179,27 +179,27 @@ func _expr(e) -> String:
 			return res2
 		return "%s[%s]" % [base2, idx]
 
-	if e is GateAST.Call:
+	if e is GateAST.GateCall:
 		return _emit_call(e)
 
-	if e is GateAST.ArrayLit:
-		var al: GateAST.ArrayLit = e
+	if e is GateAST.GateArrayLit:
+		var al: GateAST.GateArrayLit = e
 		var parts: PackedStringArray = PackedStringArray()
 		var lines: PackedInt32Array = PackedInt32Array()
 		_coll_depth += 1
 		for el in al.elements:
 			parts.append(_copy_value(el))
-			lines.append((el as GateAST.Expr).line)
+			lines.append((el as GateAST.GateExpr).line)
 		_coll_depth -= 1
 		return _collection("[", parts, "]", lines)
 
-	if e is GateAST.DictLit:
-		var dl: GateAST.DictLit = e
+	if e is GateAST.GateDictLit:
+		var dl: GateAST.GateDictLit = e
 		var parts2: PackedStringArray = PackedStringArray()
 		var lines2: PackedInt32Array = PackedInt32Array()
 		_coll_depth += 1
 		for i in dl.keys.size():
-			lines2.append((dl.keys[i] as GateAST.Expr).line)
+			lines2.append((dl.keys[i] as GateAST.GateExpr).line)
 			var v = dl.values[i] if i < dl.values.size() else null
 			var lua: bool = i < dl.lua_keys.size() and dl.lua_keys[i]
 			if v == null:
@@ -211,28 +211,28 @@ func _expr(e) -> String:
 		_coll_depth -= 1
 		return _collection("{", parts2, "}", lines2)
 
-	if e is GateAST.AwaitExpr:
-		return "await " + _expr((e as GateAST.AwaitExpr).operand)
+	if e is GateAST.GateAwaitExpr:
+		return "await " + _expr((e as GateAST.GateAwaitExpr).operand)
 
-	if e is GateAST.CastExpr:
-		var ce: GateAST.CastExpr = e
+	if e is GateAST.GateCastExpr:
+		var ce: GateAST.GateCastExpr = e
 		var inner: String = _expr(ce.operand)
 		# A lambda body extends as far right as it can, so it needs parentheses before
 		# the cast or the cast lands inside the body.
-		if ce.operand is GateAST.Lambda:
+		if ce.operand is GateAST.GateLambda:
 			inner = "(%s)" % inner
-		if ce.operand is GateAST.CastExpr:
+		if ce.operand is GateAST.GateCastExpr:
 			return "%s as %s" % [inner, _map_type(ce.type)]
 		return "(%s as %s)" % [inner, _map_type(ce.type)]
 
-	if e is GateAST.IsExpr:
+	if e is GateAST.GateIsExpr:
 		return _emit_is(e)
 
-	if e is GateAST.FString:
+	if e is GateAST.GateFString:
 		return _emit_fstring(e)
 
-	if e is GateAST.ObjectInit:
-		var oi: GateAST.ObjectInit = e
+	if e is GateAST.GateObjectInit:
+		var oi: GateAST.GateObjectInit = e
 		var t6: String = _new_tmp()
 		var st: Dictionary = _struct_of(oi.type.name)
 		if not st.is_empty() and st["lowering"] == "vector":
@@ -249,7 +249,7 @@ func _expr(e) -> String:
 			_hoist("%s.%s = %s" % [t6, oi.keys[i], _copy_value(oi.values[i])])
 		return t6
 
-	if e is GateAST.Lambda:
+	if e is GateAST.GateLambda:
 		return _emit_lambda(e)
 
 	diagnostics.warn("unhandled expression kind", e.line, e.col)
@@ -257,7 +257,7 @@ func _expr(e) -> String:
 
 
 func _needs_copy(e) -> bool:
-	if e is GateAST.Call or e is GateAST.ObjectInit:
+	if e is GateAST.GateCall or e is GateAST.GateObjectInit:
 		return false
 	var tn: String = _static_type_of(e)
 	if tn == "":
@@ -276,16 +276,16 @@ func _emit_postfix_spine(e) -> String:
 	var steps: Array = []
 	var node = e
 	while true:
-		if node is GateAST.Member:
-			var m: GateAST.Member = node
+		if node is GateAST.GateMember:
+			var m: GateAST.GateMember = node
 			if m.safe or _soa_name(m.target) != "" or not _vector_struct_of(m.target).is_empty():
 				return ""
-			if m.target is GateAST.Ident and _soa_cursors.has((m.target as GateAST.Ident).name):
+			if m.target is GateAST.GateIdent and _soa_cursors.has((m.target as GateAST.GateIdent).name):
 				return ""
 			steps.push_front(node)
 			node = m.target
-		elif node is GateAST.Index:
-			var ix: GateAST.Index = node
+		elif node is GateAST.GateIndex:
+			var ix: GateAST.GateIndex = node
 			if ix.safe or _soa_name(ix.target) != "":
 				return ""
 			steps.push_front(node)
@@ -296,10 +296,10 @@ func _emit_postfix_spine(e) -> String:
 		return ""   # short enough for the readable path
 	var out: String = _postfix_base(node)
 	for st in steps:
-		if st is GateAST.Member:
-			out += ".%s" % (st as GateAST.Member).name
+		if st is GateAST.GateMember:
+			out += ".%s" % (st as GateAST.GateMember).name
 		else:
-			out += "[%s]" % _expr((st as GateAST.Index).index)
+			out += "[%s]" % _expr((st as GateAST.GateIndex).index)
 	return out
 
 
@@ -314,7 +314,7 @@ func _paren_below(e, floor_prec: int) -> String:
 	return s
 
 
-func _emit_binary(b: GateAST.Binary) -> String:
+func _emit_binary(b: GateAST.GateBinary) -> String:
 	var lt: String = _static_type_of(b.left)
 	if lt != "" and _struct_ops.has(lt):
 		var ops: Dictionary = _struct_ops[lt]
@@ -324,19 +324,19 @@ func _emit_binary(b: GateAST.Binary) -> String:
 	if op == "not in":
 		return "not (%s in %s)" % [_expr(b.left), _expr(b.right)]
 	var p: int = PREC.get(op, PREC_ATOM)
-	if (op == "and" or op == "or") and b.left is GateAST.Binary and (b.left as GateAST.Binary).op == op:
+	if (op == "and" or op == "or") and b.left is GateAST.GateBinary and (b.left as GateAST.GateBinary).op == op:
 		var achain: Array = []
 		var anode = b
-		while anode is GateAST.Binary and (anode as GateAST.Binary).op == op:
+		while anode is GateAST.GateBinary and (anode as GateAST.GateBinary).op == op:
 			achain.push_front(anode)
-			anode = (anode as GateAST.Binary).left
+			anode = (anode as GateAST.GateBinary).left
 		if achain.size() > 1:
 			var saved_p: PackedStringArray = _pending
 			_pending = PackedStringArray()
 			var parts: PackedStringArray = PackedStringArray()
-			parts.append(_paren_below((achain[0] as GateAST.Binary).left, p))
+			parts.append(_paren_below((achain[0] as GateAST.GateBinary).left, p))
 			for n in achain:
-				parts.append(_paren_below((n as GateAST.Binary).right, p + 1))
+				parts.append(_paren_below((n as GateAST.GateBinary).right, p + 1))
 			var chain_pending: PackedStringArray = _pending
 			_pending = saved_p
 			if chain_pending.is_empty():
@@ -344,19 +344,19 @@ func _emit_binary(b: GateAST.Binary) -> String:
 			for h in chain_pending:
 				_hoist(h)
 
-	if op != "and" and op != "or" and b.left is GateAST.Binary:
+	if op != "and" and op != "or" and b.left is GateAST.GateBinary:
 		var chain: Array = []
 		var node = b
-		while node is GateAST.Binary:
-			var nb: GateAST.Binary = node
+		while node is GateAST.GateBinary:
+			var nb: GateAST.GateBinary = node
 			if nb.op == "and" or nb.op == "or" or nb.op == "not in":
 				break
 			var lt2: String = _static_type_of(nb.left)
 			if lt2 != "" and _struct_ops.has(lt2):
 				break
-			if not (nb.left is GateAST.Binary):
+			if not (nb.left is GateAST.GateBinary):
 				break
-			var child: GateAST.Binary = nb.left
+			var child: GateAST.GateBinary = nb.left
 			if int(PREC.get(child.op, PREC_ATOM)) < int(PREC.get(nb.op, PREC_ATOM)):
 				break
 			if child.op == "and" or child.op == "or" or child.op == "not in":
@@ -364,10 +364,10 @@ func _emit_binary(b: GateAST.Binary) -> String:
 			chain.push_front(nb)
 			node = child
 		if chain.size() > 1:
-			var first: GateAST.Binary = chain[0]
+			var first: GateAST.GateBinary = chain[0]
 			var out: String = _paren_below(first.left, int(PREC.get(first.op, PREC_ATOM)))
 			for n in chain:
-				var bn: GateAST.Binary = n
+				var bn: GateAST.GateBinary = n
 				var bp: int = PREC.get(bn.op, PREC_ATOM)
 				out += " %s %s" % [bn.op, _paren_below(bn.right, bp + 1)]
 			return out
@@ -397,7 +397,7 @@ func _guarded_operand(op: String, lhs: String, rhs_pending: PackedStringArray, r
 	return t
 
 
-func _emit_is(ie: GateAST.IsExpr) -> String:
+func _emit_is(ie: GateAST.GateIsExpr) -> String:
 	var operand: String = _paren_below(ie.operand, PREC_TYPE_TEST)
 	var tname: String = ie.type.name
 	if not _is_known_native(tname) and _looks_like_interface(tname):
@@ -408,7 +408,7 @@ func _emit_is(ie: GateAST.IsExpr) -> String:
 	return "not (%s)" % s if ie.negated else s
 
 
-func _check_struct_arity(name: String, st: Dictionary, c: GateAST.Call) -> void:
+func _check_struct_arity(name: String, st: Dictionary, c: GateAST.GateCall) -> void:
 	var n_fields: int = (st["fields"] as Array).size()
 	var given: int = c.args.size()
 	var ok: bool = given <= n_fields
@@ -423,10 +423,10 @@ func _check_struct_arity(name: String, st: Dictionary, c: GateAST.Call) -> void:
 			% ", ".join(PackedStringArray(st["fields"])))
 
 
-func _emit_call(c: GateAST.Call) -> String:
-	if (c.callee is GateAST.Ident and (c.callee as GateAST.Ident).name == "preload"
-			and c.args.size() == 1 and c.args[0] is GateAST.Literal):
-		var lit: GateAST.Literal = c.args[0]
+func _emit_call(c: GateAST.GateCall) -> String:
+	if (c.callee is GateAST.GateIdent and (c.callee as GateAST.GateIdent).name == "preload"
+			and c.args.size() == 1 and c.args[0] is GateAST.GateLiteral):
+		var lit: GateAST.GateLiteral = c.args[0]
 		if lit.kind == "string":
 			var target: String = lit.raw
 			if target.length() >= 2:
@@ -434,8 +434,8 @@ func _emit_call(c: GateAST.Call) -> String:
 			if target != "":
 				_preload_targets[target] = true
 
-	if c.callee is GateAST.Member:
-		var cm: GateAST.Member = c.callee
+	if c.callee is GateAST.GateMember:
+		var cm: GateAST.GateMember = c.callee
 		var sname: String = _soa_name(cm.target)
 		if sname != "":
 			return _emit_soa_call(sname, cm, c)
@@ -444,8 +444,8 @@ func _emit_call(c: GateAST.Call) -> String:
 	for a in c.args:
 		args.append(_copy_value(a))
 
-	if c.callee is GateAST.Member and (c.callee as GateAST.Member).safe:
-		var sm: GateAST.Member = c.callee
+	if c.callee is GateAST.GateMember and (c.callee as GateAST.GateMember).safe:
+		var sm: GateAST.GateMember = c.callee
 		var recv: String = _postfix_base(sm.target)
 		if not _is_simple(sm.target) and not _is_bare_ident(recv):
 			var rt: String = _new_tmp()
@@ -456,8 +456,8 @@ func _emit_call(c: GateAST.Call) -> String:
 			% [sres, recv, sm.name, ", ".join(args), recv])
 		return sres
 
-	if c.callee is GateAST.Ident:
-		var n: String = (c.callee as GateAST.Ident).name
+	if c.callee is GateAST.GateIdent:
+		var n: String = (c.callee as GateAST.GateIdent).name
 		if CTOR_SHORTHAND.has(n) and not _declared_funcs.has(n):
 			return "%s(%s)" % [CTOR_SHORTHAND[n], ", ".join(args)]
 		var st: Dictionary = _struct_of(n)
@@ -470,8 +470,8 @@ func _emit_call(c: GateAST.Call) -> String:
 				return "%s.%s.new(%s)" % [salias, n, ", ".join(args)]
 			return "%s.new(%s)" % [n, ", ".join(args)]
 
-	if c.callee is GateAST.Member:
-		var qm: GateAST.Member = c.callee
+	if c.callee is GateAST.GateMember:
+		var qm: GateAST.GateMember = c.callee
 		var qst: Dictionary = _struct_of(qm.name)
 		if not qst.is_empty() and _is_namespace_ref(qm.target):
 			_check_struct_arity(qm.name, qst, c)
@@ -479,27 +479,27 @@ func _emit_call(c: GateAST.Call) -> String:
 				return "%s(%s)" % [qst["vector"], ", ".join(args)]
 			return "%s.%s.new(%s)" % [_expr(qm.target), qm.name, ", ".join(args)]
 
-	if c.callee is GateAST.Ident:
-		var base: String = (c.callee as GateAST.Ident).name
+	if c.callee is GateAST.GateIdent:
+		var base: String = (c.callee as GateAST.GateIdent).name
 		var mangled: String = _resolve_overload(base, c.args.size())
 		if mangled != "" and _overload_declared_by_chain(base, _cur_class):
 			return "%s(%s)" % [mangled, ", ".join(args)]
-	elif c.callee is GateAST.Member:
-		var mem: GateAST.Member = c.callee
+	elif c.callee is GateAST.GateMember:
+		var mem: GateAST.GateMember = c.callee
 		var mangled2: String = _resolve_overload(mem.name, c.args.size())
 		if mangled2 != "":
-			if mem.target is GateAST.SelfExpr:
+			if mem.target is GateAST.GateSelfExpr:
 				if _overload_declared_by_chain(mem.name, _cur_class):
 					return "%s.%s(%s)" % [_postfix_base(mem.target), mangled2, ", ".join(args)]
 				return "%s.%s(%s)" % [_postfix_base(mem.target), mem.name, ", ".join(args)]
 			var owner: String = _static_type_of(mem.target)
 			if owner != "" and _overload_declared_by_chain(mem.name, owner):
 				return "%s.%s(%s)" % [_postfix_base(mem.target), mangled2, ", ".join(args)]
-			if owner == "" and mem.target is GateAST.Ident:
-				var tn: String = (mem.target as GateAST.Ident).name
+			if owner == "" and mem.target is GateAST.GateIdent:
+				var tn: String = (mem.target as GateAST.GateIdent).name
 				if _local_types.has(tn) or not _struct_of(tn).is_empty():
 					owner = tn
-			if owner == "" and mem.target is GateAST.Ident and (mem.target as GateAST.Ident).name == "super":
+			if owner == "" and mem.target is GateAST.GateIdent and (mem.target as GateAST.GateIdent).name == "super":
 				owner = _cur_base
 			if owner != "" and _overload_declared_by(mem.name, owner):
 				return "%s.%s(%s)" % [_postfix_base(mem.target), mangled2, ", ".join(args)]
@@ -508,13 +508,13 @@ func _emit_call(c: GateAST.Call) -> String:
 
 
 func _is_namespace_ref(e) -> bool:
-	if not (e is GateAST.Ident):
+	if not (e is GateAST.GateIdent):
 		return false
-	var n: String = (e as GateAST.Ident).name
+	var n: String = (e as GateAST.GateIdent).name
 	return not _var_types.has(n)
 
 
-func _emit_soa_call(sname: String, cm: GateAST.Member, c: GateAST.Call) -> String:
+func _emit_soa_call(sname: String, cm: GateAST.GateMember, c: GateAST.GateCall) -> String:
 	var info: Dictionary = _soa[sname]
 	var arrays: Array = info["arrays"]
 	var accessors: Array = info["accessors"]
@@ -551,7 +551,7 @@ func _emit_soa_call(sname: String, cm: GateAST.Member, c: GateAST.Call) -> Strin
 	return "null"
 
 
-func _emit_fstring(fs: GateAST.FString) -> String:
+func _emit_fstring(fs: GateAST.GateFString) -> String:
 	var fmt: String = ""
 	var args: PackedStringArray = PackedStringArray()
 	for part in fs.parts:
@@ -599,22 +599,22 @@ func _collection(open_b: String, parts: PackedStringArray, close_b: String, elem
 	return "\n".join(lines)
 
 
-func _discards_safe_call(l: GateAST.Lambda) -> bool:
+func _discards_safe_call(l: GateAST.GateLambda) -> bool:
 	if l.return_type != null and l.return_type.name != "void":
 		return false   # the value is used, so the ternary is right
-	var e = (l.body[0] as GateAST.ExprStmt).expr
-	if not (e is GateAST.Call):
+	var e = (l.body[0] as GateAST.GateExprStmt).expr
+	if not (e is GateAST.GateCall):
 		return false
-	var c: GateAST.Call = e
-	return c.callee is GateAST.Member and (c.callee as GateAST.Member).safe
+	var c: GateAST.GateCall = e
+	return c.callee is GateAST.GateMember and (c.callee as GateAST.GateMember).safe
 
 
-func _emit_lambda(l: GateAST.Lambda) -> String:
+func _emit_lambda(l: GateAST.GateLambda) -> String:
 	var head: String = "func%s(%s)" % [(" " + l.name) if l.name != "" else "", _params(l.params)]
 	if l.return_type != null:
 		head += " -> " + _map_type(l.return_type)
-	if l.body.size() == 1 and l.body[0] is GateAST.ReturnStmt:
-		var r: GateAST.ReturnStmt = l.body[0]
+	if l.body.size() == 1 and l.body[0] is GateAST.GateReturnStmt:
+		var r: GateAST.GateReturnStmt = l.body[0]
 		if r.value == null:
 			return "%s: return" % head
 		var saved_pending: PackedStringArray = _pending
@@ -625,11 +625,11 @@ func _emit_lambda(l: GateAST.Lambda) -> String:
 		if hoisted.is_empty():
 			return "%s: return %s" % [head, rv]
 		return _lambda_block(head, hoisted, "return " + rv)
-	elif (l.body.size() == 1 and l.body[0] is GateAST.ExprStmt
+	elif (l.body.size() == 1 and l.body[0] is GateAST.GateExprStmt
 			and not _discards_safe_call(l)):
 		var saved_pending2: PackedStringArray = _pending
 		_pending = PackedStringArray()
-		var ex: String = _expr((l.body[0] as GateAST.ExprStmt).expr)
+		var ex: String = _expr((l.body[0] as GateAST.GateExprStmt).expr)
 		var hoisted2: PackedStringArray = _pending
 		_pending = saved_pending2
 		var last: String = ex
@@ -652,7 +652,7 @@ func _emit_lambda(l: GateAST.Lambda) -> String:
 	_map = saved_map
 	_indent = saved_indent
 	_pending_line_src = body_map.duplicate()
-	if not l.body.is_empty() and l.body[l.body.size() - 1] is GateAST.MatchStmt:
+	if not l.body.is_empty() and l.body[l.body.size() - 1] is GateAST.GateMatchStmt:
 		body_lines.append("	".repeat(_indent))
 		_pending_line_src.append(body_map[body_map.size() - 1] if not body_map.is_empty() else l.line)
 	return head + ":\n" + "\n".join(body_lines)
@@ -661,7 +661,7 @@ func _emit_lambda(l: GateAST.Lambda) -> String:
 func _params(params: Array) -> String:
 	var parts: PackedStringArray = PackedStringArray()
 	for p in params:
-		var pp: GateAST.Param = p
+		var pp: GateAST.GateParam = p
 		var s: String = ("..." if pp.is_rest else "") + pp.name
 		if pp.type != null:
 			s += ": " + _map_type(pp.type)
