@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.1.1 - 2026-09-18
+
+A compatibility fix. GATE's own type names claimed ordinary words, so a project that
+used one of those words as a `class_name` could stop the plugin working, in one case
+without saying so.
+
+### Fixed
+
+- **A global class named like one of GATE's internal types broke the plugin.** A project
+  declaring `class_name Registry`, as the YARD addon does, made Godot refuse GATE's own
+  `project.gd` with *Class "Registry" hides a global script class*, and every script
+  depending on it failed after that, so GATE did not merely conflict with your code, it
+  stopped running. 55 internal class names were exposed this way, among them `Token`,
+  `Module`, `Result`, `Call`, `Member`, `Index`, `Param`, `Literal` and `Lambda`. Every
+  one now carries an underscore, `GateLexer._Token` rather than `GateLexer.Token`.
+- **The quieter half of the same bug.** `plugin.gd` held its preloads in constants named
+  `Integration` and `SourceFollow` and used them as types, and `checker.gd` returned
+  named enums `NodeKind` and `Inherits`. A project declaring one of those names made
+  `plugin.gd` itself fail to parse, which is worse than it sounds: GATE never loaded, so
+  it could report nothing, the one error pointed inside the addon rather than at your
+  code, and editing a `.gate` silently left the previously generated `.gd` in place. The
+  game kept running the old output. Those names are prefixed too, and the same holds for
+  the other preload constants: `Icon`, `Export`, `Level`, `Tabs`, `Warnings`, `Lookup`,
+  `Complete`, `Highlighter`, `Autoload`, `Breakpoints`, `Sourcemap` and the rest.
+- The test suite now builds a project that declares a global class for every name GATE
+  declares, reading them out of the addon rather than from a list, so a type added later
+  is covered the day it lands.
+
+Reported by @squidt, with a reproduction that made it a minute's work to confirm, and
+fixed the way @penggrin12 proposed in #7. Nothing else changed: the compiler, the
+generated output and the editor integration are the same as 1.1.0.
+
 ## 1.1.0 - 2026-09-18
 
 The first feature release. Most of it is types: unions, tuples, typed callables,

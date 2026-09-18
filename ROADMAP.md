@@ -6,6 +6,14 @@ already released is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Next
 
+- **A class declared in a `.gate` can be attached to a node.** Today a top-level
+  `class Foo extends Node2D:` lowers to an inner class of the generated `.gd`, so Godot
+  will not let you attach it or place it from the Create Node dialog
+  ([#6](https://github.com/Blade67/GATE/issues/6)). It should produce a script Godot
+  recognises. The open question is the spelling: whether a top-level class becomes a
+  `class_name` automatically, or whether you keep saying so yourself. Whichever it is,
+  it changes what existing files compile to, so it comes with a rule written down in
+  SYNTAX.md rather than quietly.
 - **Arrow lambdas.** `array.map((int x) => x + 1)`, so a one-expression lambda stops
   costing a `func(x): return x`.
 - **Per-member dependency tracking.** A file is rebuilt today when anything it reads
