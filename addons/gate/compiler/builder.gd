@@ -912,7 +912,7 @@ func _function_hashes(infer: GateInfer, registry, files: Dictionary) -> Dictiona
 			var tk: GateLexer._Token = t
 			while j + 1 < list.size() and tk.line >= int(list[j + 1][0]):
 				j += 1
-			if j < 0 or tk.type == GateLexer.T.COMMENT or tk.type == GateLexer.T.NEWLINE:
+			if j < 0 or tk.type == GateLexer._T.COMMENT or tk.type == GateLexer._T.NEWLINE:
 				continue
 			(parts[j] as Array).append("%d|%s|%s" % [tk.type, tk.value, tk.extra])
 		var fns2: Dictionary = {}
@@ -1059,12 +1059,12 @@ func _mentions(text: String, from: String) -> Array:
 		for t in lexed[1]:
 			var tk: GateLexer._Token = t
 			match tk.type:
-				GateLexer.T.IDENT, GateLexer.T.KEYWORD:
+				GateLexer._T.IDENT, GateLexer._T.KEYWORD:
 					seen[tk.value] = true
-				GateLexer.T.FSTRING:
+				GateLexer._T.FSTRING:
 					for m0 in _word_re.search_all(tk.value):
 						seen[m0.get_string()] = true
-				GateLexer.T.STRING:
+				GateLexer._T.STRING:
 					var r0: String = _resolve_ref(tk.value, from) if tk.value.get_extension().to_lower() in ["gd", "gate", "tscn", "scn", "tres", "res"] else ""
 					if r0 != "":
 						seen[r0] = true
@@ -1176,7 +1176,7 @@ func compile_file(gate_path: String, registry = null, deferred = null, reg_sig: 
 	if not res.ok:
 		var told: PackedStringArray = PackedStringArray()
 		for d in res.diagnostics.items:
-			if d.level == GateDiagnostics.Level.ERROR:
+			if d.level == GateDiagnostics._Level.ERROR:
 				told.append("[GATE] " + d.format())
 		told.append("[GATE] %s: %d error(s); %s not updated"
 			% [gate_path, res.diagnostics.error_count(), out_path])
@@ -1187,7 +1187,7 @@ func compile_file(gate_path: String, registry = null, deferred = null, reg_sig: 
 	_refused.erase(gate_path)
 	var said: PackedStringArray = PackedStringArray()
 	for d in res.diagnostics.items:
-		if d.level == GateDiagnostics.Level.WARNING:
+		if d.level == GateDiagnostics._Level.WARNING:
 			said.append("[GATE] " + d.format())
 	warnings.append_array(said)
 

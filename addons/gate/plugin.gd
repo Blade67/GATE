@@ -3,17 +3,17 @@ extends EditorPlugin
 
 ## GATE - compiles .gate files to .gd on save.
 
-const SourceFollow := preload("res://addons/gate/source_follow.gd")
-const Integration := preload("res://addons/gate/editor/integration.gd")
-const Tabs := preload("res://addons/gate/editor/tabs.gd")
+const _SourceFollow := preload("res://addons/gate/source_follow.gd")
+const _Integration := preload("res://addons/gate/editor/integration.gd")
+const _Tabs := preload("res://addons/gate/editor/tabs.gd")
 
 const RECOMPILE_ITEM: String = "Recompile all GATE files"
 
 var _builder: GateBuilder = GateBuilder.new()
-var _integration: Integration = Integration.new()
+var _integration: _Integration = _Integration.new()
 var _compiling: bool = false
 var _fs: EditorFileSystem
-var _follow: SourceFollow = SourceFollow.new()
+var _follow: _SourceFollow = _SourceFollow.new()
 var _swept_after_scan: bool = false
 var _rescan_pending: bool = false
 var _removed: PackedStringArray = PackedStringArray()
@@ -37,17 +37,17 @@ func _enter_tree() -> void:
 ## `.gate` tabs never stay in the saved layout, so a session without GATE cannot
 ## reopen one as plain text and rewrite it on exit. See editor/tabs.gd.
 func _get_window_layout(configuration: ConfigFile) -> void:
-	Tabs.hide_from_layout(configuration)
+	_Tabs.hide_from_layout(configuration)
 
 
 func _set_window_layout(configuration: ConfigFile) -> void:
-	Tabs.restore_from_layout(configuration)
+	_Tabs.restore_from_layout(configuration)
 
 
 ## Switched off from the Plugins tab, not at shutdown: the next layout save happens
 ## without this plugin, so the tabs are closed now instead.
 func _disable_plugin() -> void:
-	Tabs.close_all()
+	_Tabs.close_all()
 	queue_save_layout()
 
 
@@ -57,7 +57,7 @@ func _exit_tree() -> void:
 	# indentation and saves the tabs that changed; a `.gate` tab it cannot save makes it
 	# open an error dialog while the tree shuts down, twice per tab. The layout already
 	# holds these tabs in GATE's section, so they come back next session.
-	Tabs.close_all(false)
+	_Tabs.close_all(false)
 	_integration.detach()
 	if _fs and _fs.filesystem_changed.is_connected(_on_fs_changed):
 		_fs.filesystem_changed.disconnect(_on_fs_changed)

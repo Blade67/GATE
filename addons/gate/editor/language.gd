@@ -9,11 +9,11 @@ extends ScriptLanguageExtension
 ## `.gd` beside it and that file is the one Godot loads, instances and debugs, so
 ## everything here that would claim to execute a `.gate` refuses instead.
 
-const Script_: GDScript = preload("res://addons/gate/editor/script.gd")
-const Registry: GDScript = preload("res://addons/gate/editor/registry.gd")
-const Lookup: GDScript = preload("res://addons/gate/editor/lookup.gd")
-const Complete: GDScript = preload("res://addons/gate/editor/complete.gd")
-const Warnings: GDScript = preload("res://addons/gate/editor/warnings.gd")
+const _Script: GDScript = preload("res://addons/gate/editor/script.gd")
+const _Registry: GDScript = preload("res://addons/gate/editor/registry.gd")
+const _Lookup: GDScript = preload("res://addons/gate/editor/lookup.gd")
+const _Complete: GDScript = preload("res://addons/gate/editor/complete.gd")
+const _Warnings: GDScript = preload("res://addons/gate/editor/warnings.gd")
 
 const TYPE: String = "GATEScript"
 const EXTENSION: String = "gate"
@@ -83,7 +83,7 @@ func _get_string_delimiters() -> PackedStringArray:
 
 
 func _create_script() -> Object:
-	return Script_.new()
+	return _Script.new()
 
 
 func _make_template(template: String, class_name_: String, base_class_name: String) -> Script:
@@ -93,7 +93,7 @@ func _make_template(template: String, class_name_: String, base_class_name: Stri
 	text = text.replace("_BASE_", base_class_name)
 	text = text.replace("_CLASS_", class_name_)
 	text = text.replace("_TS_", "\t")
-	var made: Script = Script_.new()
+	var made: Script = _Script.new()
 	made.set_source_code(text)
 	return made
 
@@ -155,7 +155,7 @@ func _validate(script: String, path: String, validate_functions: bool, validate_
 
 	var errors: Array = []
 	for item in diagnostics.items:
-		if item.level != GateDiagnostics.Level.ERROR:
+		if item.level != GateDiagnostics._Level.ERROR:
 			continue
 		errors.append({
 			"line": item.line,
@@ -166,7 +166,7 @@ func _validate(script: String, path: String, validate_functions: bool, validate_
 	if not errors.is_empty():
 		var first: int = int(errors[0]["line"])
 		for item in diagnostics.items:
-			if item.level == GateDiagnostics.Level.WARNING and item.line < first 					and item.message.begins_with("string literal spans more than one line"):
+			if item.level == GateDiagnostics._Level.WARNING and item.line < first 					and item.message.begins_with("string literal spans more than one line"):
 				errors = [{
 					"line": item.line,
 					"column": item.col,
@@ -176,7 +176,7 @@ func _validate(script: String, path: String, validate_functions: bool, validate_
 				break
 	var warnings: Array = []
 	if validate_warnings and errors.is_empty():
-		warnings = Warnings.new().collect(path, tokens)
+		warnings = _Warnings.new().collect(path, tokens)
 	return {
 		"valid": errors.is_empty(),
 		"errors": errors,
@@ -210,7 +210,7 @@ func _functions_in(text: String) -> PackedStringArray:
 ## here before enabling its OK button and shows what comes back, so refusing is both
 ## the block and the explanation.
 func _validate_path(path: String) -> String:
-	if Registry.is_attaching():
+	if _Registry.is_attaching():
 		return ("GATE scripts cannot be attached to a node. Create the .gate first, "
 			+ "then attach the .gd GATE compiles beside it.")
 	return ""
@@ -270,14 +270,14 @@ func _overrides_external_editor() -> bool:
 ## file and ClassDB, and returns nothing at all rather than a list about the wrong
 ## object when it cannot establish what is left of the dot.
 func _complete_code(code: String, path: String, owner: Object) -> Dictionary:
-	return Complete.complete(code, path, owner)
+	return _Complete.complete(code, path, owner)
 
 
 ## Ctrl-click and F1. See `lookup.gd` for what it can and cannot answer; a failed
 ## lookup is what stops the editor underlining the word, so returning nothing is a
 ## real answer rather than a gap.
 func _lookup_code(code: String, symbol: String, path: String, owner: Object) -> Dictionary:
-	return Lookup.find(code, symbol, path)
+	return _Lookup.find(code, symbol, path)
 
 
 func _auto_indent_code(code: String, from_line: int, to_line: int) -> String:

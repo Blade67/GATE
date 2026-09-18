@@ -4,7 +4,7 @@ extends RefCounted
 ## The null analysis state: the abstract environment, access paths, and the rules
 ## for invalidating them.
 
-enum S { NULL, NOTNULL, MAYBE }
+enum _S { NULL, NOTNULL, MAYBE }
 
 var diagnostics: GateDiagnostics
 var infer: GateInfer
@@ -206,7 +206,7 @@ func _tracked(e) -> bool:
 
 
 func _state(path: String) -> int:
-	return _env.get(path, S.MAYBE)
+	return _env.get(path, _S.MAYBE)
 
 
 func _join_path(base: String, sfx: String) -> String:
@@ -412,7 +412,7 @@ func _kill_aliases(base: String, bt: GateAST._TypeRef, f: String, new_state: int
 				if memo[x]:
 					var seps: PackedInt32Array = _path_seps(key)
 					if di == 0 and new_state >= 0 and seps[seps.size() - 1] == pos:
-						joins[k] = d[k] if int(d[k]) == new_state else S.MAYBE
+						joins[k] = d[k] if int(d[k]) == new_state else _S.MAYBE
 					else:
 						drop.append(k)
 					break
@@ -604,9 +604,9 @@ func _join(a: Dictionary, b: Dictionary) -> Dictionary:
 	for k in a: keys[k] = true
 	for k in b: keys[k] = true
 	for k in keys:
-		var sa: int = a.get(k, S.MAYBE)
-		var sb: int = b.get(k, S.MAYBE)
-		out[k] = sa if sa == sb else S.MAYBE
+		var sa: int = a.get(k, _S.MAYBE)
+		var sb: int = b.get(k, _S.MAYBE)
+		out[k] = sa if sa == sb else _S.MAYBE
 	return out
 
 

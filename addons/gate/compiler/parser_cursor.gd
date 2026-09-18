@@ -48,8 +48,8 @@ func _is_generic_name(n: String) -> bool:
 		_templates = known_generics.duplicate()
 		for i in _toks.size() - 2:
 			var t: GateLexer._Token = _toks[i]
-			if t.type == GateLexer.T.KEYWORD and (t.value == "class" or t.value == "struct") \
-					and _toks[i + 1].type == GateLexer.T.IDENT and _toks[i + 2].is_op("<"):
+			if t.type == GateLexer._T.KEYWORD and (t.value == "class" or t.value == "struct") \
+					and _toks[i + 1].type == GateLexer._T.IDENT and _toks[i + 2].is_op("<"):
 				_templates[_toks[i + 1].value] = true
 	if not _templates.has(n):
 		return false
@@ -76,11 +76,11 @@ func _prescan_names() -> void:
 	for i in n - 1:
 		var t: GateLexer._Token = _toks[i]
 		var in_func: bool = header_func or (not blocks.is_empty() and blocks[-1][0])
-		if t.type == GateLexer.T.NEWLINE:
+		if t.type == GateLexer._T.NEWLINE:
 			var k: int = i + 1
-			while k < n and _toks[k].type in [GateLexer.T.NEWLINE, GateLexer.T.COMMENT]:
+			while k < n and _toks[k].type in [GateLexer._T.NEWLINE, GateLexer._T.COMMENT]:
 				k += 1   # blank and comment lines sit between a header and its block
-			if k < n and _toks[k].type == GateLexer.T.INDENT:
+			if k < n and _toks[k].type == GateLexer._T.INDENT:
 				if pending == null:
 					pending = [in_func, attach]
 				else:
@@ -90,20 +90,20 @@ func _prescan_names() -> void:
 			attach = []
 			header_func = false
 			continue
-		if t.type == GateLexer.T.INDENT:
+		if t.type == GateLexer._T.INDENT:
 			blocks.append(pending if pending != null else [in_func, []])
 			pending = null
 			continue
-		if t.type == GateLexer.T.DEDENT:
+		if t.type == GateLexer._T.DEDENT:
 			if not blocks.is_empty():
 				_close_spans(blocks.pop_back()[1], i, spans)
 			continue
-		if t.type == GateLexer.T.IDENT:
+		if t.type == GateLexer._T.IDENT:
 			var declared: int = _type_first_name(i)
 			if declared >= 0:
 				_bind_name(_toks[declared].value, declared, in_func, header_func, blocks, attach, shadows)
 			continue
-		if t.type != GateLexer.T.KEYWORD:
+		if t.type != GateLexer._T.KEYWORD:
 			continue
 		if t.value == "enum":
 			_enum_keys(i + 1, shadows)
@@ -113,7 +113,7 @@ func _prescan_names() -> void:
 			continue
 		if t.value == "for":
 			var j: int = i + 1
-			while j < n and _toks[j].type == GateLexer.T.IDENT:
+			while j < n and _toks[j].type == GateLexer._T.IDENT:
 				attach.append([_toks[j].value, j])
 				if j + 2 < n and _toks[j + 1].is_op(","):
 					j += 2
@@ -121,7 +121,7 @@ func _prescan_names() -> void:
 					break
 			continue
 		var nx: GateLexer._Token = _toks[i + 1]
-		if not (nx.type == GateLexer.T.IDENT):
+		if not (nx.type == GateLexer._T.IDENT):
 			continue
 		if t.value == "class" or t.value == "struct":
 			if i + 2 < n and _toks[i + 2].is_op("<"):
@@ -184,15 +184,15 @@ func _type_first_name(i: int) -> int:
 	var n: int = _toks.size()
 	if i > 0:
 		var prev: GateLexer._Token = _toks[i - 1]
-		if not (prev.type in [GateLexer.T.NEWLINE, GateLexer.T.INDENT, GateLexer.T.DEDENT,
-				GateLexer.T.COMMENT, GateLexer.T.ANNOTATION] or prev.is_kw("static")
+		if not (prev.type in [GateLexer._T.NEWLINE, GateLexer._T.INDENT, GateLexer._T.DEDENT,
+				GateLexer._T.COMMENT, GateLexer._T.ANNOTATION] or prev.is_kw("static")
 				or prev.is_kw("pub") or prev.is_kw("priv")):
 			return -1
 	var j: int = i + 1
 	var depth: int = 0
 	while j < n:
 		var tk: GateLexer._Token = _toks[j]
-		if tk.type == GateLexer.T.NEWLINE or tk.type == GateLexer.T.EOF:
+		if tk.type == GateLexer._T.NEWLINE or tk.type == GateLexer._T.EOF:
 			return -1
 		if tk.is_op("<"):
 			depth += 1
@@ -209,10 +209,10 @@ func _type_first_name(i: int) -> int:
 		if depth < 0:
 			return -1
 		j += 1
-	if j + 1 >= n or _toks[j].type != GateLexer.T.IDENT:
+	if j + 1 >= n or _toks[j].type != GateLexer._T.IDENT:
 		return -1
 	var after: GateLexer._Token = _toks[j + 1]
-	if after.type == GateLexer.T.NEWLINE or after.type == GateLexer.T.COMMENT \
+	if after.type == GateLexer._T.NEWLINE or after.type == GateLexer._T.COMMENT \
 			or after.is_op("=") or after.is_op(":") or after.is_op(","):
 		return j
 	return -1
@@ -221,7 +221,7 @@ func _type_first_name(i: int) -> int:
 func _enum_keys(from: int, shadows: Dictionary) -> void:
 	var n: int = _toks.size()
 	var j: int = from
-	if j < n and _toks[j].type == GateLexer.T.IDENT:
+	if j < n and _toks[j].type == GateLexer._T.IDENT:
 		j += 1
 	if j >= n or not _toks[j].is_op("{"):
 		return
@@ -238,11 +238,11 @@ func _enum_keys(from: int, shadows: Dictionary) -> void:
 				return
 		elif depth == 1 and tk.is_op(","):
 			expect_key = true
-		elif expect_key and tk.type == GateLexer.T.IDENT:
+		elif expect_key and tk.type == GateLexer._T.IDENT:
 			shadows[tk.value] = true
 			expect_key = false
-		elif tk.type != GateLexer.T.NEWLINE and tk.type != GateLexer.T.INDENT \
-				and tk.type != GateLexer.T.DEDENT and tk.type != GateLexer.T.COMMENT:
+		elif tk.type != GateLexer._T.NEWLINE and tk.type != GateLexer._T.INDENT \
+				and tk.type != GateLexer._T.DEDENT and tk.type != GateLexer._T.COMMENT:
 			expect_key = false
 		j += 1
 
@@ -252,7 +252,7 @@ func _enum_keys(from: int, shadows: Dictionary) -> void:
 func _param_names(from: int, out: Array) -> void:
 	var n: int = _toks.size()
 	var j: int = from
-	if j < n and _toks[j].type == GateLexer.T.IDENT:
+	if j < n and _toks[j].type == GateLexer._T.IDENT:
 		j += 1
 	if j >= n or not _toks[j].is_op("("):
 		return
@@ -260,7 +260,7 @@ func _param_names(from: int, out: Array) -> void:
 	var after_sep: bool = false
 	while j < n:
 		var tk: GateLexer._Token = _toks[j]
-		if tk.type in [GateLexer.T.NEWLINE, GateLexer.T.INDENT, GateLexer.T.DEDENT, GateLexer.T.COMMENT]:
+		if tk.type in [GateLexer._T.NEWLINE, GateLexer._T.INDENT, GateLexer._T.DEDENT, GateLexer._T.COMMENT]:
 			j += 1
 			continue
 		if tk.is_op("(") or tk.is_op("[") or tk.is_op("{"):
@@ -269,7 +269,7 @@ func _param_names(from: int, out: Array) -> void:
 			depth -= 1
 			if depth == 0:
 				return
-		elif depth == 1 and after_sep and tk.type == GateLexer.T.IDENT and j + 1 < n:
+		elif depth == 1 and after_sep and tk.type == GateLexer._T.IDENT and j + 1 < n:
 			var nt: GateLexer._Token = _toks[j + 1]
 			if nt.is_op(":") or nt.is_op(",") or nt.is_op(")") or nt.is_op("="):
 				out.append([tk.value, j])
@@ -298,7 +298,7 @@ func _peek(offset: int = 0) -> GateLexer._Token:
 func _cur() -> GateLexer._Token: return _peek(0)
 
 
-func _at_end() -> bool: return _cur().type == GateLexer.T.EOF
+func _at_end() -> bool: return _cur().type == GateLexer._T.EOF
 
 
 func _advance() -> GateLexer._Token:
@@ -319,7 +319,7 @@ func _continues_line() -> bool:
 
 
 func _at_stmt_end() -> bool:
-	if _check(GateLexer.T.NEWLINE) or _check(GateLexer.T.COMMENT) or _check(GateLexer.T.DEDENT) or _at_end():
+	if _check(GateLexer._T.NEWLINE) or _check(GateLexer._T.COMMENT) or _check(GateLexer._T.DEDENT) or _at_end():
 		return true
 	if _in_inline_lambda > 0:
 		return _check_op(",") or _check_op(")") or _check_op("]") or _check_op("}")
@@ -331,9 +331,9 @@ func _at_name() -> bool:
 
 
 func _is_name_token(t: GateLexer._Token) -> bool:
-	if t.type == GateLexer.T.IDENT:
+	if t.type == GateLexer._T.IDENT:
 		return true
-	return t.type == GateLexer.T.KEYWORD and (GateLexer.is_gate_only_keyword(t.value)
+	return t.type == GateLexer._T.KEYWORD and (GateLexer.is_gate_only_keyword(t.value)
 		or GateLexer.is_contextual_keyword(t.value))
 
 
@@ -373,7 +373,7 @@ func _err(msg: String, hint: String = "") -> void:
 
 
 func _skip_newlines() -> void:
-	while _check(GateLexer.T.NEWLINE) or _check(GateLexer.T.COMMENT):
+	while _check(GateLexer._T.NEWLINE) or _check(GateLexer._T.COMMENT):
 		_advance()
 
 
@@ -381,10 +381,10 @@ func _skip_to_statement_end() -> void:
 	var depth: int = 0
 	while not _at_end():
 		var t: GateLexer._Token = _cur()
-		if t.type == GateLexer.T.OP:
+		if t.type == GateLexer._T.OP:
 			if t.value in ["(", "[", "{"]: depth += 1
 			elif t.value in [")", "]", "}"]: depth -= 1
-		if t.type == GateLexer.T.NEWLINE and depth <= 0:
+		if t.type == GateLexer._T.NEWLINE and depth <= 0:
 			return
 		_advance()
 

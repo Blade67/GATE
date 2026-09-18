@@ -61,11 +61,11 @@ static func shadow_declared(tokens: Array, class_names: Dictionary = {}) -> void
 	shadowed = {}
 	for i in tokens.size() - 1:
 		var t: GateLexer._Token = tokens[i]
-		if t.type != GateLexer.T.KEYWORD:
+		if t.type != GateLexer._T.KEYWORD:
 			continue
 		if t.value in ["class", "class_name", "enum", "const", "struct", "interface", "trait", "namespace"]:
 			var nx: GateLexer._Token = tokens[i + 1]
-			if nx.type == GateLexer.T.IDENT and SHORTHAND.has(nx.value):
+			if nx.type == GateLexer._T.IDENT and SHORTHAND.has(nx.value):
 				shadowed[nx.value] = true
 	for cn in class_names:
 		if SHORTHAND.has(cn):

@@ -5,7 +5,7 @@ extends RefCounted
 ## Indentation-aware tokenizer. Emits INDENT/DEDENT, and suppresses them
 ## inside brackets the way GDScript does.
 
-enum T {
+enum _T {
 	NEWLINE, INDENT, DEDENT, EOF,
 	IDENT, KEYWORD, NUMBER, STRING, FSTRING, ANNOTATION, NODEPATH, COMMENT,
 	OP,
@@ -64,13 +64,13 @@ class _Token extends RefCounted:
 		col = p_col
 
 	func is_op(v: String) -> bool:
-		return type == T.OP and value == v
+		return type == _T.OP and value == v
 
 	func is_kw(v: String) -> bool:
-		return type == T.KEYWORD and value == v
+		return type == _T.KEYWORD and value == v
 
 	func _to_string() -> String:
-		return "[%s %s @%d:%d]" % [T.keys()[type], value, line, col]
+		return "[%s %s @%d:%d]" % [_T.keys()[type], value, line, col]
 
 var tokens: Array[_Token] = []
 var diagnostics: GateDiagnostics
@@ -184,7 +184,7 @@ func tokenize(src: String, diags: GateDiagnostics, first_line: int = 1) -> Array
 			_lex_number()
 			continue
 		if c == "@":
-			_lex_prefixed(T.ANNOTATION)
+			_lex_prefixed(_T.ANNOTATION)
 			continue
 		if c == "$" or c == "%":
 			# `%` is a unique-node path only in prefix position. After anything that can end
@@ -208,17 +208,17 @@ func tokenize(src: String, diags: GateDiagnostics, first_line: int = 1) -> Array
 	if _depth != 0:
 		diagnostics.error("unbalanced brackets at end of file", _line, _col(),
 			"a '(', '[' or '{' was never closed")
-	_push(T.NEWLINE, "")
+	_push(_T.NEWLINE, "")
 	while _indents.size() > 1:
 		_indents.pop_back()
-		_push(T.DEDENT, "")
-	_push(T.EOF, "")
+		_push(_T.DEDENT, "")
+	_push(_T.EOF, "")
 	return tokens
 
 
 func _newline_token() -> void:
 	if _depth == 0:
-		_push(T.NEWLINE, "")
+		_push(_T.NEWLINE, "")
 	_i += 1
 	_line += 1
 	_line_start = _i
@@ -249,11 +249,11 @@ func _handle_indent() -> bool:
 		return false
 	if col > _indents[-1]:
 		_indents.append(col)
-		_push(T.INDENT, "", _line, start - _line_start + 1)
+		_push(_T.INDENT, "", _line, start - _line_start + 1)
 	else:
 		while col < _indents[-1]:
 			_indents.pop_back()
-			_push(T.DEDENT, "", _line, start - _line_start + 1)
+			_push(_T.DEDENT, "", _line, start - _line_start + 1)
 		if col != _indents[-1]:
 			diagnostics.error("inconsistent indentation", _line, col + 1,
 				"expected %d spaces, found %d" % [_indents[-1], col])
@@ -295,7 +295,7 @@ func _lex_comment() -> void:
 	var start: int = _i
 	while _i < _n and _src[_i] != "\n":
 		_i += 1
-	_push(T.COMMENT, _src.substr(start, _i - start), line, col)
+	_push(_T.COMMENT, _src.substr(start, _i - start), line, col)
 
 
 func _lex_string(is_fstring: bool, prefix: String = "") -> void:
@@ -340,14 +340,14 @@ func _lex_string(is_fstring: bool, prefix: String = "") -> void:
 		_i += 1
 	if not closed:
 		diagnostics.error("unterminated string literal", line, col)
-		var t: _Token = _push(T.STRING, "\"\"", line, col)
+		var t: _Token = _push(_T.STRING, "\"\"", line, col)
 		return
 	if spans_lines:
 		diagnostics.warn("string literal spans more than one line", line, col,
 			"if a closing quote is missing, this is not what you meant")
 	var body: String = _src.substr(body_start, _i - body_start)
 	_i += 3 if triple else 1
-	var tok: _Token = _push(T.FSTRING if is_fstring else T.STRING, body, line, col)
+	var tok: _Token = _push(_T.FSTRING if is_fstring else _T.STRING, body, line, col)
 	tok.extra = quote if not triple else quote.repeat(3)
 	tok.prefix = prefix
 
@@ -379,7 +379,7 @@ func _lex_number() -> void:
 			_i += 2
 		else:
 			break
-	_push(T.NUMBER, _src.substr(start, _i - start), line, col)
+	_push(_T.NUMBER, _src.substr(start, _i - start), line, col)
 
 
 func _lex_prefixed(kind: int) -> void:
@@ -411,7 +411,7 @@ func _lex_nodepath() -> void:
 	else:
 		while _i < _n and (_is_word(_src[_i]) or _src[_i] == "/" or _src[_i] == "%"):
 			_i += 1
-	_push(T.NODEPATH, _src.substr(start, _i - start), line, col)
+	_push(_T.NODEPATH, _src.substr(start, _i - start), line, col)
 
 
 func _lex_word() -> void:
@@ -421,7 +421,7 @@ func _lex_word() -> void:
 	while _i < _n and _is_word(_src[_i]):
 		_i += 1
 	var w: String = _src.substr(start, _i - start)
-	_push(T.KEYWORD if KEYWORDS.has(w) else T.IDENT, w, line, col)
+	_push(_T.KEYWORD if KEYWORDS.has(w) else _T.IDENT, w, line, col)
 
 
 func _lex_operator() -> void:
@@ -437,32 +437,32 @@ func _lex_operator() -> void:
 		var three: String = _src.substr(_i, 3)
 		if three in OPS3:
 			_i += 3
-			_push(T.OP, three, line, col)
+			_push(_T.OP, three, line, col)
 			return
 	if _i + 1 < _n:
 		var two: String = _src.substr(_i, 2)
 		if two in OPS2:
 			_i += 2
-			_push(T.OP, two, line, col)
+			_push(_T.OP, two, line, col)
 			return
 	_i += 1
-	_push(T.OP, c, line, col)
+	_push(_T.OP, c, line, col)
 
 
 func _prev_ends_expr() -> bool:
 	for i in range(tokens.size() - 1, -1, -1):
 		var t: _Token = tokens[i]
-		if t.type == T.COMMENT:
+		if t.type == _T.COMMENT:
 			continue
 		match t.type:
-			T.IDENT, T.NUMBER, T.STRING, T.FSTRING, T.NODEPATH:
+			_T.IDENT, _T.NUMBER, _T.STRING, _T.FSTRING, _T.NODEPATH:
 				return true
-			T.KEYWORD:
+			_T.KEYWORD:
 				if CONTEXTUAL_KEYWORDS.has(t.value):
 					return _contextual_is_name(i)
 				return (t.value in ["self", "super", "true", "false", "null"]
 					or GATE_ONLY.has(t.value))
-			T.OP:
+			_T.OP:
 				return t.value in [")", "]", "}"]
 			_:
 				return false
@@ -472,21 +472,21 @@ func _prev_ends_expr() -> bool:
 func _contextual_is_name(i: int) -> bool:
 	var t: _Token = tokens[i]
 	var j: int = i - 1
-	while j >= 0 and tokens[j].type == T.COMMENT:
+	while j >= 0 and tokens[j].type == _T.COMMENT:
 		j -= 1
 	var prev: _Token = tokens[j] if j >= 0 else null
-	if prev != null and prev.type == T.OP and prev.value == ".":
+	if prev != null and prev.type == _T.OP and prev.value == ".":
 		return true
 	match t.value:
 		"match":
-			return prev != null and not (prev.type in [T.NEWLINE, T.INDENT, T.DEDENT]
-				or (prev.type == T.OP and prev.value == ";"))
+			return prev != null and not (prev.type in [_T.NEWLINE, _T.INDENT, _T.DEDENT]
+				or (prev.type == _T.OP and prev.value == ";"))
 		"when":
 			if prev == null:
 				return true
-			var after_pattern: bool = prev.type in [T.IDENT, T.NUMBER, T.STRING, T.NODEPATH] \
-				or (prev.type == T.OP and prev.value in [")", "]", "}"]) \
-				or (prev.type == T.KEYWORD and prev.value in ["true", "false", "null"])
+			var after_pattern: bool = prev.type in [_T.IDENT, _T.NUMBER, _T.STRING, _T.NODEPATH] \
+				or (prev.type == _T.OP and prev.value in [")", "]", "}"]) \
+				or (prev.type == _T.KEYWORD and prev.value in ["true", "false", "null"])
 			return not after_pattern
 	return true
 

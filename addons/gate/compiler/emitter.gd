@@ -1444,8 +1444,8 @@ static func _code_tokens(src: String) -> PackedStringArray:
 	var out: PackedStringArray = PackedStringArray()
 	var d: GateDiagnostics = GateDiagnostics.new()
 	for t in GateLexer.new().tokenize(src, d):
-		if t.type in [GateLexer.T.NEWLINE, GateLexer.T.INDENT, GateLexer.T.DEDENT,
-				GateLexer.T.COMMENT, GateLexer.T.EOF]:
+		if t.type in [GateLexer._T.NEWLINE, GateLexer._T.INDENT, GateLexer._T.DEDENT,
+				GateLexer._T.COMMENT, GateLexer._T.EOF]:
 			continue
 		var v: String = String(t.value)
 		if v in ["(", ")", ",", ";", "not", "!"]:

@@ -123,7 +123,7 @@ func _parse_content_test() -> GateAST._Expr:
 ## is `(a == b) == c`, which is legal and useful when `c` is a bool.
 func _parse_comparison() -> GateAST._Expr:
 	var left: GateAST._Expr = _parse_bitor()
-	while _check(GateLexer.T.OP) and _cur().value in CMP_OPS:
+	while _check(GateLexer._T.OP) and _cur().value in CMP_OPS:
 		var t: GateLexer._Token = _advance()
 		left = _mk_binary(t.value, left, _parse_bitor(), t)
 	return left
@@ -219,7 +219,7 @@ func _parse_unary() -> GateAST._Expr:
 		return nu
 	if _check_op("-") or _check_op("+") or _check_op("~"):
 		var t: GateLexer._Token = _advance()
-		if (t.value != "~" and _check(GateLexer.T.NUMBER)
+		if (t.value != "~" and _check(GateLexer._T.NUMBER)
 				and _peek(1).is_op("**") and _is_adjacent(t, _cur())):
 			var num: GateLexer._Token = _advance()
 			var lit: GateAST._Literal = GateAST._Literal.new()
@@ -233,7 +233,7 @@ func _parse_unary() -> GateAST._Expr:
 		var u: GateAST._Unary = GateAST._Unary.new()
 		u.at(t.line, t.col)
 		u.op = t.value
-		u.tight = _check(GateLexer.T.NUMBER) and _is_adjacent(t, _cur())
+		u.tight = _check(GateLexer._T.NUMBER) and _is_adjacent(t, _cur())
 		u.operand = _parse_unary()
 		return u
 	return _parse_power()
@@ -298,7 +298,7 @@ func _if_opens_a_block() -> bool:
 	var i: int = _i + 1
 	while i < _toks.size():
 		var t: GateLexer._Token = _toks[i]
-		if t.type == GateLexer.T.OP:
+		if t.type == GateLexer._T.OP:
 			if t.value in ["(", "[", "{"]:
 				depth += 1
 			elif t.value in [")", "]", "}"]:
@@ -309,7 +309,7 @@ func _if_opens_a_block() -> bool:
 				return true
 		elif t.is_kw("else") and depth == 0:
 			return false
-		elif t.type == GateLexer.T.NEWLINE or t.type == GateLexer.T.EOF:
+		elif t.type == GateLexer._T.NEWLINE or t.type == GateLexer._T.EOF:
 			return false
 		i += 1
 	return false
@@ -370,7 +370,7 @@ const BINARY_PREC := {
 
 func _binary_op_here() -> String:
 	var t: GateLexer._Token = _cur()
-	if t.type == GateLexer.T.OP and BINARY_PREC.has(t.value):
+	if t.type == GateLexer._T.OP and BINARY_PREC.has(t.value):
 		return t.value
 	if t.is_kw("and") or t.is_kw("or") or t.is_kw("in"):
 		return t.value
@@ -407,7 +407,7 @@ func _parse_postfix() -> GateAST._Expr:
 			var m: GateAST._Member = GateAST._Member.new()
 			m.at(t.line, t.col)
 			m.target = e
-			if _check(GateLexer.T.IDENT) or _check(GateLexer.T.KEYWORD):
+			if _check(GateLexer._T.IDENT) or _check(GateLexer._T.KEYWORD):
 				m.name = _advance().value
 			e = m
 		elif _check_op("?."):
@@ -416,7 +416,7 @@ func _parse_postfix() -> GateAST._Expr:
 			m2.at(t2.line, t2.col)
 			m2.target = e
 			m2.safe = true
-			if _check(GateLexer.T.IDENT) or _check(GateLexer.T.KEYWORD):
+			if _check(GateLexer._T.IDENT) or _check(GateLexer._T.KEYWORD):
 				m2.name = _advance().value
 			e = m2
 		elif _check_op("["):
@@ -463,14 +463,14 @@ func _parse_postfix() -> GateAST._Expr:
 			var depth: int = 1
 			while not _at_end():
 				var bt: GateLexer._Token = _cur()
-				if bt.type == GateLexer.T.OP and bt.value == "{":
+				if bt.type == GateLexer._T.OP and bt.value == "{":
 					depth += 1
-				elif bt.type == GateLexer.T.OP and bt.value == "}":
+				elif bt.type == GateLexer._T.OP and bt.value == "}":
 					depth -= 1
 					if depth == 0:
 						_advance()
 						break
-				elif first_key == "" and depth == 1 and bt.type == GateLexer.T.IDENT:
+				elif first_key == "" and depth == 1 and bt.type == GateLexer._T.IDENT:
 					first_key = bt.value
 				_advance()
 			diagnostics.error(
@@ -488,27 +488,27 @@ func _parse_postfix() -> GateAST._Expr:
 func _parse_primary() -> GateAST._Expr:
 	var t: GateLexer._Token = _cur()
 
-	if t.type == GateLexer.T.NUMBER:
+	if t.type == GateLexer._T.NUMBER:
 		_advance()
 		var l: GateAST._Literal = GateAST._Literal.new()
 		l.at(t.line, t.col); l.raw = t.value; l.kind = "number"
 		return l
-	if t.type == GateLexer.T.STRING:
+	if t.type == GateLexer._T.STRING:
 		_advance()
 		var s: GateAST._Literal = GateAST._Literal.new()
 		s.at(t.line, t.col)
 		s.raw = t.prefix + t.extra + t.value + t.extra
 		s.kind = "string"
 		return s
-	if t.type == GateLexer.T.FSTRING:
+	if t.type == GateLexer._T.FSTRING:
 		_advance()
 		return _build_fstring(t)
-	if t.type == GateLexer.T.NODEPATH:
+	if t.type == GateLexer._T.NODEPATH:
 		_advance()
 		var np: GateAST._NodePathExpr = GateAST._NodePathExpr.new()
 		np.at(t.line, t.col); np.raw = t.value
 		return np
-	if t.type == GateLexer.T.ANNOTATION:
+	if t.type == GateLexer._T.ANNOTATION:
 		_advance()
 		var ai: GateAST._Ident = GateAST._Ident.new()
 		ai.at(t.line, t.col); ai.name = t.value
@@ -533,7 +533,7 @@ func _parse_primary() -> GateAST._Expr:
 		var kid: GateAST._Ident = GateAST._Ident.new()
 		kid.at(t.line, t.col); kid.name = t.value
 		return kid
-	if t.type == GateLexer.T.IDENT:
+	if t.type == GateLexer._T.IDENT:
 		if _qualified_generic_ahead():
 			var qual: GateLexer._Token = _advance()   # the namespace or class
 			_advance()                               # '.'
@@ -618,7 +618,7 @@ func _parse_primary() -> GateAST._Expr:
 	if t.is_kw("func"):
 		return _parse_lambda()
 
-	if t.type == GateLexer.T.KEYWORD and (GateLexer.is_gate_only_keyword(t.value)
+	if t.type == GateLexer._T.KEYWORD and (GateLexer.is_gate_only_keyword(t.value)
 			or GateLexer.is_contextual_keyword(t.value)):
 		_advance()
 		var kid: GateAST._Ident = GateAST._Ident.new()
@@ -638,7 +638,7 @@ func _parse_lambda() -> GateAST._Expr:
 	var kw: GateLexer._Token = _advance()
 	var lam: GateAST._Lambda = GateAST._Lambda.new()
 	lam.at(kw.line, kw.col)
-	if _check(GateLexer.T.IDENT):
+	if _check(GateLexer._T.IDENT):
 		lam.name = _advance().value  # optional lambda name
 	_expect_op("(", "in a lambda")
 	lam.params = _parse_params()
@@ -647,9 +647,9 @@ func _parse_lambda() -> GateAST._Expr:
 		lam.return_type = _parse_type()
 	var colon: GateLexer._Token = _cur()
 	_expect_op(":", "before the lambda body")
-	if _check(GateLexer.T.COMMENT):
+	if _check(GateLexer._T.COMMENT):
 		_advance()
-	if _check(GateLexer.T.NEWLINE):
+	if _check(GateLexer._T.NEWLINE):
 		lam.body = _parse_block(false)
 		lam.block_body = true
 	else:
@@ -811,7 +811,7 @@ func _parse_params() -> Array:
 		var p: GateAST._Param = GateAST._Param.new()
 		if _match_op("..."):
 			p.is_rest = true
-		if not (_check(GateLexer.T.IDENT) or _check(GateLexer.T.KEYWORD)):
+		if not (_check(GateLexer._T.IDENT) or _check(GateLexer._T.KEYWORD)):
 			break
 		var nt: GateLexer._Token = _advance()
 		p.name = nt.value

@@ -25,9 +25,9 @@ extends RefCounted
 ## Anything else returns ERR_UNAVAILABLE, and the editor then draws no underline
 ## under the word. A lookup that cannot work must not look like one that can.
 
-const Index: GDScript = preload("res://addons/gate/editor/index.gd")
-const Autoload: GDScript = preload("res://addons/gate/editor/autoload.gd")
-const Complete: GDScript = preload("res://addons/gate/editor/complete.gd")
+const _Index: GDScript = preload("res://addons/gate/editor/index.gd")
+const _Autoload: GDScript = preload("res://addons/gate/editor/autoload.gd")
+const _Complete: GDScript = preload("res://addons/gate/editor/complete.gd")
 
 const CURSOR: String = "￿"
 
@@ -48,10 +48,10 @@ const TYPE_TABLES: Array[String] = [
 static func find(code: String, symbol: String, path: String) -> Dictionary:
 	if symbol.strip_edges() == "":
 		return NOT_FOUND
-	var reg: RefCounted = Index.registry()
+	var reg: RefCounted = _Index.registry()
 	if reg == null:
 		return NOT_FOUND
-	Complete.editing(path)
+	_Complete.editing(path)
 
 	var at: int = code.find(CURSOR)
 	var text: String = code.replace(CURSOR, "")
@@ -61,7 +61,7 @@ static func find(code: String, symbol: String, path: String) -> Dictionary:
 		line = code.substr(0, at).count("\n")
 		column = at - (code.rfind("\n", at) + 1)
 
-	var module: GateAST._Module = Index.module_for(text, path, reg)
+	var module: GateAST._Module = _Index.module_for(text, path, reg)
 
 	var qualifier: String = ""
 	if at >= 0:
@@ -82,10 +82,10 @@ static func find(code: String, symbol: String, path: String) -> Dictionary:
 		# happens to name would send the user somewhere unrelated.
 		if _type_named(qualifier, reg) != null or _script_class(qualifier, reg) != null:
 			return NOT_FOUND
-		var chain: Array = Complete._chain_before(_through_symbol(
+		var chain: Array = _Complete._chain_before(_through_symbol(
 			text.split("\n")[line] if line < text.count("\n") + 1 else "", column, symbol))
 		if not chain.is_empty() and String(chain[0]) != "self":
-			var through: String = Complete._resolve_chain(chain, module, reg, line + 1)
+			var through: String = _Complete._resolve_chain(chain, module, reg, line + 1)
 			if through != "":
 				var reached: Dictionary = _in_any_type(through, symbol, reg)
 				if reached.is_empty():
@@ -108,8 +108,8 @@ static func find(code: String, symbol: String, path: String) -> Dictionary:
 
 	var own_class: String = module.class_name_decl if module != null else ""
 	if module != null:
-		var from: String = own_class if own_class != "" else Complete.THIS_FILE
-		var inherited: Dictionary = _in_any_type(Complete._base_of(from, reg, module), symbol, reg)
+		var from: String = own_class if own_class != "" else _Complete.THIS_FILE
+		var inherited: Dictionary = _in_any_type(_Complete._base_of(from, reg, module), symbol, reg)
 		if not inherited.is_empty():
 			return _location(inherited["path"], inherited["line"], path)
 
@@ -117,7 +117,7 @@ static func find(code: String, symbol: String, path: String) -> Dictionary:
 	if not declared.is_empty():
 		return _location(declared["path"], declared["line"], path)
 
-	var autoload: Dictionary = Autoload.resolve(symbol)
+	var autoload: Dictionary = _Autoload.resolve(symbol)
 	if not autoload.is_empty() and String(autoload["script"]) != "":
 		return _location(String(autoload["script"]), 1, path)
 
@@ -401,16 +401,16 @@ static func _in_type(type_name: String, symbol: String, reg: RefCounted) -> Dict
 
 static func _in_any_type(type_name: String, symbol: String, reg: RefCounted,
 		depth: int = 0) -> Dictionary:
-	if type_name == "" or depth > Complete.MAX_CHAIN * 4:
+	if type_name == "" or depth > _Complete.MAX_CHAIN * 4:
 		return {}
 	if type_name.begins_with("res://"):
-		var file: GateAST._Module = Autoload.module(type_name, reg)
+		var file: GateAST._Module = _Autoload.module(type_name, reg)
 		if file == null:
 			return {}
 		var here: int = _member_line(file.members, symbol)
 		if here > 0:
 			return {"path": type_name, "line": here}
-		return _in_any_type(Complete._base_of(type_name, reg), symbol, reg, depth + 1)
+		return _in_any_type(_Complete._base_of(type_name, reg), symbol, reg, depth + 1)
 	var declared: GateAST._ClassDecl = _type_named(type_name, reg)
 	var where: String = String(reg.origin.get(type_name, ""))
 	if declared == null:
@@ -420,13 +420,13 @@ static func _in_any_type(type_name: String, symbol: String, reg: RefCounted,
 		var script: String = _global_class_path(type_name)
 		if script == "" or not script.get_extension().to_lower() == "gd":
 			return {}
-		return _in_any_type(Complete._script_type(script, reg), symbol, reg, depth + 1)
+		return _in_any_type(_Complete._script_type(script, reg), symbol, reg, depth + 1)
 	if where != "":
 		var line: int = _member_line(declared.members, symbol)
 		if line > 0:
 			return {"path": where, "line": line}
-	return _in_any_type(Complete._base_of(type_name, reg), symbol, reg, depth + 1)
+	return _in_any_type(_Complete._base_of(type_name, reg), symbol, reg, depth + 1)
 
 
 static func _in_bases(type_name: String, symbol: String, reg: RefCounted) -> Dictionary:
-	return _in_any_type(Complete._base_of(type_name, reg), symbol, reg)
+	return _in_any_type(_Complete._base_of(type_name, reg), symbol, reg)

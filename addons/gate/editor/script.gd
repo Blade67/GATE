@@ -7,25 +7,25 @@ extends ScriptExtension
 ## instantiate, has no members and reports no methods. The runnable half of a `.gate`
 ## is the `.gd` GATE writes beside it, and that file is an ordinary GDScript.
 
-const Registry: GDScript = preload("res://addons/gate/editor/registry.gd")
+const _Registry: GDScript = preload("res://addons/gate/editor/registry.gd")
 
 var _source: String = ""
 
 
 func _init() -> void:
-	Registry.script_made()
+	_Registry.script_made()
 
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_PREDELETE:
-		Registry.script_gone()
+		_Registry.script_gone()
 
 
 ## Never returns null. Godot dereferences this without checking, so a GATEScript
 ## outliving the plugin - disable it with a `.gate` open, or reopen a project whose
 ## layout restores one - used to segfault the editor here.
 func _get_language() -> ScriptLanguage:
-	return Registry.language()
+	return _Registry.language()
 
 
 func _has_source_code() -> bool:

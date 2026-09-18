@@ -6,7 +6,7 @@ extends "res://addons/gate/compiler/parser_cursor.gd"
 
 
 func _parse_extends_type() -> GateAST._TypeRef:
-	if _check(GateLexer.T.STRING):
+	if _check(GateLexer._T.STRING):
 		var t: GateLexer._Token = _cur()
 		_advance()
 		var q: String = t.extra if t.extra != "" else "\""
@@ -14,7 +14,7 @@ func _parse_extends_type() -> GateAST._TypeRef:
 		tr.at(t.line, t.col)
 		tr.name = q + t.value + q
 		tr.is_path_literal = true
-		while _check_op(".") and _peek(1).type == GateLexer.T.IDENT:
+		while _check_op(".") and _peek(1).type == GateLexer._T.IDENT:
 			_advance()
 			tr.name += "." + _advance().value
 		return tr
@@ -44,12 +44,12 @@ func _parse_type() -> GateAST._TypeRef:
 		t = _parse_type()
 		_expect_op(")", "to close the parenthesised type")
 	else:
-		if not (_check(GateLexer.T.IDENT) or _check(GateLexer.T.KEYWORD)):
+		if not (_check(GateLexer._T.IDENT) or _check(GateLexer._T.KEYWORD)):
 			_err("expected a type name, found '%s'" % _cur().value)
 			t.name = "Variant"
 			return t
 		t.name = _advance().value
-		while _check_op(".") and _peek(1).type == GateLexer.T.IDENT:
+		while _check_op(".") and _peek(1).type == GateLexer._T.IDENT:
 			_advance()
 			t.name += "." + _advance().value
 		if (_check_op("<") or _check_op("<<")) and not _never_generic(t.name) \
@@ -64,7 +64,7 @@ func _parse_type() -> GateAST._TypeRef:
 				if not _match_op(","):
 					break
 			_expect_op(">", "to close generic arguments")
-		if _check_op("[") and _peek(1).type != GateLexer.T.OP:
+		if _check_op("[") and _peek(1).type != GateLexer._T.OP:
 			_advance()
 			t.generic_args.append(_parse_type())
 			while _match_op(","):
@@ -191,7 +191,7 @@ func _skip_type_span(j: int) -> int:
 		var k: int = j + 1
 		while k < _toks.size():
 			var b: GateLexer._Token = _toks[k]
-			if b.type == GateLexer.T.NEWLINE or b.type == GateLexer.T.EOF:
+			if b.type == GateLexer._T.NEWLINE or b.type == GateLexer._T.EOF:
 				return -1
 			if b.is_op("("): depth += 1
 			elif b.is_op(")"):
@@ -215,7 +215,7 @@ func _skip_type_span(j: int) -> int:
 		var d: int = 0
 		while i < _toks.size():
 			var c: GateLexer._Token = _toks[i]
-			if c.type == GateLexer.T.NEWLINE:
+			if c.type == GateLexer._T.NEWLINE:
 				return -1
 			if c.is_op("{"): d += 1
 			elif c.is_op("}"):
@@ -224,9 +224,9 @@ func _skip_type_span(j: int) -> int:
 					break
 			i += 1
 		i += 1
-	elif t.type == GateLexer.T.IDENT or t.is_kw("void"):
+	elif t.type == GateLexer._T.IDENT or t.is_kw("void"):
 		i += 1
-		while i + 1 < _toks.size() and _toks[i].is_op(".") and _toks[i + 1].type == GateLexer.T.IDENT:
+		while i + 1 < _toks.size() and _toks[i].is_op(".") and _toks[i + 1].type == GateLexer._T.IDENT:
 			i += 2
 		if i < _toks.size() and (_toks[i].is_op("<") or _toks[i].is_op("<<")):
 			var gclose: int = _generic_span_end(i, true)
@@ -250,8 +250,8 @@ func _skip_type_suffixes(i: int) -> int:
 
 
 func _at_type_alias() -> bool:
-	if not (_cur().type == GateLexer.T.IDENT and _cur().value == "type"
-			and _peek(1).type == GateLexer.T.IDENT):
+	if not (_cur().type == GateLexer._T.IDENT and _cur().value == "type"
+			and _peek(1).type == GateLexer._T.IDENT):
 		return false
 	if _peek(2).is_op("="):
 		return true
@@ -295,7 +295,7 @@ func _parse_tested_type(kw: String) -> GateAST._TypeRef:
 
 func _looks_like_typed_decl() -> bool:
 	var t: GateLexer._Token = _cur()
-	if t.type == GateLexer.T.OP and (t.value == "<" or t.value == "<<"):
+	if t.type == GateLexer._T.OP and (t.value == "<" or t.value == "<<"):
 		var close: int = _generic_span_end(_i, false)
 		if close < 0:
 			return false
@@ -314,36 +314,36 @@ func _looks_like_typed_decl() -> bool:
 		var depth: int = 0
 		while j < _toks.size():
 			var tk: GateLexer._Token = _toks[j]
-			if tk.type == GateLexer.T.OP and tk.value == "{": depth += 1
-			elif tk.type == GateLexer.T.OP and tk.value == "}":
+			if tk.type == GateLexer._T.OP and tk.value == "{": depth += 1
+			elif tk.type == GateLexer._T.OP and tk.value == "}":
 				depth -= 1
 				if depth == 0:
 					var nxt: GateLexer._Token = _toks[j + 1] if j + 1 < _toks.size() else null
-					return nxt != null and nxt.type == GateLexer.T.IDENT
-			elif tk.type == GateLexer.T.NEWLINE:
+					return nxt != null and nxt.type == GateLexer._T.IDENT
+			elif tk.type == GateLexer._T.NEWLINE:
 				return false
 			j += 1
 		return false
 
-	if t.type != GateLexer.T.IDENT:
+	if t.type != GateLexer._T.IDENT:
 		return false
 
 	var j2: int = _i + 1
 	while j2 < _toks.size():
 		var tk2: GateLexer._Token = _toks[j2]
-		if tk2.type == GateLexer.T.OP and (tk2.value == "[" or tk2.value == "?["):
+		if tk2.type == GateLexer._T.OP and (tk2.value == "[" or tk2.value == "?["):
 			var nxt2: GateLexer._Token = _toks[j2 + 1] if j2 + 1 < _toks.size() else null
-			if nxt2 != null and nxt2.type == GateLexer.T.OP and nxt2.value == "]":
+			if nxt2 != null and nxt2.type == GateLexer._T.OP and nxt2.value == "]":
 				j2 += 2
 				continue
 			var d3: int = 0
 			var k3: int = j2
 			while k3 < _toks.size():
 				var b: GateLexer._Token = _toks[k3]
-				if b.type == GateLexer.T.NEWLINE:
+				if b.type == GateLexer._T.NEWLINE:
 					return false
-				if b.type == GateLexer.T.OP and (b.value == "[" or b.value == "?["): d3 += 1
-				elif b.type == GateLexer.T.OP and b.value == "]":
+				if b.type == GateLexer._T.OP and (b.value == "[" or b.value == "?["): d3 += 1
+				elif b.type == GateLexer._T.OP and b.value == "]":
 					d3 -= 1
 					if d3 == 0:
 						k3 += 1
@@ -353,15 +353,15 @@ func _looks_like_typed_decl() -> bool:
 				return false
 			j2 = k3
 			continue
-		if tk2.type == GateLexer.T.OP and tk2.value == "?":
+		if tk2.type == GateLexer._T.OP and tk2.value == "?":
 			j2 += 1
 			continue
-		if (tk2.is_op(".") and j2 + 1 < _toks.size() and _toks[j2 + 1].type == GateLexer.T.IDENT
+		if (tk2.is_op(".") and j2 + 1 < _toks.size() and _toks[j2 + 1].type == GateLexer._T.IDENT
 				and _is_type_looking(t.value) and _is_type_looking(_toks[j2 + 1].value)
 				and t.value[0] == t.value[0].to_upper()):
 			j2 += 2
 			continue
-		if tk2.type == GateLexer.T.OP and (tk2.value == "<" or tk2.value == "<<"):
+		if tk2.type == GateLexer._T.OP and (tk2.value == "<" or tk2.value == "<<"):
 			if not _is_type_looking(t.value):
 				return false
 			if tk2.value == "<<" and not (_is_generic_name(t.value) or BUILTIN_GENERICS.has(t.value)):
@@ -390,13 +390,13 @@ func _decl_name_follows(j2: int) -> bool:
 	var after: GateLexer._Token = _toks[j2 + 1] if j2 + 1 < _toks.size() else null
 	if after == null:
 		return false
-	if after.type == GateLexer.T.OP and after.value == "{":
+	if after.type == GateLexer._T.OP and after.value == "{":
 		var inner: GateLexer._Token = _toks[j2 + 2] if j2 + 2 < _toks.size() else null
 		return inner != null and inner.value in ["get", "set"]
 	# A comment is a token, so a trailing one sits where the NEWLINE would be.
-	return after.type == GateLexer.T.NEWLINE \
-		or after.type == GateLexer.T.COMMENT \
-		or (after.type == GateLexer.T.OP and after.value in ["=", ":", ","])
+	return after.type == GateLexer._T.NEWLINE \
+		or after.type == GateLexer._T.COMMENT \
+		or (after.type == GateLexer._T.OP and after.value in ["=", ":", ","])
 
 
 func _is_type_looking(name: String) -> bool:
@@ -415,7 +415,7 @@ func _is_type_looking(name: String) -> bool:
 
 
 func _qualified_generic_ahead() -> bool:
-	if not _peek(1).is_op(".") or _peek(2).type != GateLexer.T.IDENT:
+	if not _peek(1).is_op(".") or _peek(2).type != GateLexer._T.IDENT:
 		return false
 	var open: GateLexer._Token = _peek(3)
 	if not (open.is_op("<") or open.is_op("<<")):
@@ -427,7 +427,7 @@ func _qualified_generic_ahead() -> bool:
 
 func _check_generic_instantiation() -> bool:
 	var nx: GateLexer._Token = _peek(1)
-	if nx.type != GateLexer.T.OP or not (nx.value == "<" or nx.value == "<<"):
+	if nx.type != GateLexer._T.OP or not (nx.value == "<" or nx.value == "<<"):
 		return false
 	return _is_generic_name(_cur().value) and _generic_after(_i + 1, nx.value == "<<")
 
@@ -447,9 +447,9 @@ func _generic_span_end(from: int, strict: bool) -> int:
 	var i: int = from
 	while i < _toks.size():
 		var t: GateLexer._Token = _toks[i]
-		if t.type == GateLexer.T.NEWLINE or t.type == GateLexer.T.EOF:
+		if t.type == GateLexer._T.NEWLINE or t.type == GateLexer._T.EOF:
 			return -1
-		if t.type == GateLexer.T.OP:
+		if t.type == GateLexer._T.OP:
 			if t.value == "<":
 				depth += 1
 			elif t.value == "<<":
@@ -462,7 +462,7 @@ func _generic_span_end(from: int, strict: bool) -> int:
 					return -1
 			elif strict and not TYPE_ARG_OPS.has(t.value):
 				return -1
-		elif strict and depth >= 1 and t.type != GateLexer.T.IDENT and not t.is_kw("void") \
+		elif strict and depth >= 1 and t.type != GateLexer._T.IDENT and not t.is_kw("void") \
 				and not t.is_kw("func"):
 			return -1
 		i += 1
@@ -476,10 +476,10 @@ func _split_generic_span(from: int) -> void:
 	var i: int = from
 	while i <= end:
 		var t: GateLexer._Token = _toks[i]
-		if t.type == GateLexer.T.OP and (t.value == ">>" or t.value == "<<"):
+		if t.type == GateLexer._T.OP and (t.value == ">>" or t.value == "<<"):
 			var half: String = t.value.substr(0, 1)
-			_toks[i] = GateLexer._Token.new(GateLexer.T.OP, half, t.line, t.col)
-			_toks.insert(i + 1, GateLexer._Token.new(GateLexer.T.OP, half, t.line, t.col + 1))
+			_toks[i] = GateLexer._Token.new(GateLexer._T.OP, half, t.line, t.col)
+			_toks.insert(i + 1, GateLexer._Token.new(GateLexer._T.OP, half, t.line, t.col + 1))
 			_shift_spans(i + 1)
 			end += 1
 			i += 1

@@ -19,18 +19,18 @@ extends RefCounted
 ## adding them a second time only produces a duplicate that cannot be removed
 ## cleanly. `registry.gd` explains what that costs and how it is contained.
 
-const Registry: GDScript = preload("res://addons/gate/editor/registry.gd")
-const Highlighter: GDScript = preload("res://addons/gate/editor/highlighter.gd")
-const Icon: GDScript = preload("res://addons/gate/editor/icon.gd")
-const Export: GDScript = preload("res://addons/gate/editor/export.gd")
-const CreateDialog: GDScript = preload("res://addons/gate/editor/create_dialog.gd")
-const ContextMenu: GDScript = preload("res://addons/gate/editor/context_menu.gd")
-const Index: GDScript = preload("res://addons/gate/editor/index.gd")
-const Complete: GDScript = preload("res://addons/gate/editor/complete.gd")
-const Breakpoints: GDScript = preload("res://addons/gate/editor/breakpoints.gd")
-const Lookup: GDScript = preload("res://addons/gate/editor/lookup.gd")
-const Tabs: GDScript = preload("res://addons/gate/editor/tabs.gd")
-const Warnings: GDScript = preload("res://addons/gate/editor/warnings.gd")
+const _Registry: GDScript = preload("res://addons/gate/editor/registry.gd")
+const _Highlighter: GDScript = preload("res://addons/gate/editor/highlighter.gd")
+const _Icon: GDScript = preload("res://addons/gate/editor/icon.gd")
+const _Export: GDScript = preload("res://addons/gate/editor/export.gd")
+const _CreateDialog: GDScript = preload("res://addons/gate/editor/create_dialog.gd")
+const _ContextMenu: GDScript = preload("res://addons/gate/editor/context_menu.gd")
+const _Index: GDScript = preload("res://addons/gate/editor/index.gd")
+const _Complete: GDScript = preload("res://addons/gate/editor/complete.gd")
+const _Breakpoints: GDScript = preload("res://addons/gate/editor/breakpoints.gd")
+const _Lookup: GDScript = preload("res://addons/gate/editor/lookup.gd")
+const _Tabs: GDScript = preload("res://addons/gate/editor/tabs.gd")
+const _Warnings: GDScript = preload("res://addons/gate/editor/warnings.gd")
 
 const ICON_KEY: StringName = &"GATEScript"
 const ICON_TYPE: StringName = &"EditorIcons"
@@ -52,7 +52,7 @@ func attach(plugin: EditorPlugin) -> void:
 	if _attached:
 		return
 	_plugin = plugin
-	_language = Registry.language()
+	_language = _Registry.language()
 	if _language == null:
 		push_error("[GATE] the script language failed to load; .gate files stay invisible")
 		return
@@ -60,21 +60,21 @@ func attach(plugin: EditorPlugin) -> void:
 		push_error("[GATE] Godot refused to register the GATE script language")
 		return
 	_attached = true
-	Registry.set_active(true)
+	_Registry.set_active(true)
 
-	_highlighter = Highlighter.new()
+	_highlighter = _Highlighter.new()
 	EditorInterface.get_script_editor().register_syntax_highlighter(_highlighter)
 
-	_export = Export.new()
+	_export = _Export.new()
 	_plugin.add_export_plugin(_export)
 
-	_context = ContextMenu.new()
+	_context = _ContextMenu.new()
 	_context.integration = self
 	_plugin.add_context_menu_plugin(EditorContextMenuPlugin.CONTEXT_SLOT_FILESYSTEM_CREATE, _context)
 
-	_dialogs = CreateDialog.new()
+	_dialogs = _CreateDialog.new()
 
-	_breakpoints = Breakpoints.new()
+	_breakpoints = _Breakpoints.new()
 	_plugin.add_debugger_plugin(_breakpoints)
 	var editors: ScriptEditor = EditorInterface.get_script_editor()
 	if not editors.editor_script_changed.is_connected(_on_script_changed):
@@ -103,7 +103,7 @@ func detach() -> void:
 	if not _attached:
 		return
 	_attached = false
-	Registry.set_active(false)
+	_Registry.set_active(false)
 
 	var settings: EditorSettings = EditorInterface.get_editor_settings()
 	if settings != null and settings.settings_changed.is_connected(_on_settings_changed):
@@ -115,9 +115,9 @@ func detach() -> void:
 	var base: Control = EditorInterface.get_base_control()
 	if base != null and base.theme_changed.is_connected(_on_theme_changed):
 		base.theme_changed.disconnect(_on_theme_changed)
-	Index.invalidate()
-	Complete.forget()
-	Warnings.forget()
+	_Index.invalidate()
+	_Complete.forget()
+	_Warnings.forget()
 
 	var editors: ScriptEditor = EditorInterface.get_script_editor()
 	if editors != null and editors.editor_script_changed.is_connected(_on_script_changed):
@@ -152,7 +152,7 @@ func detach() -> void:
 	if _language != null:
 		Engine.unregister_script_language(_language)
 	_language = null
-	Registry.release()
+	_Registry.release()
 
 	var theme: Theme = EditorInterface.get_editor_theme()
 	if theme != null and theme.has_icon(ICON_KEY, ICON_TYPE):
@@ -182,7 +182,7 @@ func _apply_icon() -> void:
 	var theme: Theme = EditorInterface.get_editor_theme()
 	if theme == null:
 		return
-	var texture: ImageTexture = Icon.texture(EditorInterface.get_editor_scale())
+	var texture: ImageTexture = _Icon.texture(EditorInterface.get_editor_scale())
 	if texture == null:
 		push_warning("[GATE] the file icon could not be rendered")
 		return
@@ -207,7 +207,7 @@ func _on_script_changed(script: Script) -> void:
 	if _breakpoints != null:
 		_breakpoints.watch()
 	var editors: ScriptEditor = EditorInterface.get_script_editor()
-	if script == null or not Tabs.is_gate(script.resource_path) or editors.get_current_editor() == null:
+	if script == null or not _Tabs.is_gate(script.resource_path) or editors.get_current_editor() == null:
 		return
 	var edit: CodeEdit = editors.get_current_editor().get_base_editor() as CodeEdit
 	if edit != null and not edit.symbol_lookup.is_connected(_on_symbol_lookup):
@@ -227,7 +227,7 @@ func _on_symbol_validate(_symbol: String) -> void:
 func _on_symbol_lookup(symbol: String, _line: int, _column: int) -> void:
 	var hovered: bool = _hovered
 	_hovered = false
-	var generated: String = Lookup._global_class_path(symbol)
+	var generated: String = _Lookup._global_class_path(symbol)
 	if generated.get_extension().to_lower() != "gd":
 		return
 	var source: String = generated.get_basename() + ".gate"
@@ -242,7 +242,7 @@ func _open_source(source: String, symbol: String, close: String) -> void:
 	var script: Script = ResourceLoader.load(source) as Script
 	if script == null:
 		return
-	EditorInterface.edit_script(script, Lookup._class_name_line(source, symbol))
+	EditorInterface.edit_script(script, _Lookup._class_name_line(source, symbol))
 	if close == "":
 		return
 	var editors: ScriptEditor = EditorInterface.get_script_editor()
@@ -264,11 +264,11 @@ func _on_theme_changed() -> void:
 
 
 func _on_filesystem_changed() -> void:
-	Index.invalidate()
-	Complete.forget()
-	Warnings.forget()
+	_Index.invalidate()
+	_Complete.forget()
+	_Warnings.forget()
 
 
 func _on_settings_changed() -> void:
-	Highlighter.invalidate()
+	_Highlighter.invalidate()
 	_queue_refresh()

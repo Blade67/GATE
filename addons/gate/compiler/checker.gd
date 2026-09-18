@@ -965,7 +965,7 @@ static func report_instance(into: GateDiagnostics, found: GateDiagnostics, inst:
 	for i in mini(cd.generic_params.size(), args.size()):
 		binds.append("%s = %s" % [cd.generic_params[i], (args[i] as GateAST._TypeRef).describe()])
 	for d2 in found.items:
-		if d2.level != GateDiagnostics.Level.ERROR or have.has("%d|%d|%s" % [d2.line, d2.col, d2.message]):
+		if d2.level != GateDiagnostics._Level.ERROR or have.has("%d|%d|%s" % [d2.line, d2.col, d2.message]):
 			continue
 		if not only.is_empty() and not only.has("%d:%d" % [d2.line, d2.col]):
 			continue
@@ -2956,9 +2956,9 @@ func _tp_chain(n: String) -> Array:
 	return out
 
 
-enum NodeKind { NOT_NODE, IS_NODE, UNKNOWN }
+enum _NodeKind { NOT_NODE, IS_NODE, UNKNOWN }
 
-enum Inherits { NO, YES, UNKNOWN }
+enum _Inherits { NO, YES, UNKNOWN }
 
 const INJECTING_ANNOTATIONS: Array = ["required", "export_if"]
 
@@ -3042,7 +3042,7 @@ func _check_synthesised(owner: Object, members: Array, base: GateAST._TypeRef) -
 			continue
 		var vd: GateAST._VarDecl = m
 		var req: GateAST._Annotation = _annotation(vd.annotations, "required")
-		if req != null and not asks.has("_ready") and _node_kind(base) == NodeKind.IS_NODE:
+		if req != null and not asks.has("_ready") and _node_kind(base) == _NodeKind.IS_NODE:
 			asks["_ready"] = req
 		var ei: GateAST._Annotation = _annotation(vd.annotations, "export_if")
 		if ei != null and not asks.has("_validate_property"):
@@ -3058,11 +3058,11 @@ func _check_synthesised(owner: Object, members: Array, base: GateAST._TypeRef) -
 					% fname + "the properties it checks. Godot never calls a static one anyway.")
 			continue
 		match _inherited_defines(base, fname):
-			Inherits.YES:
+			_Inherits.YES:
 				if not super_calls.has(owner):
 					super_calls[owner] = {}
 				super_calls[owner][fname] = true
-			Inherits.UNKNOWN:
+			_Inherits.UNKNOWN:
 				diagnostics.error("@%s needs this class to declare %s" % [a.name, fname],
 					a.line, a.col,
 					"GATE writes %s here, and it cannot read '%s' to tell whether that " % [
@@ -3093,11 +3093,11 @@ func _check_required_var(vd: GateAST._VarDecl, base: GateAST._TypeRef, where: St
 			"an int, a vector or an array always holds a value, so there is nothing to "
 			+ "check. Use it on a node or resource type.")
 	match _node_kind(base):
-		NodeKind.NOT_NODE:
+		_NodeKind.NOT_NODE:
 			diagnostics.error("@required needs a script that extends Node", req.line, req.col,
 				"the check is an assert at the top of _ready, which only a node receives; "
 				+ "this extends %s." % (base.name if base != null else "RefCounted"))
-		NodeKind.UNKNOWN:
+		_NodeKind.UNKNOWN:
 			diagnostics.error("@required needs a script that extends Node", req.line, req.col,
 				"GATE cannot tell whether '%s' extends Node, and the check is an assert in "
 				% base.name + "_ready, which only a node receives. Extend a node class "
@@ -3268,7 +3268,7 @@ func _is_object_type(t: GateAST._TypeRef) -> bool:
 	return false
 
 
-func _node_kind(base: GateAST._TypeRef) -> NodeKind:
+func _node_kind(base: GateAST._TypeRef) -> _NodeKind:
 	var ext: String = _ext_name(base)
 	var from: String = _path
 	var seen: Dictionary = {}
@@ -3276,16 +3276,16 @@ func _node_kind(base: GateAST._TypeRef) -> NodeKind:
 		seen[ext + "|" + from] = true
 		var link: Dictionary = _chain_link(ext, from)
 		if link.is_empty():
-			return NodeKind.UNKNOWN
+			return _NodeKind.UNKNOWN
 		if link.has("native"):
-			return (NodeKind.IS_NODE if ClassDB.is_parent_class(String(link["native"]), "Node")
-				else NodeKind.NOT_NODE)
+			return (_NodeKind.IS_NODE if ClassDB.is_parent_class(String(link["native"]), "Node")
+				else _NodeKind.NOT_NODE)
 		ext = link["extends"]
 		from = link["from"]
-	return NodeKind.UNKNOWN
+	return _NodeKind.UNKNOWN
 
 
-func _inherited_defines(base: GateAST._TypeRef, fname: String) -> Inherits:
+func _inherited_defines(base: GateAST._TypeRef, fname: String) -> _Inherits:
 	var ext: String = _ext_name(base)
 	var from: String = _path
 	var seen: Dictionary = {}
@@ -3293,14 +3293,14 @@ func _inherited_defines(base: GateAST._TypeRef, fname: String) -> Inherits:
 		seen[ext + "|" + from] = true
 		var link: Dictionary = _chain_link(ext, from)
 		if link.is_empty():
-			return Inherits.UNKNOWN
+			return _Inherits.UNKNOWN
 		if link.has("native"):
-			return Inherits.NO
+			return _Inherits.NO
 		if (link["defines"] as Array).has(fname):
-			return Inherits.YES
+			return _Inherits.YES
 		ext = link["extends"]
 		from = link["from"]
-	return Inherits.UNKNOWN
+	return _Inherits.UNKNOWN
 
 
 static func split_extends_path(ext: String) -> Array:

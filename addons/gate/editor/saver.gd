@@ -7,12 +7,12 @@ class_name GateScriptSaver
 ## Like the loader, this needs `class_name` to survive Godot rebuilding its custom
 ## saver list, and is inert while the plugin is off for the same reason.
 
-const Registry: GDScript = preload("res://addons/gate/editor/registry.gd")
-const Script_: GDScript = preload("res://addons/gate/editor/script.gd")
+const _Registry: GDScript = preload("res://addons/gate/editor/registry.gd")
+const _Script: GDScript = preload("res://addons/gate/editor/script.gd")
 
 
 func _recognize(resource: Resource) -> bool:
-	return Registry.is_active() and resource != null and resource.get_script() == Script_
+	return _Registry.is_active() and resource != null and resource.get_script() == _Script
 
 
 func _get_recognized_extensions(resource: Resource) -> PackedStringArray:

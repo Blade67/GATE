@@ -11,8 +11,8 @@ class_name GateScriptLoader
 ## disabled and in an exported game, which is why every entry point below is inert
 ## until the plugin says otherwise.
 
-const Registry: GDScript = preload("res://addons/gate/editor/registry.gd")
-const Script_: GDScript = preload("res://addons/gate/editor/script.gd")
+const _Registry: GDScript = preload("res://addons/gate/editor/registry.gd")
+const _Script: GDScript = preload("res://addons/gate/editor/script.gd")
 
 
 func _get_recognized_extensions() -> PackedStringArray:
@@ -20,14 +20,14 @@ func _get_recognized_extensions() -> PackedStringArray:
 
 
 func _handles_type(type: StringName) -> bool:
-	return Registry.is_active() and (type == &"Script" or type == &"GATEScript" or type == &"Resource")
+	return _Registry.is_active() and (type == &"Script" or type == &"GATEScript" or type == &"Resource")
 
 
 ## The FileSystem dock takes the file's type from here. Reporting nothing while the
 ## plugin is off is what puts a `.gate` back where it was before GATE was installed:
 ## a file Godot does not track, rather than a broken script.
 func _get_resource_type(path: String) -> String:
-	if Registry.is_active() and path.get_extension().to_lower() == "gate":
+	if _Registry.is_active() and path.get_extension().to_lower() == "gate":
 		return "GATEScript"
 	return ""
 
@@ -37,7 +37,7 @@ func _get_resource_script_class(path: String) -> String:
 
 
 func _exists(path: String) -> bool:
-	return Registry.is_active() and FileAccess.file_exists(path)
+	return _Registry.is_active() and FileAccess.file_exists(path)
 
 
 func _get_dependencies(path: String, add_types: bool) -> PackedStringArray:
@@ -45,14 +45,14 @@ func _get_dependencies(path: String, add_types: bool) -> PackedStringArray:
 
 
 func _load(path: String, original_path: String, use_sub_threads: bool, cache_mode: int) -> Variant:
-	if not Registry.is_active():
+	if not _Registry.is_active():
 		return ERR_UNAVAILABLE
 	var file: FileAccess = FileAccess.open(path, FileAccess.READ)
 	if file == null:
 		return ERR_FILE_CANT_OPEN
 	var text: String = file.get_as_text()
 	file.close()
-	var made: ScriptExtension = Script_.new()
+	var made: ScriptExtension = _Script.new()
 	made.set_source_code(text)
 	made.take_over_path(path)
 	return made

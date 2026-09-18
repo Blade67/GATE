@@ -25,9 +25,9 @@ extends RefCounted
 ## somewhere else - a completion list that is confidently wrong costs more than an
 ## empty one.
 
-const Index: GDScript = preload("res://addons/gate/editor/index.gd")
-const Autoload: GDScript = preload("res://addons/gate/editor/autoload.gd")
-const Builtins: GDScript = preload("res://addons/gate/editor/builtin_api.gd")
+const _Index: GDScript = preload("res://addons/gate/editor/index.gd")
+const _Autoload: GDScript = preload("res://addons/gate/editor/autoload.gd")
+const _Builtins: GDScript = preload("res://addons/gate/editor/builtin_api.gd")
 
 const CURSOR: String = "\uFFFF"
 
@@ -117,7 +117,7 @@ static func complete(code: String, path: String, owner: Object) -> Dictionary:
 	var head: String = code.substr(line_start, at - line_start)
 	var row: int = code.substr(0, at).count("\n")
 
-	var reg: RefCounted = Index.registry()
+	var reg: RefCounted = _Index.registry()
 	if reg == null:
 		return NOTHING
 	editing(path)
@@ -146,7 +146,7 @@ static func complete(code: String, path: String, owner: Object) -> Dictionary:
 static func _module(text: String, path: String, reg: RefCounted) -> GateAST._Module:
 	if _cached_path == path and _cached_module != null 			and (_cached_text == text or _same_declarations(_cached_text, text)):
 		return _cached_module
-	_cached_module = Index.module_for(text, path, reg)
+	_cached_module = _Index.module_for(text, path, reg)
 	_cached_text = text
 	_cached_path = path
 	return _cached_module
@@ -384,7 +384,7 @@ static func _base_type(name: String, module: GateAST._Module, reg: RefCounted,
 
 
 static func _autoload_type(name: String, reg: RefCounted) -> String:
-	var target: Dictionary = Autoload.resolve(name)
+	var target: Dictionary = _Autoload.resolve(name)
 	if target.is_empty():
 		return ""
 	var script: String = String(target["script"])
@@ -400,7 +400,7 @@ static func _is_file(type_name: String) -> bool:
 
 static func _file_module(type_name: String, module: GateAST._Module,
 		reg: RefCounted) -> GateAST._Module:
-	return module if type_name == THIS_FILE else Autoload.module(type_name, reg)
+	return module if type_name == THIS_FILE else _Autoload.module(type_name, reg)
 
 
 static func _declared_type(members: Array, name: String, line: int,
@@ -545,7 +545,7 @@ static func _preloaded(value: Variant, source: String, reg: RefCounted) -> Strin
 	var raw: String = (call.args[0] as GateAST._Literal).raw
 	var path: String = raw.substr(1, raw.length() - 2)
 	if path.begins_with("uid://"):
-		path = Autoload._path(path)
+		path = _Autoload._path(path)
 	elif not path.begins_with("res://") and source != "":
 		path = source.get_base_dir().path_join(path).simplify_path()
 	if not path.begins_with("res://"):
@@ -629,7 +629,7 @@ static func _is_packed(declared: GateAST._VarDecl) -> bool:
 static func _canonical(name: String) -> String:
 	if not GateTypes.SHORTHAND.has(name):
 		return name
-	var reg: RefCounted = Index.registry()
+	var reg: RefCounted = _Index.registry()
 	if reg != null and (_declaration_of(name, reg) != null or reg.script_class_names.has(name)):
 		return name
 	return String(GateTypes.SHORTHAND[name])
@@ -665,7 +665,7 @@ static func _arguments(type_name: String) -> PackedStringArray:
 
 
 static func _builtin(type_name: String) -> Dictionary:
-	return Builtins.TYPES.get(_container(type_name), {})
+	return _Builtins.TYPES.get(_container(type_name), {})
 
 
 static func _element_of(type_name: String) -> String:
@@ -901,10 +901,10 @@ static func _extended(written: String, from: String, reg: RefCounted) -> String:
 
 
 static func _script_type(path: String, reg: RefCounted) -> String:
-	var source: String = Autoload.source_of(path)
+	var source: String = _Autoload.source_of(path)
 	if source == "":
 		return ""
-	var file: GateAST._Module = Autoload.module(source, reg)
+	var file: GateAST._Module = _Autoload.module(source, reg)
 	if file == null:
 		return ""
 	var own_class: String = file.class_name_decl
@@ -1022,7 +1022,7 @@ static func _in_scope(module: GateAST._Module, reg: RefCounted, line: int) -> Ar
 		_take(out, taken, option(KIND_CLASS, String(name), String(name), OTHER_USER_CODE))
 	for name in reg.script_class_names:
 		_take(out, taken, option(KIND_CLASS, String(name), String(name), OTHER_USER_CODE))
-	for name in Autoload.names():
+	for name in _Autoload.names():
 		_take(out, taken, option(KIND_CONSTANT, name, name, OTHER_USER_CODE))
 	for entry in ProjectSettings.get_global_class_list():
 		_take(out, taken, option(KIND_CLASS, String(entry["class"]), String(entry["class"]),

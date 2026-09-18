@@ -4,7 +4,7 @@ extends RefCounted
 
 ## Errors and warnings, with source positions.
 
-enum Level { ERROR, WARNING, INFO }
+enum _Level { ERROR, WARNING, INFO }
 
 
 class _Diag extends RefCounted:
@@ -52,20 +52,20 @@ func seal() -> void:
 func error(msg: String, line: int, col: int, hint: String = "") -> void:
 	if sealed:
 		return
-	_record(Level.ERROR, msg, line, col, hint)
+	_record(_Level.ERROR, msg, line, col, hint)
 
 
 func warn(msg: String, line: int, col: int, hint: String = "") -> void:
-	_record(Level.WARNING, msg, line, col, hint)
+	_record(_Level.WARNING, msg, line, col, hint)
 
 
 func info(msg: String, line: int, col: int, hint: String = "") -> void:
-	_record(Level.INFO, msg, line, col, hint)
+	_record(_Level.INFO, msg, line, col, hint)
 
 
 func has_errors() -> bool:
 	for d in items:
-		if d.level == Level.ERROR:
+		if d.level == _Level.ERROR:
 			return true
 	return false
 
@@ -73,7 +73,7 @@ func has_errors() -> bool:
 func error_count() -> int:
 	var n: int = 0
 	for d in items:
-		if d.level == Level.ERROR:
+		if d.level == _Level.ERROR:
 			n += 1
 	return n
 
@@ -81,7 +81,7 @@ func error_count() -> int:
 func warning_count() -> int:
 	var n: int = 0
 	for d in items:
-		if d.level == Level.WARNING:
+		if d.level == _Level.WARNING:
 			n += 1
 	return n
 
@@ -108,9 +108,9 @@ func format_all() -> String:
 
 func print_all() -> void:
 	for d in items:
-		if d.level == Level.ERROR:
+		if d.level == _Level.ERROR:
 			push_error("[GATE] " + d.format())
-		elif d.level == Level.WARNING:
+		elif d.level == _Level.WARNING:
 			push_warning("[GATE] " + d.format())
 		else:
 			print("[GATE] " + d.format())

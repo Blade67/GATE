@@ -1,19 +1,19 @@
 @tool
 extends RefCounted
 
-const Autoload: GDScript = preload("res://addons/gate/editor/autoload.gd")
+const _Autoload: GDScript = preload("res://addons/gate/editor/autoload.gd")
 
-const NEWLINE: int = GateLexer.T.NEWLINE
-const INDENT: int = GateLexer.T.INDENT
-const DEDENT: int = GateLexer.T.DEDENT
-const EOF: int = GateLexer.T.EOF
-const IDENT: int = GateLexer.T.IDENT
-const KEYWORD: int = GateLexer.T.KEYWORD
-const STRING: int = GateLexer.T.STRING
-const FSTRING: int = GateLexer.T.FSTRING
-const ANNOTATION: int = GateLexer.T.ANNOTATION
-const COMMENT: int = GateLexer.T.COMMENT
-const OP: int = GateLexer.T.OP
+const NEWLINE: int = GateLexer._T.NEWLINE
+const INDENT: int = GateLexer._T.INDENT
+const DEDENT: int = GateLexer._T.DEDENT
+const EOF: int = GateLexer._T.EOF
+const IDENT: int = GateLexer._T.IDENT
+const KEYWORD: int = GateLexer._T.KEYWORD
+const STRING: int = GateLexer._T.STRING
+const FSTRING: int = GateLexer._T.FSTRING
+const ANNOTATION: int = GateLexer._T.ANNOTATION
+const COMMENT: int = GateLexer._T.COMMENT
+const OP: int = GateLexer._T.OP
 
 const UNUSED_VARIABLE: int = 2
 const UNUSED_LOCAL_CONSTANT: int = 3
@@ -738,10 +738,10 @@ func _file_of(name: String, from: String) -> String:
 			if from == "":
 				return ""
 			path = from.get_base_dir().path_join(path).simplify_path()
-		return Autoload.source_of(path)
+		return _Autoload.source_of(path)
 	for entry in ProjectSettings.get_global_class_list():
 		if String(entry["class"]) == name:
-			return Autoload.source_of(String(entry["path"]))
+			return _Autoload.source_of(String(entry["path"]))
 	return ""
 
 
@@ -763,7 +763,7 @@ func _read_file(file: String) -> Dictionary:
 	diagnostics.file = file
 	var tokens: Array = GateLexer.new().tokenize(text, diagnostics)
 	for item in diagnostics.items:
-		if item.level == GateDiagnostics.Level.ERROR:
+		if item.level == GateDiagnostics._Level.ERROR:
 			return {"members": {}, "base": ""}
 	var scan: RefCounted = (get_script() as GDScript).new()
 	scan.call("read", tokens)

@@ -61,7 +61,7 @@ func _annotation_is_file_level() -> bool:
 	var i: int = _i + 1
 	while i < _toks.size():
 		var t: GateLexer._Token = _toks[i]
-		if t.type == GateLexer.T.NEWLINE or t.type == GateLexer.T.COMMENT or t.type == GateLexer.T.ANNOTATION:
+		if t.type == GateLexer._T.NEWLINE or t.type == GateLexer._T.COMMENT or t.type == GateLexer._T.ANNOTATION:
 			i += 1
 			continue
 		return not (t.is_kw("class") or t.is_kw("func") or t.is_kw("static"))
@@ -69,7 +69,7 @@ func _annotation_is_file_level() -> bool:
 
 
 func _parse_module_member(mod: GateAST._Module) -> GateAST._Stmt:
-	if _check(GateLexer.T.ANNOTATION) and _annotation_is_file_level():
+	if _check(GateLexer._T.ANNOTATION) and _annotation_is_file_level():
 		var fa: GateAST._Annotation = _parse_one_annotation()
 		if fa != null:
 			mod.header_annotations.append(fa)
@@ -78,7 +78,7 @@ func _parse_module_member(mod: GateAST._Module) -> GateAST._Stmt:
 		_skip_newlines()
 		return null
 
-	if _check(GateLexer.T.COMMENT):
+	if _check(GateLexer._T.COMMENT):
 		var c: GateAST._CommentStmt = GateAST._CommentStmt.new()
 		c.text = _advance().value
 		return c
@@ -86,10 +86,10 @@ func _parse_module_member(mod: GateAST._Module) -> GateAST._Stmt:
 	if _check_kw("class_name"):
 		var cn_tok: GateLexer._Token = _advance()
 		mod.class_name_line = cn_tok.line
-		if _check(GateLexer.T.IDENT):
+		if _check(GateLexer._T.IDENT):
 			mod.class_name_decl = _advance().value
 		if _match_op(","):
-			if _check(GateLexer.T.STRING): mod.icon = _advance().value
+			if _check(GateLexer._T.STRING): mod.icon = _advance().value
 		if _check_kw("extends"):
 			mod.extends_line = _advance().line
 			mod.extends_type = _parse_extends_type()
@@ -104,7 +104,7 @@ func _parse_module_member(mod: GateAST._Module) -> GateAST._Stmt:
 
 
 func _parse_one_annotation() -> GateAST._Annotation:
-	if not _check(GateLexer.T.ANNOTATION):
+	if not _check(GateLexer._T.ANNOTATION):
 		return null
 	var t: GateLexer._Token = _advance()
 	var a: GateAST._Annotation = GateAST._Annotation.new()
@@ -128,7 +128,7 @@ func _parse_one_annotation() -> GateAST._Annotation:
 
 func _parse_annotations() -> Array:
 	var out: Array = []
-	while _check(GateLexer.T.ANNOTATION):
+	while _check(GateLexer._T.ANNOTATION):
 		var a: GateAST._Annotation = _parse_one_annotation()
 		if a == null:
 			break
@@ -139,13 +139,13 @@ func _parse_annotations() -> Array:
 
 func _parse_member() -> GateAST._Stmt:
 	var start_line: int = _cur().line
-	if _check(GateLexer.T.INDENT):
+	if _check(GateLexer._T.INDENT):
 		if _stray_indent():
 			return null
 		return _raw_block()
 	var annotations: Array = _parse_annotations()
 	# Annotations that close a block have nothing to attach to; keep them as they are.
-	if not annotations.is_empty() and (_check(GateLexer.T.DEDENT) or _at_end()):
+	if not annotations.is_empty() and (_check(GateLexer._T.DEDENT) or _at_end()):
 		var lone: GateAST._AnnotatedStmt = GateAST._AnnotatedStmt.new()
 		lone.at(start_line, 0)
 		lone.annotations = annotations
@@ -166,7 +166,7 @@ func _parse_member() -> GateAST._Stmt:
 		elif _check_kw("virtual"): _advance(); is_virtual = true
 		elif _check_kw("override"): _advance(); is_override = true
 		elif _check_kw("final"): _advance(); is_final = true
-		elif visibility != "" and _check(GateLexer.T.ANNOTATION):
+		elif visibility != "" and _check(GateLexer._T.ANNOTATION):
 			annotations.append_array(_parse_annotations())   # `priv @export var x`
 		else: break
 
@@ -181,7 +181,7 @@ func _parse_member() -> GateAST._Stmt:
 			cd.is_abstract = is_abstract
 		return cd
 
-	if _cur().type == GateLexer.T.KEYWORD and _looks_like_func_type_decl():
+	if _cur().type == GateLexer._T.KEYWORD and _looks_like_func_type_decl():
 		var vd3: GateAST._VarDecl = _parse_typed_decl()
 		if vd3 != null:
 			vd3.annotations = annotations
@@ -234,11 +234,11 @@ func _parse_member() -> GateAST._Stmt:
 		var vraw: GateAST._RawStmt = _raw_from(start_line, maxi(_cur().line, start_line))
 		return vraw
 
-	if _cur().type == GateLexer.T.IDENT and _at_type_alias():
+	if _cur().type == GateLexer._T.IDENT and _at_type_alias():
 		_saw_alias = true
 		return _parse_type_alias()
 
-	if _looks_like_typed_decl() or (_cur().type == GateLexer.T.OP and _looks_like_paren_type_decl()):
+	if _looks_like_typed_decl() or (_cur().type == GateLexer._T.OP and _looks_like_paren_type_decl()):
 		var vd2: GateAST._VarDecl = _parse_typed_decl()
 		if vd2 != null:
 			vd2.annotations = annotations
@@ -246,7 +246,7 @@ func _parse_member() -> GateAST._Stmt:
 			vd2.is_static = is_static
 		return vd2
 
-	if _check_op("<") or _check_op("<<") or (_check(GateLexer.T.IDENT)
+	if _check_op("<") or _check_op("<<") or (_check(GateLexer._T.IDENT)
 			and (_peek(1).is_op("<") or _peek(1).is_op("<<"))):
 		_err("this declaration's type does not parse",
 			"check the brackets: `<a | b>`, `<a, b>`, `Box<T>`, and `>>` closes two")
@@ -275,14 +275,14 @@ func _raw_block() -> GateAST._RawStmt:
 	var end_line: int = start_line
 	var depth: int = 0
 	while not _at_end():
-		if _check(GateLexer.T.INDENT):
+		if _check(GateLexer._T.INDENT):
 			depth += 1
-		elif _check(GateLexer.T.DEDENT):
+		elif _check(GateLexer._T.DEDENT):
 			depth -= 1
 			if depth == 0:
 				_advance()
 				break
-		elif not _check(GateLexer.T.NEWLINE):
+		elif not _check(GateLexer._T.NEWLINE):
 			end_line = maxi(end_line, _cur().line)
 		_advance()
 	return _raw_from(start_line, end_line)
@@ -290,13 +290,13 @@ func _raw_block() -> GateAST._RawStmt:
 
 func _stray_indent() -> bool:
 	var j: int = _i - 1
-	while j >= 0 and _toks[j].type in [GateLexer.T.NEWLINE, GateLexer.T.COMMENT]:
+	while j >= 0 and _toks[j].type in [GateLexer._T.NEWLINE, GateLexer._T.COMMENT]:
 		j -= 1
 	if j >= 0 and _toks[j].is_op(":"):
 		return false
 	var reported: bool = false
 	for d in diagnostics.items:
-		if d.level == GateDiagnostics.Level.ERROR and j >= 0 and d.line == _toks[j].line:
+		if d.level == GateDiagnostics._Level.ERROR and j >= 0 and d.line == _toks[j].line:
 			reported = true   # the line above already failed; this is its body
 	if not reported:
 		_err("unexpected indentation in a class body",
@@ -304,9 +304,9 @@ func _stray_indent() -> bool:
 			+ "a class or a property")
 	var depth: int = 0
 	while not _at_end():
-		if _check(GateLexer.T.INDENT):
+		if _check(GateLexer._T.INDENT):
 			depth += 1
-		elif _check(GateLexer.T.DEDENT):
+		elif _check(GateLexer._T.DEDENT):
 			depth -= 1
 			if depth == 0:
 				_advance()
@@ -323,7 +323,7 @@ func _abstract_is_modifier() -> bool:
 	var j: int = _i + 1
 	while j < _toks.size():
 		var t: GateLexer._Token = _toks[j]
-		if t.type != GateLexer.T.KEYWORD:
+		if t.type != GateLexer._T.KEYWORD:
 			return false
 		if t.value in ABSTRACT_TARGETS:
 			return true
@@ -348,7 +348,7 @@ func _parse_class_like() -> GateAST._ClassDecl:
 	if _check_op("<"):
 		_advance()
 		while not _at_end() and not _check_op(">"):
-			if _check(GateLexer.T.IDENT):
+			if _check(GateLexer._T.IDENT):
 				cd.generic_params.append(_advance().value)
 			if not _match_op(","):
 				break
@@ -359,15 +359,15 @@ func _parse_class_like() -> GateAST._ClassDecl:
 
 	while true:
 		if _match_kw("implements"):
-			while _check(GateLexer.T.IDENT):
+			while _check(GateLexer._T.IDENT):
 				cd.implements.append(_advance().value)
 				if not _match_op(","): break
 		elif _match_kw("with"):
-			while _check(GateLexer.T.IDENT):
+			while _check(GateLexer._T.IDENT):
 				cd.traits.append(_advance().value)
 				if not _match_op(","): break
 		elif _match_kw("requires"):
-			while _check(GateLexer.T.IDENT):
+			while _check(GateLexer._T.IDENT):
 				cd.requires.append(_advance().value)
 				if not _match_op(","): break
 		else:
@@ -385,14 +385,14 @@ func _parse_func() -> GateAST._FuncDecl:
 
 	if kw.value == "operator":
 		fd.is_operator = true
-		if _check(GateLexer.T.OP):
+		if _check(GateLexer._T.OP):
 			fd.operator_symbol = _advance().value
 			fd.name = "__op_" + _op_ident(fd.operator_symbol)
 		else:
 			_err("expected an operator symbol after 'operator'")
 			return null
 	else:
-		if not (_check(GateLexer.T.IDENT) or _check(GateLexer.T.KEYWORD)):
+		if not (_check(GateLexer._T.IDENT) or _check(GateLexer._T.KEYWORD)):
 			if _check_op("("):
 				_err("a lambda on its own is never called; assign it to a variable",
 					"Godot rejects this too (\"Standalone lambdas cannot be accessed\").")
@@ -421,13 +421,13 @@ func _parse_func() -> GateAST._FuncDecl:
 		return null
 	_advance()
 
-	if _check(GateLexer.T.COMMENT):
+	if _check(GateLexer._T.COMMENT):
 		_advance()
 
-	if _check(GateLexer.T.NEWLINE):
+	if _check(GateLexer._T.NEWLINE):
 		var save: int = _i
 		_skip_newlines()
-		if _check(GateLexer.T.INDENT):
+		if _check(GateLexer._T.INDENT):
 			_i = save
 			fd.body = _parse_block(false)
 		else:
@@ -468,7 +468,7 @@ func _parse_enum() -> GateAST._EnumDecl:
 		ed.name = _advance().value
 	# The opening brace may sit on the next line.
 	var k: int = _i
-	while k < _toks.size() and (_toks[k].type == GateLexer.T.NEWLINE or _toks[k].type == GateLexer.T.COMMENT):
+	while k < _toks.size() and (_toks[k].type == GateLexer._T.NEWLINE or _toks[k].type == GateLexer._T.COMMENT):
 		k += 1
 	if k < _toks.size() and _toks[k].is_op("{"):
 		_i = k
@@ -503,7 +503,7 @@ func _parse_var_decl(strict_end := false) -> GateAST._VarDecl:
 	if vd.is_const and (_looks_like_typed_decl() or _looks_like_paren_type_decl()):
 		vd.type = _parse_type()
 		vd.type.strict = true
-	if not (_check(GateLexer.T.IDENT) or _check(GateLexer.T.KEYWORD)):
+	if not (_check(GateLexer._T.IDENT) or _check(GateLexer._T.KEYWORD)):
 		_err("expected a variable name after '%s'" % kw.value)
 		_skip_to_statement_end()
 		return null
@@ -518,7 +518,7 @@ func _parse_var_decl(strict_end := false) -> GateAST._VarDecl:
 	if _match_op(":="):
 		vd.inferred = true
 		vd.value = _parse_expr()
-	elif _check_op(":") and _peek(1).type in [GateLexer.T.NEWLINE, GateLexer.T.COMMENT]:
+	elif _check_op(":") and _peek(1).type in [GateLexer._T.NEWLINE, GateLexer._T.COMMENT]:
 		pass
 	elif _match_op(":"):
 		if _check_op("="):
@@ -551,11 +551,11 @@ func _parse_accessors(vd: GateAST._VarDecl) -> void:
 		_skip_to_statement_end()
 		var save: int = _i
 		_skip_newlines()
-		if _check(GateLexer.T.INDENT):
+		if _check(GateLexer._T.INDENT):
 			var depth: int = 0
 			while not _at_end():
-				if _check(GateLexer.T.INDENT): depth += 1
-				elif _check(GateLexer.T.DEDENT):
+				if _check(GateLexer._T.INDENT): depth += 1
+				elif _check(GateLexer._T.DEDENT):
 					depth -= 1
 					if depth == 0:
 						_advance()
@@ -597,14 +597,14 @@ func _parse_typed_decl() -> GateAST._VarDecl:
 	vd.name = _advance().value
 
 	var extra_names: Array = []
-	while _check_op(",") and _peek(1).type == GateLexer.T.IDENT:
+	while _check_op(",") and _peek(1).type == GateLexer._T.IDENT:
 		_advance()
 		extra_names.append(_advance().value)
 
 	if _check_op("{"):
 		_advance()
 		while not _at_end() and not _check_op("}"):
-			if not (_check(GateLexer.T.IDENT) or _check(GateLexer.T.KEYWORD)):
+			if not (_check(GateLexer._T.IDENT) or _check(GateLexer._T.KEYWORD)):
 				break
 			var acc: String = _advance().value
 			if acc in ["get", "set"]:
@@ -657,12 +657,12 @@ func _parse_block(is_class_body: bool) -> Array:
 func _parse_block_body(is_class_body: bool) -> Array:
 	var out: Array = []
 	_skip_newlines()
-	if not _check(GateLexer.T.INDENT):
+	if not _check(GateLexer._T.INDENT):
 		return out
 	_advance()  # INDENT
-	while not _at_end() and not _check(GateLexer.T.DEDENT):
+	while not _at_end() and not _check(GateLexer._T.DEDENT):
 		_skip_newlines()
-		if _check(GateLexer.T.DEDENT) or _at_end():
+		if _check(GateLexer._T.DEDENT) or _at_end():
 			break
 		var before: int = diagnostics.error_count()
 		var s: GateAST._Stmt = _parse_member() if is_class_body else _parse_statement()
@@ -680,7 +680,7 @@ func _parse_block_body(is_class_body: bool) -> Array:
 			_drain_extras(out)
 			_expect_stmt_end(before2)
 		_skip_newlines()
-	if _check(GateLexer.T.DEDENT):
+	if _check(GateLexer._T.DEDENT):
 		_advance()
 	return out
 
@@ -692,13 +692,13 @@ const STATEMENT_STARTERS := ["var", "const", "func", "class", "signal", "enum", 
 
 func _starts_a_second_statement(at: int) -> bool:
 	var t: GateLexer._Token = _toks[at]
-	if t.type == GateLexer.T.KEYWORD:
+	if t.type == GateLexer._T.KEYWORD:
 		return STATEMENT_STARTERS.has(t.value)
-	if t.type in [GateLexer.T.STRING, GateLexer.T.FSTRING, GateLexer.T.NUMBER]:
+	if t.type in [GateLexer._T.STRING, GateLexer._T.FSTRING, GateLexer._T.NUMBER]:
 		return true
-	if t.type == GateLexer.T.OP:
+	if t.type == GateLexer._T.OP:
 		return t.value in [")", "]", "}", ","]
-	return (t.type == GateLexer.T.IDENT and at + 1 < _toks.size()
+	return (t.type == GateLexer._T.IDENT and at + 1 < _toks.size()
 		and _toks[at + 1].is_op("("))
 
 
@@ -706,14 +706,14 @@ var _leftover: int = -1
 
 
 func _expect_stmt_end(errors_before: int) -> void:
-	if _at_stmt_end() or _check_op(";") or _check(GateLexer.T.INDENT):
+	if _at_stmt_end() or _check_op(";") or _check(GateLexer._T.INDENT):
 		return
 	if diagnostics.error_count() > errors_before:
 		_skip_to_statement_end()   # this statement already said what is wrong
 		return
 	var j: int = _i - 1
-	while j >= 0 and _toks[j].type in [GateLexer.T.NEWLINE, GateLexer.T.INDENT,
-			GateLexer.T.DEDENT, GateLexer.T.COMMENT]:
+	while j >= 0 and _toks[j].type in [GateLexer._T.NEWLINE, GateLexer._T.INDENT,
+			GateLexer._T.DEDENT, GateLexer._T.COMMENT]:
 		j -= 1
 	if j < 0 or _toks[j].line < _cur().line:
 		return   # the statement ran to the end of its line; a block took the NEWLINE
@@ -753,11 +753,11 @@ func _parse_lambda_inline_body(limit_line: int = 0) -> Array:
 			var s2: GateAST._Stmt = _parse_statement()
 			if s2 != null:
 				out.append(s2)
-		if _at_end() or _check(GateLexer.T.NEWLINE) or _check(GateLexer.T.DEDENT):
+		if _at_end() or _check(GateLexer._T.NEWLINE) or _check(GateLexer._T.DEDENT):
 			break
-		while _check(GateLexer.T.COMMENT):
+		while _check(GateLexer._T.COMMENT):
 			_advance()
-		if _at_end() or _check(GateLexer.T.NEWLINE) or _check(GateLexer.T.DEDENT):
+		if _at_end() or _check(GateLexer._T.NEWLINE) or _check(GateLexer._T.DEDENT):
 			break
 		if limit_line > 0 and _cur().line > limit_line:
 			break
@@ -798,23 +798,23 @@ func _starts_declaration() -> bool:
 
 func _parse_statement() -> GateAST._Stmt:
 	_skip_newlines()
-	if _at_end() or _check(GateLexer.T.DEDENT):
+	if _at_end() or _check(GateLexer._T.DEDENT):
 		return null
 
 	var start_line: int = _cur().line
 
-	if _check(GateLexer.T.COMMENT):
+	if _check(GateLexer._T.COMMENT):
 		var c: GateAST._CommentStmt = GateAST._CommentStmt.new()
 		var ct: GateLexer._Token = _advance()
 		c.text = ct.value
 		c.at(ct.line, ct.col)
 		return c
 
-	if _check(GateLexer.T.ANNOTATION):
+	if _check(GateLexer._T.ANNOTATION):
 		var probe: int = _i
 		var anns: Array = _parse_annotations()
 		_skip_newlines()
-		if not anns.is_empty() and (_check(GateLexer.T.DEDENT) or _at_end()):
+		if not anns.is_empty() and (_check(GateLexer._T.DEDENT) or _at_end()):
 			var lone_stmt: GateAST._AnnotatedStmt = GateAST._AnnotatedStmt.new()
 			lone_stmt.at(start_line, 0)
 			lone_stmt.annotations = anns
@@ -857,16 +857,16 @@ func _parse_statement() -> GateAST._Stmt:
 			_skip_to_statement_end()
 			return raw
 		return vd
-	if _cur().type == GateLexer.T.KEYWORD and _looks_like_func_type_decl():
+	if _cur().type == GateLexer._T.KEYWORD and _looks_like_func_type_decl():
 		return _parse_typed_decl()
 	if _check_kw("func"):
 		return _parse_func()
 	if (_check_kw("class") or _check_kw("struct")) and _is_name_token(_peek(1)):
 		return _parse_class_like()
-	if _cur().type == GateLexer.T.IDENT and _at_type_alias():
+	if _cur().type == GateLexer._T.IDENT and _at_type_alias():
 		_saw_alias = true
 		return _parse_type_alias()
-	if _looks_like_typed_decl() or (_cur().type == GateLexer.T.OP and _looks_like_paren_type_decl()):
+	if _looks_like_typed_decl() or (_cur().type == GateLexer._T.OP and _looks_like_paren_type_decl()):
 		return _parse_typed_decl()
 
 	return _parse_expression_statement(start_line)
@@ -879,7 +879,7 @@ func _line_start_col(idx: int) -> int:
 		var prev: GateLexer._Token = _toks[j - 1]
 		if prev.line != _toks[idx].line:
 			break
-		if prev.type in [GateLexer.T.NEWLINE, GateLexer.T.INDENT, GateLexer.T.DEDENT]:
+		if prev.type in [GateLexer._T.NEWLINE, GateLexer._T.INDENT, GateLexer._T.DEDENT]:
 			break
 		j -= 1
 	return _toks[j].col
@@ -916,9 +916,9 @@ func _parse_if() -> GateAST._IfStmt:
 
 
 func _parse_body_after_colon(owner: GateLexer._Token = null) -> Array:
-	if _check(GateLexer.T.COMMENT):
+	if _check(GateLexer._T.COMMENT):
 		_advance()
-	if _check(GateLexer.T.NEWLINE):
+	if _check(GateLexer._T.NEWLINE):
 		return _parse_block(false)
 	if owner != null and not _at_end() and _cur().line > owner.line:
 		return _parse_bracketed_block(owner.col)
@@ -928,7 +928,7 @@ func _parse_body_after_colon(owner: GateLexer._Token = null) -> Array:
 func _parse_bracketed_block(owner_col: int) -> Array:
 	var out: Array = []
 	while not _at_end():
-		if _check(GateLexer.T.NEWLINE) or _check(GateLexer.T.DEDENT):
+		if _check(GateLexer._T.NEWLINE) or _check(GateLexer._T.DEDENT):
 			break
 		if _check_op(")") or _check_op("]") or _check_op("}") or _check_op(","):
 			break
@@ -987,7 +987,7 @@ func _parse_while() -> GateAST._WhileStmt:
 
 func _match_starts_a_statement() -> bool:
 	var nxt: GateLexer._Token = _peek(1)
-	if nxt.type == GateLexer.T.OP:
+	if nxt.type == GateLexer._T.OP:
 		return not (nxt.value in [".", "?.", "?[", "=", ":=", ",", ")", "]", "}",
 			"+=", "-=", "*=", "/=", "%=", "**=", "&=", "|=", "^=", "<<=", ">>="])
 	return true
@@ -1001,20 +1001,20 @@ func _parse_match() -> GateAST._MatchStmt:
 	_expect_op(":", "after the match subject")
 	_skip_newlines()
 	var bracketed: bool = false
-	if _check(GateLexer.T.INDENT):
+	if _check(GateLexer._T.INDENT):
 		_advance()
 	elif not _at_end() and _cur().line > kw.line and _cur().col > kw.col:
 		bracketed = true
 	else:
 		return st
-	while not _at_end() and not _check(GateLexer.T.DEDENT):
+	while not _at_end() and not _check(GateLexer._T.DEDENT):
 		_skip_newlines()
-		if _check(GateLexer.T.DEDENT) or _at_end():
+		if _check(GateLexer._T.DEDENT) or _at_end():
 			break
 		if bracketed:
 			if _check_op(")") or _check_op("]") or _check_op("}") or _check_op(","):
 				break
-			if _check(GateLexer.T.NEWLINE) or _cur().col <= kw.col:
+			if _check(GateLexer._T.NEWLINE) or _cur().col <= kw.col:
 				break
 		var arm_kw: GateLexer._Token = _cur()
 		var patterns: Array = []
@@ -1046,7 +1046,7 @@ func _parse_match() -> GateAST._MatchStmt:
 		var body: Array = _parse_body_after_colon(arm_kw)
 		st.branches.append([patterns, guard, body])
 		_skip_newlines()
-	if not bracketed and _check(GateLexer.T.DEDENT):
+	if not bracketed and _check(GateLexer._T.DEDENT):
 		_advance()
 	return st
 
@@ -1112,7 +1112,7 @@ func _pattern_type_end(from: int) -> int:
 		j = from
 		while j < n:
 			var bt: GateLexer._Token = _toks[j]
-			if bt.type == GateLexer.T.OP:
+			if bt.type == GateLexer._T.OP:
 				if bt.value == "{":
 					db += 1
 				elif bt.value == "}":
@@ -1122,7 +1122,7 @@ func _pattern_type_end(from: int) -> int:
 						break
 				elif bt.value != "," and not TYPE_ARG_OPS.has(bt.value):
 					return -1
-			elif bt.type != GateLexer.T.IDENT and bt.type != GateLexer.T.KEYWORD:
+			elif bt.type != GateLexer._T.IDENT and bt.type != GateLexer._T.KEYWORD:
 				return -1
 			j += 1
 		if db != 0:
@@ -1137,7 +1137,7 @@ func _pattern_type_end(from: int) -> int:
 		j = from + 1
 		while j < n:
 			var pt: GateLexer._Token = _toks[j]
-			if pt.type == GateLexer.T.NEWLINE or pt.type == GateLexer.T.EOF:
+			if pt.type == GateLexer._T.NEWLINE or pt.type == GateLexer._T.EOF:
 				return -1
 			if pt.is_op("("):
 				dp += 1
@@ -1152,9 +1152,9 @@ func _pattern_type_end(from: int) -> int:
 		if j < n and _toks[j].is_op("->"):
 			return _pattern_type_end(j + 1)
 		return j
-	elif t.type != GateLexer.T.IDENT:
+	elif t.type != GateLexer._T.IDENT:
 		return -1
-	while j + 1 < n and _toks[j].is_op(".") and _toks[j + 1].type == GateLexer.T.IDENT:
+	while j + 1 < n and _toks[j].is_op(".") and _toks[j + 1].type == GateLexer._T.IDENT:
 		j += 2
 	if j < n and (_toks[j].is_op("<") or _toks[j].is_op("<<")):
 		var gclose: int = _generic_span_end(j, false)
@@ -1165,7 +1165,7 @@ func _pattern_type_end(from: int) -> int:
 		var d2: int = 0
 		while j < n:
 			var b: GateLexer._Token = _toks[j]
-			if b.type == GateLexer.T.OP:
+			if b.type == GateLexer._T.OP:
 				if b.value == "[" or b.value == "?[":
 					d2 += 1
 				elif b.value == "]":
@@ -1175,7 +1175,7 @@ func _pattern_type_end(from: int) -> int:
 						break
 				elif not TYPE_ARG_OPS.has(b.value):
 					return -1
-			elif b.type != GateLexer.T.IDENT and b.type != GateLexer.T.KEYWORD:
+			elif b.type != GateLexer._T.IDENT and b.type != GateLexer._T.KEYWORD:
 				return -1
 			j += 1
 		if d2 != 0:
@@ -1192,8 +1192,8 @@ func _scan_pattern() -> GateAST._Expr:
 	while not _at_end():
 		var t: GateLexer._Token = _cur()
 		var before: GateLexer._Token = prev
-		if depth > 0 and prev != null and t.type == GateLexer.T.IDENT \
-			and (prev.type == GateLexer.T.IDENT or prev.is_op(">") or prev.is_op("]")
+		if depth > 0 and prev != null and t.type == GateLexer._T.IDENT \
+			and (prev.type == GateLexer._T.IDENT or prev.is_op(">") or prev.is_op("]")
 				or prev.is_op("?")):
 			diagnostics.error(
 				"a type pattern must be a whole arm pattern, not part of an array or dictionary pattern",
@@ -1201,7 +1201,7 @@ func _scan_pattern() -> GateAST._Expr:
 				"bind it with `var %s` there and test the type in a `when` guard: `... when %s is ...`"
 					% [t.value, t.value])
 		prev = t
-		if t.type == GateLexer.T.OP:
+		if t.type == GateLexer._T.OP:
 			if t.value in ["(", "[", "{", "?["]:
 				depth += 1
 			elif t.value in [")", "]", "}"]:
@@ -1211,7 +1211,7 @@ func _scan_pattern() -> GateAST._Expr:
 		elif depth == 0 and t.is_kw("when") and before != null and not before.is_op(".") \
 			and not before.is_kw("var"):
 			break
-		elif t.type == GateLexer.T.NEWLINE and depth <= 0:
+		elif t.type == GateLexer._T.NEWLINE and depth <= 0:
 			break
 		_advance()
 	var r: GateAST._RawExpr = GateAST._RawExpr.new()
@@ -1228,7 +1228,7 @@ func _parse_destructure() -> GateAST._Stmt:
 	st.destructure = true
 	_expect_op("[", "to open the destructuring pattern")
 	while not _at_end() and not _check_op("]"):
-		if _check(GateLexer.T.IDENT):
+		if _check(GateLexer._T.IDENT):
 			var id: GateAST._Ident = GateAST._Ident.new()
 			var t: GateLexer._Token = _advance()
 			id.name = t.value
@@ -1247,9 +1247,9 @@ func _comma_starts_multi_assign() -> bool:
 	var i: int = _i
 	while i < _toks.size():
 		var t: GateLexer._Token = _toks[i]
-		if t.type == GateLexer.T.NEWLINE or t.type == GateLexer.T.EOF or t.type == GateLexer.T.DEDENT:
+		if t.type == GateLexer._T.NEWLINE or t.type == GateLexer._T.EOF or t.type == GateLexer._T.DEDENT:
 			return false
-		if t.type == GateLexer.T.OP:
+		if t.type == GateLexer._T.OP:
 			if t.value in ["(", "[", "{"]:
 				depth += 1
 			elif t.value in [")", "]", "}"]:
@@ -1269,9 +1269,9 @@ func _comma_is_enclosed() -> bool:
 	var i: int = _i
 	while i < _toks.size():
 		var t: GateLexer._Token = _toks[i]
-		if t.type == GateLexer.T.NEWLINE or t.type == GateLexer.T.EOF or t.type == GateLexer.T.DEDENT:
+		if t.type == GateLexer._T.NEWLINE or t.type == GateLexer._T.EOF or t.type == GateLexer._T.DEDENT:
 			return false
-		if t.type == GateLexer.T.OP:
+		if t.type == GateLexer._T.OP:
 			if t.value in ["(", "[", "{"]:
 				depth += 1
 			elif t.value in [")", "]", "}"]:
@@ -1308,7 +1308,7 @@ func _parse_expression_statement(start_line: int) -> GateAST._Stmt:
 			return raw2
 
 	const ASSIGN_OPS := ["=", "+=", "-=", "*=", "/=", "%=", "**=", "&=", "|=", "^=", "<<=", ">>="]
-	if _check(GateLexer.T.OP) and _cur().value in ASSIGN_OPS:
+	if _check(GateLexer._T.OP) and _cur().value in ASSIGN_OPS:
 		var op: String = _advance().value
 		var a: GateAST._AssignStmt = GateAST._AssignStmt.new()
 		a.at(first.line, first.col)

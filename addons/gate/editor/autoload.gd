@@ -7,7 +7,7 @@ extends RefCounted
 ## is not unknown: `autoload/<name>` says which script or scene it is, so its
 ## members are as knowable as a declared type's.
 
-const Index: GDScript = preload("res://addons/gate/editor/index.gd")
+const _Index: GDScript = preload("res://addons/gate/editor/index.gd")
 
 const MAX_SCENE_DEPTH: int = 8
 
@@ -54,7 +54,7 @@ static func module(path: String, reg: RefCounted) -> GateAST._Module:
 	var hit: Array = _parsed.get(path, [])
 	if not hit.is_empty() and int(hit[0]) == reg.get_instance_id() and String(hit[1]) == text:
 		return hit[2]
-	var parsed: GateAST._Module = Index.module_for(text, path, reg)
+	var parsed: GateAST._Module = _Index.module_for(text, path, reg)
 	_parsed[path] = [reg.get_instance_id(), text, parsed]
 	return parsed
 

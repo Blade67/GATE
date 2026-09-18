@@ -16,7 +16,7 @@ extends RefCounted
 ## `_validate_path` refuses with a sentence the dialog puts on screen. A greyed-out
 ## item would only leave the user guessing.
 
-const Registry: GDScript = preload("res://addons/gate/editor/registry.gd")
+const _Registry: GDScript = preload("res://addons/gate/editor/registry.gd")
 
 const LABEL: String = "GATE"
 
@@ -79,7 +79,7 @@ func add_language() -> void:
 
 
 func remove_language() -> void:
-	Registry.set_attaching(false)
+	_Registry.set_attaching(false)
 	for dialog in dialogs():
 		if is_attach_dialog(dialog):
 			_unwatch(dialog as Window)
@@ -144,4 +144,4 @@ func _unwatch(dialog: Window) -> void:
 
 
 func _on_attach_visibility(dialog: Window) -> void:
-	Registry.set_attaching(dialog.visible)
+	_Registry.set_attaching(dialog.visible)

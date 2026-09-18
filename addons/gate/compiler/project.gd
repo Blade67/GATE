@@ -412,7 +412,7 @@ static func _tokens_hash(tokens: Array) -> String:
 	var last: int = -1
 	for t in tokens:
 		var tk: GateLexer._Token = t
-		if tk.type == GateLexer.T.COMMENT or (tk.type == GateLexer.T.NEWLINE and last == GateLexer.T.NEWLINE):
+		if tk.type == GateLexer._T.COMMENT or (tk.type == GateLexer._T.NEWLINE and last == GateLexer._T.NEWLINE):
 			continue
 		last = tk.type
 		parts.append("%d|%s|%s" % [tk.type, tk.value, tk.extra])
@@ -435,11 +435,11 @@ static func _scan_declared_names(tokens: Array, generics: Dictionary, aliases: D
 	for i in n - 2:
 		var t: GateLexer._Token = tokens[i]
 		var nx: GateLexer._Token = tokens[i + 1]
-		if nx.type != GateLexer.T.IDENT:
+		if nx.type != GateLexer._T.IDENT:
 			continue
 		if (t.is_kw("class") or t.is_kw("struct")) and tokens[i + 2].is_op("<"):
 			generics[nx.value] = true
-		elif t.type == GateLexer.T.IDENT and t.value == "type" and tokens[i + 2].is_op("="):
+		elif t.type == GateLexer._T.IDENT and t.value == "type" and tokens[i + 2].is_op("="):
 			aliases[nx.value] = true
 
 

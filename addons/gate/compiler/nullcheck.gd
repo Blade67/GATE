@@ -285,7 +285,7 @@ func _check_func(fd: GateAST._FuncDecl, cls: String) -> void:
 		_declare_local(pp.name, pp.type)
 		_explicit[pp.name] = pp.type != null and not pp.inferred
 		if pp.type != null and pp.type.nullable:
-			_env[pp.name] = S.MAYBE
+			_env[pp.name] = _S.MAYBE
 
 	_walk_block(fd.body)
 
@@ -422,9 +422,9 @@ func _walk_stmt(s) -> bool:
 				if a.op == "=":
 					_env[path] = _state_of(a.value)
 				elif _is_value_typed(a.target):
-					_env[path] = S.NOTNULL
+					_env[path] = _S.NOTNULL
 				else:
-					_env[path] = S.MAYBE
+					_env[path] = _S.MAYBE
 			elif a.op == "=" and not retype and not (a.target is GateAST._Index
 					and _tuple_slot(a.target as GateAST._Index, false) != null):
 				a.value = _check_value_against(_type_of(a.target), a.value,
@@ -491,7 +491,7 @@ func _walk_stmt(s) -> bool:
 				and _follows_assignments((t as GateAST._Ident).name):
 				_retype_local((t as GateAST._Ident).name, value_types[i])
 			if p != "" and _tracked(t):
-				_env[p] = _state_of(ma.values[i]) if paired else S.MAYBE
+				_env[p] = _state_of(ma.values[i]) if paired else _S.MAYBE
 			if not _accessor(t).is_empty():
 				_opaque_call()
 		return false
@@ -607,7 +607,7 @@ func _walk_destructure(ma: GateAST._MultiAssign) -> void:
 		_err("this names %d value(s), but %s holds %d" % [ma.targets.size(), vt.describe(),
 				vt.tuple_elems.size()], ma.line, ma.col,
 			"destructure exactly as many names as the tuple has elements")
-	if tuple and vt.nullable and _nullness(src) != S.NOTNULL:
+	if tuple and vt.nullable and _nullness(src) != _S.NOTNULL:
 		var shown: String = _path_of(src)
 		_err("%s may be null, and destructuring it reads its values"
 				% ("'%s'" % shown if shown != "" else "the value"), ma.line, ma.col,
@@ -622,7 +622,7 @@ func _walk_destructure(ma: GateAST._MultiAssign) -> void:
 		_kill_path(name)
 		_kill_index_var(name)
 		if et != null and et.nullable:
-			_env[name] = S.MAYBE
+			_env[name] = _S.MAYBE
 
 
 func _walk_if(st: GateAST._IfStmt) -> bool:
@@ -709,7 +709,7 @@ func _loop_fixpoint(entry: Array, cond, body: Array) -> Array:
 	_quiet -= 1
 	if not settled:
 		for k in moving:
-			cur[0][k] = S.MAYBE
+			cur[0][k] = _S.MAYBE
 		for k2 in moving_t:
 			(cur[1] as Dictionary).erase(k2)
 		for k3 in moving_i:
@@ -840,11 +840,11 @@ func _close_scope(names: Array, outer: Array) -> void:
 
 func _check_iterable(f: GateAST._ForStmt) -> void:
 	var st: int = _expr_nullness(f.iterable)
-	if st == S.NOTNULL:
+	if st == _S.NOTNULL:
 		return
 	var src: String = _path_of(f.iterable)
 	var desc: String = "'%s'" % src if src != "" else "the value"
-	if st == S.NULL:
+	if st == _S.NULL:
 		_err("%s is null here, and a for loop cannot iterate null" % desc, f.line, f.col,
 			"assign it before the loop")
 	else:
@@ -868,9 +868,9 @@ func _walk_match(mt: GateAST._MatchStmt) -> bool:
 		var subj: String = _path_of(mt.subject)
 		if subj != "" and _tracked(mt.subject) and has_null_arm:
 			if _is_null_pattern(br[0]):
-				_env[subj] = S.NULL
+				_env[subj] = _S.NULL
 			elif null_taken:
-				_env[subj] = S.NOTNULL
+				_env[subj] = _S.NOTNULL
 		if _is_null_pattern(br[0]) and br[1] == null:
 			null_taken = true
 		var bound: Array = _pattern_bindings(br[0])
@@ -1165,7 +1165,7 @@ func _apply_narrow(env: Dictionary, cond, truth: bool) -> void:
 			if operand != null:
 				var path: String = _path_of(operand)
 				if path != "" and _tracked(operand):
-					env[path] = S.NOTNULL if ((b.op == "!=") == truth) else S.NULL
+					env[path] = _S.NOTNULL if ((b.op == "!=") == truth) else _S.NULL
 			return
 		return
 
@@ -1174,7 +1174,7 @@ func _apply_narrow(env: Dictionary, cond, truth: bool) -> void:
 		var ip: String = _path_of(ie.operand)
 		if ip != "" and (truth != ie.negated):
 			if _tracked(ie.operand):
-				env[ip] = S.NOTNULL
+				env[ip] = _S.NOTNULL
 			_narrow_to(ip, ie.operand, ie.type)
 		elif ip != "" and _gate_types:
 			_narrow_out(ip, ie.operand, ie.type)
@@ -1185,12 +1185,12 @@ func _apply_narrow(env: Dictionary, cond, truth: bool) -> void:
 		if cc.callee is GateAST._Ident and (cc.callee as GateAST._Ident).name == "is_instance_valid" and cc.args.size() == 1:
 			var ip2: String = _path_of(cc.args[0])
 			if ip2 != "" and _tracked(cc.args[0]):
-				env[ip2] = S.NOTNULL if truth else S.MAYBE
+				env[ip2] = _S.NOTNULL if truth else _S.MAYBE
 			return
 
 	var p: String = _path_of(cond)
 	if p != "" and _tracked(cond):
-		env[p] = S.NOTNULL if truth else S.NULL
+		env[p] = _S.NOTNULL if truth else _S.NULL
 
 
 func _narrow_to(path: String, operand, t: GateAST._TypeRef) -> void:
@@ -1274,7 +1274,7 @@ func _note_assert(e) -> void:
 	_apply_narrow(probe, c.args[0], true)
 	_narrowed = saved_t
 	for k in probe:
-		if probe[k] == S.NOTNULL:
+		if probe[k] == _S.NOTNULL:
 			_asserted[k] = true
 
 
@@ -1284,11 +1284,11 @@ func _is_null_literal(e) -> bool:
 
 func _expr_nullness(e, opted: bool = false) -> int:
 	if _is_null_literal(e):
-		return S.NULL if opted else S.NOTNULL
+		return _S.NULL if opted else _S.NOTNULL
 	if e is GateAST._NullCoalesce:
 		var nc: GateAST._NullCoalesce = e
-		if _expr_nullness(nc.left) == S.NOTNULL:
-			return S.NOTNULL
+		if _expr_nullness(nc.left) == _S.NOTNULL:
+			return _S.NOTNULL
 		return _expr_nullness(nc.right, true)   # `a ?? null` on a nullable `a`
 	if e is GateAST._Ternary:
 		var te: GateAST._Ternary = e
@@ -1298,11 +1298,11 @@ func _expr_nullness(e, opted: bool = false) -> int:
 		_set_state(_narrow_state(saved, te.cond, false))
 		var b: int = _expr_nullness(te.if_false)
 		_set_state(saved)
-		if a == S.NOTNULL and b == S.NOTNULL:
-			return S.NOTNULL
-		if a == S.NULL and b == S.NULL:
-			return S.NULL
-		return S.MAYBE
+		if a == _S.NOTNULL and b == _S.NOTNULL:
+			return _S.NOTNULL
+		if a == _S.NULL and b == _S.NULL:
+			return _S.NULL
+		return _S.MAYBE
 	return _nullness(e)
 
 
@@ -1314,24 +1314,24 @@ func _safe_access_nullness(value) -> int:
 		target = (value as GateAST._Index).target
 	else:
 		return -1
-	if _nullness(target) != S.NOTNULL:
-		return S.MAYBE
+	if _nullness(target) != _S.NOTNULL:
+		return _S.MAYBE
 	var own: GateAST._TypeRef = null
 	if value is GateAST._Member:
 		own = infer._member_type(value, _locals)
 	else:
 		own = infer.element_type(_type_of(target))
-	return S.MAYBE if own != null and own.nullable else S.NOTNULL
+	return _S.MAYBE if own != null and own.nullable else _S.NOTNULL
 
 
 func _state_of(value) -> int:
 	if value == null or _is_null_literal(value):
-		return S.NULL
+		return _S.NULL
 	var safe_st: int = _safe_access_nullness(value)
 	if safe_st >= 0:
 		return safe_st
 	if value is GateAST._Literal:
-		return S.NOTNULL
+		return _S.NOTNULL
 	if value is GateAST._NullCoalesce:
 		return _state_of((value as GateAST._NullCoalesce).right)
 	if value is GateAST._Widen:
@@ -1339,24 +1339,24 @@ func _state_of(value) -> int:
 	if value is GateAST._ArrayLit or value is GateAST._DictLit \
 		or value is GateAST._ObjectInit or value is GateAST._FString \
 		or value is GateAST._Lambda:
-		return S.NOTNULL
+		return _S.NOTNULL
 	if value is GateAST._CastExpr:
 		var ct: GateAST._TypeRef = (value as GateAST._CastExpr).type
-		return S.MAYBE if (ct == null or ct.nullable) else S.NOTNULL
+		return _S.MAYBE if (ct == null or ct.nullable) else _S.NOTNULL
 	if value is GateAST._Call:
 		var t: GateAST._TypeRef = _type_of(value)
 		if t == null:
-			return S.MAYBE
-		return S.MAYBE if t.nullable else S.NOTNULL
+			return _S.MAYBE
+		return _S.MAYBE if t.nullable else _S.NOTNULL
 	var p: String = _path_of(value)
 	if p != "":
-		return _state(p) if _tracked(value) else S.NOTNULL
-	return S.MAYBE
+		return _state(p) if _tracked(value) else _S.NOTNULL
+	return _S.MAYBE
 
 
 func _nullness(value) -> int:
 	if value == null or _is_null_literal(value):
-		return S.NULL
+		return _S.NULL
 	var safe_st: int = _safe_access_nullness(value)
 	if safe_st >= 0:
 		return safe_st
@@ -1369,8 +1369,8 @@ func _nullness(value) -> int:
 		return _nullness((value as GateAST._Widen).args[0])
 	var vt: GateAST._TypeRef = _type_of(value)
 	if vt != null and vt.nullable:
-		return S.MAYBE
-	return S.NOTNULL
+		return _S.MAYBE
+	return _S.NOTNULL
 
 
 func _is_untyped(t: GateAST._TypeRef) -> bool:
@@ -1443,11 +1443,11 @@ func _check_plain_value(decl: GateAST._TypeRef, value, what: String, line: int, 
 				% decl.describe() + "will check every use of it")
 		return
 	var st: int = _nullness(value)
-	if st == S.NOTNULL:
+	if st == _S.NOTNULL:
 		return
 	var src: String = _path_of(value)
 	var desc: String = "'%s'" % src if src != "" else "the value"
-	if st == S.NULL:
+	if st == _S.NULL:
 		_err("%s is null, but %s is not nullable" % [desc, what], line, col,
 			"declare it `%s? ...` to allow null" % decl.describe())
 	else:
@@ -1485,7 +1485,7 @@ func _check_strict_cast(decl: GateAST._TypeRef, ce: GateAST._CastExpr, what: Str
 	var ot: GateAST._TypeRef = _type_of(ce.operand)
 	if ot != null and ot.array_depth == 0 and not ot.is_dict() \
 		and (_is_subclass(ot.name, ct.name) or infer.implements_type(ot.name, ct.name)) \
-		and _nullness(ce.operand) == S.NOTNULL:
+		and _nullness(ce.operand) == _S.NOTNULL:
 		return
 	var src: String = _path_of(ce.operand)
 	var hint: String
@@ -1543,12 +1543,12 @@ func _check_return(r: GateAST._ReturnStmt) -> void:
 					% _ret.describe())
 		return
 	var st: int = _nullness(r.value)
-	if st == S.NOTNULL:
+	if st == _S.NOTNULL:
 		return
 	var src: String = _path_of(r.value)
 	var desc: String = "'%s'" % src if src != "" else "the returned value"
 	_err("%s %s null, but the return type is '%s'"
-			% [desc, "is" if st == S.NULL else "may be", _ret.describe()],
+			% [desc, "is" if st == _S.NULL else "may be", _ret.describe()],
 		r.line, r.col,
 		"guard it before returning, or declare the return type `%s?`" % _ret.describe())
 
@@ -1737,14 +1737,14 @@ func _check_gate_source(decl: GateAST._TypeRef, value, what: String, line: int, 
 func _check_gate_value(decl: GateAST._TypeRef, value, what: String, line: int, col: int) -> GateAST._Expr:
 	if not _check_compat(decl, value, what, line, col):
 		return value
-	var st: int = S.NOTNULL if decl.nullable or _is_null_literal(value) else _nullness(value)
+	var st: int = _S.NOTNULL if decl.nullable or _is_null_literal(value) else _nullness(value)
 	var src: String = _path_of(value)
 	value = _widen(decl, value, what, line, col)
-	if st == S.NOTNULL:
+	if st == _S.NOTNULL:
 		return value
 	var desc: String = "'%s'" % src if src != "" else "the value"
 	_err("%s %s null, but %s is %s, which is not nullable"
-			% [desc, "is" if st == S.NULL else "may be", what, decl.describe()], line, col,
+			% [desc, "is" if st == _S.NULL else "may be", what, decl.describe()], line, col,
 		"guard it first, or declare it `%s?`" % decl.describe())
 	return value
 
@@ -1801,7 +1801,7 @@ func _widen(decl: GateAST._TypeRef, value, what: String, line: int, col: int, sl
 					% [what, decl.describe(), GateTypeCompat.describe(vt)], line, col,
 				"convert it yourself to the one you mean, as in `StringName(x)`")
 			return value
-		if vt.nullable and _nullness(value) != S.NOTNULL:
+		if vt.nullable and _nullness(value) != _S.NOTNULL:
 			guards = [["null", to]]
 		elif _quiet == 0:
 			return _conversion(GateAST._Call.new(), to, value)
@@ -2471,7 +2471,7 @@ func _check_lambda(lam: GateAST._Lambda) -> void:
 		var hint: GateAST._TypeRef = hints[pi] if pp.type == null and pi < hints.size() else null
 		_declare_local(pp.name, pp.type if pp.type != null else hint)
 		if pp.type != null and pp.type.nullable:
-			_env[pp.name] = S.MAYBE
+			_env[pp.name] = _S.MAYBE
 	_walk_block(lam.body)
 	if lam.expr_body != null:
 		_check_expr(lam.expr_body)
@@ -2528,7 +2528,7 @@ func _check_value_operand(side, op: String, line: int, col: int) -> void:
 	var path: String = _path_of(side)
 	if path == "" or not _tracked(side):
 		return
-	if _state(path) == S.NOTNULL:
+	if _state(path) == _S.NOTNULL:
 		return
 	var t: GateAST._TypeRef = _type_of(side)
 	if t == null or not t.nullable:
@@ -2549,7 +2549,7 @@ func _check_value_operands(b: GateAST._Binary) -> void:
 		var path: String = _path_of(side)
 		if path == "" or not _tracked(side):
 			continue
-		if _state(path) == S.NOTNULL:
+		if _state(path) == _S.NOTNULL:
 			continue
 		var t: GateAST._TypeRef = _type_of(side)
 		if t == null or not t.nullable:
@@ -2595,7 +2595,7 @@ func _report_deref(target, line: int, col: int, access: String) -> void:
 	var path: String = _path_of(target)
 	if path == "" and (target is GateAST._NullCoalesce or target is GateAST._Ternary):
 		var vst: int = _expr_nullness(target)
-		if vst == S.NOTNULL:
+		if vst == _S.NOTNULL:
 			return
 		var kind: String = ("the `??` expression" if target is GateAST._NullCoalesce
 			else "the conditional expression")
@@ -2605,9 +2605,9 @@ func _report_deref(target, line: int, col: int, access: String) -> void:
 	if path == "" or not _tracked(target):
 		return
 	var st: int = _state(path)
-	if st == S.NOTNULL:
+	if st == _S.NOTNULL:
 		return
-	if st == S.NULL:
+	if st == _S.NULL:
 		_err("'%s' is null here; '%s%s' will fail" % [path, path, access],
 			line, col, "assign a value before using it")
 	elif _asserted.has(path):
@@ -3194,11 +3194,11 @@ func _check_call_site(c: GateAST._Call) -> void:
 		if not param.type.strict and _is_null_literal(c.args[i]):
 			continue
 		var st: int = _nullness(c.args[i])
-		if st == S.NOTNULL:
+		if st == _S.NOTNULL:
 			continue
 		var argp: String = _path_of(c.args[i])
 		var what: String = "'%s'" % argp if argp != "" else "argument %d" % (i + 1)
-		if st == S.NULL:
+		if st == _S.NULL:
 			_err("%s is null, but '%s' parameter '%s' is not nullable"
 					% [what, fd.name, param.name],
 				c.line, c.col,

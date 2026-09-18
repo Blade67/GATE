@@ -23,7 +23,7 @@ extends EditorDebuggerPlugin
 ## the user to a `.gate` line that is not the one running is a lie the debugger would
 ## then keep telling on every step.
 
-const Sourcemap: GDScript = preload("res://addons/gate/editor/sourcemap.gd")
+const _Sourcemap: GDScript = preload("res://addons/gate/editor/sourcemap.gd")
 
 var _watched: Array[WeakRef] = []
 var _executing: Array = []
@@ -49,13 +49,13 @@ func _send_all(session_id: int) -> void:
 		return
 	for gate_path in collect():
 		for line in collect()[gate_path]:
-			var where: Dictionary = Sourcemap.to_output(gate_path, int(line))
+			var where: Dictionary = _Sourcemap.to_output(gate_path, int(line))
 			if not where.is_empty():
 				session.set_breakpoint(String(where["gd"]), int(where["line"]), true)
 
 
 func _send_one(gate_path: String, gate_line: int, enabled: bool) -> void:
-	var where: Dictionary = Sourcemap.to_output(gate_path, gate_line)
+	var where: Dictionary = _Sourcemap.to_output(gate_path, gate_line)
 	if where.is_empty():
 		return
 	for session in get_sessions():
@@ -97,7 +97,7 @@ static func _add(out: Dictionary, path: String, line: int) -> void:
 func _goto_script_line(script: Script, line: int) -> void:
 	if script == null:
 		return
-	var hit: Dictionary = Sourcemap.to_source(script.resource_path, line + 1)
+	var hit: Dictionary = _Sourcemap.to_source(script.resource_path, line + 1)
 	if hit.is_empty():
 		return
 	_show.call_deferred(String(hit["gate"]), int(hit["line"]))
@@ -179,7 +179,7 @@ func _on_toggled(line: int, edit: CodeEdit, gate_path: String) -> void:
 		_refused.erase("%s:%d" % [gate_path, line])
 		_send_one(gate_path, line + 1, false)
 		return
-	if not Sourcemap.to_output(gate_path, line + 1).is_empty():
+	if not _Sourcemap.to_output(gate_path, line + 1).is_empty():
 		_send_one(gate_path, line + 1, true)
 		return
 	# Nothing was generated from this line, so nothing can ever stop on it. Taking
@@ -191,10 +191,10 @@ func _on_toggled(line: int, edit: CodeEdit, gate_path: String) -> void:
 		return
 	_refused[key] = true
 	var reason: String = "nothing is generated from that line"
-	if not FileAccess.file_exists(Sourcemap.output_for(gate_path)):
-		reason = "%s has not been compiled yet" % Sourcemap.output_for(gate_path).get_file()
-	elif Sourcemap.read(Sourcemap.output_for(gate_path)).is_empty():
-		reason = "the sourcemap beside %s is out of date" % Sourcemap.output_for(gate_path).get_file()
+	if not FileAccess.file_exists(_Sourcemap.output_for(gate_path)):
+		reason = "%s has not been compiled yet" % _Sourcemap.output_for(gate_path).get_file()
+	elif _Sourcemap.read(_Sourcemap.output_for(gate_path)).is_empty():
+		reason = "the sourcemap beside %s is out of date" % _Sourcemap.output_for(gate_path).get_file()
 	EditorInterface.get_editor_toaster().push_toast(
 		"GATE: no breakpoint on %s:%d - %s" % [gate_path.get_file(), line + 1, reason],
 		EditorToaster.SEVERITY_WARNING,
