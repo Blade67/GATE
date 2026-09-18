@@ -47,7 +47,7 @@ func _is_generic_name(n: String) -> bool:
 		_templates_scanned = true
 		_templates = known_generics.duplicate()
 		for i in _toks.size() - 2:
-			var t: GateLexer.Token = _toks[i]
+			var t: GateLexer._Token = _toks[i]
 			if t.type == GateLexer.T.KEYWORD and (t.value == "class" or t.value == "struct") \
 					and _toks[i + 1].type == GateLexer.T.IDENT and _toks[i + 2].is_op("<"):
 				_templates[_toks[i + 1].value] = true
@@ -74,7 +74,7 @@ func _prescan_names() -> void:
 	var header_func: bool = false
 	var n: int = _toks.size()
 	for i in n - 1:
-		var t: GateLexer.Token = _toks[i]
+		var t: GateLexer._Token = _toks[i]
 		var in_func: bool = header_func or (not blocks.is_empty() and blocks[-1][0])
 		if t.type == GateLexer.T.NEWLINE:
 			var k: int = i + 1
@@ -120,7 +120,7 @@ func _prescan_names() -> void:
 				else:
 					break
 			continue
-		var nx: GateLexer.Token = _toks[i + 1]
+		var nx: GateLexer._Token = _toks[i + 1]
 		if not (nx.type == GateLexer.T.IDENT):
 			continue
 		if t.value == "class" or t.value == "struct":
@@ -183,7 +183,7 @@ func _shift_spans(at: int) -> void:
 func _type_first_name(i: int) -> int:
 	var n: int = _toks.size()
 	if i > 0:
-		var prev: GateLexer.Token = _toks[i - 1]
+		var prev: GateLexer._Token = _toks[i - 1]
 		if not (prev.type in [GateLexer.T.NEWLINE, GateLexer.T.INDENT, GateLexer.T.DEDENT,
 				GateLexer.T.COMMENT, GateLexer.T.ANNOTATION] or prev.is_kw("static")
 				or prev.is_kw("pub") or prev.is_kw("priv")):
@@ -191,7 +191,7 @@ func _type_first_name(i: int) -> int:
 	var j: int = i + 1
 	var depth: int = 0
 	while j < n:
-		var tk: GateLexer.Token = _toks[j]
+		var tk: GateLexer._Token = _toks[j]
 		if tk.type == GateLexer.T.NEWLINE or tk.type == GateLexer.T.EOF:
 			return -1
 		if tk.is_op("<"):
@@ -211,7 +211,7 @@ func _type_first_name(i: int) -> int:
 		j += 1
 	if j + 1 >= n or _toks[j].type != GateLexer.T.IDENT:
 		return -1
-	var after: GateLexer.Token = _toks[j + 1]
+	var after: GateLexer._Token = _toks[j + 1]
 	if after.type == GateLexer.T.NEWLINE or after.type == GateLexer.T.COMMENT \
 			or after.is_op("=") or after.is_op(":") or after.is_op(","):
 		return j
@@ -228,7 +228,7 @@ func _enum_keys(from: int, shadows: Dictionary) -> void:
 	var depth: int = 0
 	var expect_key: bool = false
 	while j < n:
-		var tk: GateLexer.Token = _toks[j]
+		var tk: GateLexer._Token = _toks[j]
 		if tk.is_op("{") or tk.is_op("(") or tk.is_op("["):
 			depth += 1
 			expect_key = depth == 1
@@ -259,7 +259,7 @@ func _param_names(from: int, out: Array) -> void:
 	var depth: int = 0
 	var after_sep: bool = false
 	while j < n:
-		var tk: GateLexer.Token = _toks[j]
+		var tk: GateLexer._Token = _toks[j]
 		if tk.type in [GateLexer.T.NEWLINE, GateLexer.T.INDENT, GateLexer.T.DEDENT, GateLexer.T.COMMENT]:
 			j += 1
 			continue
@@ -270,7 +270,7 @@ func _param_names(from: int, out: Array) -> void:
 			if depth == 0:
 				return
 		elif depth == 1 and after_sep and tk.type == GateLexer.T.IDENT and j + 1 < n:
-			var nt: GateLexer.Token = _toks[j + 1]
+			var nt: GateLexer._Token = _toks[j + 1]
 			if nt.is_op(":") or nt.is_op(",") or nt.is_op(")") or nt.is_op("="):
 				out.append([tk.value, j])
 		after_sep = depth == 1 and (tk.is_op("(") or tk.is_op(","))
@@ -288,21 +288,21 @@ func _seed_aliases() -> void:
 			_alias_names[a] = true
 
 
-func _peek(offset: int = 0) -> GateLexer.Token:
+func _peek(offset: int = 0) -> GateLexer._Token:
 	var idx: int = _i + offset
 	if idx >= _toks.size():
 		return _toks[_toks.size() - 1]
 	return _toks[idx]
 
 
-func _cur() -> GateLexer.Token: return _peek(0)
+func _cur() -> GateLexer._Token: return _peek(0)
 
 
 func _at_end() -> bool: return _cur().type == GateLexer.T.EOF
 
 
-func _advance() -> GateLexer.Token:
-	var t: GateLexer.Token = _cur()
+func _advance() -> GateLexer._Token:
+	var t: GateLexer._Token = _cur()
 	if not _at_end():
 		_i += 1
 	return t
@@ -330,7 +330,7 @@ func _at_name() -> bool:
 	return _is_name_token(_cur())
 
 
-func _is_name_token(t: GateLexer.Token) -> bool:
+func _is_name_token(t: GateLexer._Token) -> bool:
 	if t.type == GateLexer.T.IDENT:
 		return true
 	return t.type == GateLexer.T.KEYWORD and (GateLexer.is_gate_only_keyword(t.value)
@@ -368,7 +368,7 @@ func _expect_op(v: String, ctx: String) -> bool:
 
 
 func _err(msg: String, hint: String = "") -> void:
-	var t: GateLexer.Token = _cur()
+	var t: GateLexer._Token = _cur()
 	diagnostics.error(msg, t.line, t.col, hint)
 
 
@@ -380,7 +380,7 @@ func _skip_newlines() -> void:
 func _skip_to_statement_end() -> void:
 	var depth: int = 0
 	while not _at_end():
-		var t: GateLexer.Token = _cur()
+		var t: GateLexer._Token = _cur()
 		if t.type == GateLexer.T.OP:
 			if t.value in ["(", "[", "{"]: depth += 1
 			elif t.value in [")", "]", "}"]: depth -= 1
@@ -389,7 +389,7 @@ func _skip_to_statement_end() -> void:
 		_advance()
 
 
-func _span_text(a: GateLexer.Token, b: GateLexer.Token) -> String:
+func _span_text(a: GateLexer._Token, b: GateLexer._Token) -> String:
 	if a.line < 1 or a.line > _lines.size():
 		return ""
 	if a.line == b.line:
@@ -405,8 +405,8 @@ func _span_text(a: GateLexer.Token, b: GateLexer.Token) -> String:
 	return " ".join(parts)
 
 
-func _raw_from(start_line: int, end_line: int) -> GateAST.RawStmt:
-	var r: GateAST.RawStmt = GateAST.RawStmt.new()
+func _raw_from(start_line: int, end_line: int) -> GateAST._RawStmt:
+	var r: GateAST._RawStmt = GateAST._RawStmt.new()
 	var parts: PackedStringArray = PackedStringArray()
 	for i in range(start_line - 1, mini(end_line, _lines.size())):
 		if i >= 0 and i < _lines.size():
@@ -416,5 +416,5 @@ func _raw_from(start_line: int, end_line: int) -> GateAST.RawStmt:
 	return r
 
 
-func _rewind_to(_t: GateLexer.Token) -> bool:
+func _rewind_to(_t: GateLexer._Token) -> bool:
 	return false

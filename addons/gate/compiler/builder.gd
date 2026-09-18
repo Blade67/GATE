@@ -826,7 +826,7 @@ func _summaries_by_file(gate_files: Array[String], registry) -> Dictionary:
 		texts[g] = said if said != "" else FileAccess.get_md5(g)
 	var signature: String = String(registry.signature()).md5_text()
 	var infer: GateInfer = GateInfer.new()
-	infer.build(GateAST.Module.new(), registry)
+	infer.build(GateAST._Module.new(), registry)
 	if signature == _fx_signature and texts.size() == _fx_texts.size():
 		var changed: Dictionary = {}
 		var same_files: bool = true
@@ -869,7 +869,7 @@ func _summaries_by_file(gate_files: Array[String], registry) -> Dictionary:
 						_fx_fn_hash[g6] = _hash_only(bodies.get(g6, {}))
 					return _fx_memo
 			infer = GateInfer.new()
-			infer.build(GateAST.Module.new(), registry)
+			infer.build(GateAST._Module.new(), registry)
 	var every: Dictionary = {}
 	for g4 in gate_files:
 		every[g4] = true
@@ -897,7 +897,7 @@ func _function_hashes(infer: GateInfer, registry, files: Dictionary) -> Dictiona
 		for i in fns.size():
 			if not starts.has(at):
 				starts[at] = []
-			(starts[at] as Array).append([int((fns[i] as GateAST.FuncDecl).line), "%s#%d" % [k, i], fns[i]])
+			(starts[at] as Array).append([int((fns[i] as GateAST._FuncDecl).line), "%s#%d" % [k, i], fns[i]])
 	var out: Dictionary = {}
 	for at2 in starts:
 		var list: Array = starts[at2]
@@ -909,7 +909,7 @@ func _function_hashes(infer: GateInfer, registry, files: Dictionary) -> Dictiona
 			parts.append([])
 		var j: int = -1
 		for t in tokens:
-			var tk: GateLexer.Token = t
+			var tk: GateLexer._Token = t
 			while j + 1 < list.size() and tk.line >= int(list[j + 1][0]):
 				j += 1
 			if j < 0 or tk.type == GateLexer.T.COMMENT or tk.type == GateLexer.T.NEWLINE:
@@ -947,9 +947,9 @@ static func _summary_texts(infer: GateInfer, fx: Dictionary, registry, files: Di
 		var at: String = String(registry.origin.get(cls, registry.script_class_names.get(cls, "")))
 		if not files.has(at):
 			continue
-		var key: String = "%s.%s" % [cls, (f as GateAST.FuncDecl).name]
+		var key: String = "%s.%s" % [cls, (f as GateAST._FuncDecl).name]
 		seq[key] = int(seq.get(key, -1)) + 1
-		var e: GateInfer.Effects = fx[f]
+		var e: GateInfer._Effects = fx[f]
 		var params: Array = e.param_paths.keys()
 		params.sort()
 		var by_param: PackedStringArray = PackedStringArray()
@@ -970,12 +970,12 @@ static func _summary_texts(infer: GateInfer, fx: Dictionary, registry, files: Di
 	return out
 
 
-static func _note_visible(into: Array, cname: String, cd: GateAST.ClassDecl) -> void:
+static func _note_visible(into: Array, cname: String, cd: GateAST._ClassDecl) -> void:
 	for m in cd.members:
-		if m is GateAST.VarDecl and cd.form == "struct":
-			into.append("default|%s.%s|%s" % [cname, (m as GateAST.VarDecl).name, _shape((m as GateAST.VarDecl).value)])
-		elif m is GateAST.SignalDecl:
-			into.append("signal|%s.%s|%s" % [cname, (m as GateAST.SignalDecl).name, _shape((m as GateAST.SignalDecl).params)])
+		if m is GateAST._VarDecl and cd.form == "struct":
+			into.append("default|%s.%s|%s" % [cname, (m as GateAST._VarDecl).name, _shape((m as GateAST._VarDecl).value)])
+		elif m is GateAST._SignalDecl:
+			into.append("signal|%s.%s|%s" % [cname, (m as GateAST._SignalDecl).name, _shape((m as GateAST._SignalDecl).params)])
 
 
 static func _shape(v: Variant, depth: int = 0) -> String:
@@ -1057,7 +1057,7 @@ func _mentions(text: String, from: String) -> Array:
 	var lexed: Array = GateProject._lexed_memo.get(from, []) if from.get_extension() == "gate" else []
 	if lexed.size() > 1 and String(lexed[0]) == text.md5_text():
 		for t in lexed[1]:
-			var tk: GateLexer.Token = t
+			var tk: GateLexer._Token = t
 			match tk.type:
 				GateLexer.T.IDENT, GateLexer.T.KEYWORD:
 					seen[tk.value] = true
@@ -1171,7 +1171,7 @@ func compile_file(gate_path: String, registry = null, deferred = null, reg_sig: 
 	compiled_log.append(gate_path)
 	var compiler: GateCompiler = GateCompiler.new()
 	compiler.indent = unit
-	var res: GateCompiler.Result = compiler.compile(src, gate_path, registry)
+	var res: GateCompiler._Result = compiler.compile(src, gate_path, registry)
 
 	if not res.ok:
 		var told: PackedStringArray = PackedStringArray()

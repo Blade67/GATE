@@ -42,11 +42,11 @@ static func parser_for(reg: RefCounted) -> GateParser:
 
 
 ## The file as the compiler sees it, or null if it will not lex.
-static func module_for(text: String, path: String, reg: RefCounted) -> GateAST.Module:
+static func module_for(text: String, path: String, reg: RefCounted) -> GateAST._Module:
 	var diagnostics: GateDiagnostics = GateDiagnostics.new()
 	diagnostics.file = path
-	var tokens: Array[GateLexer.Token] = GateLexer.new().tokenize(text, diagnostics)
+	var tokens: Array[GateLexer._Token] = GateLexer.new().tokenize(text, diagnostics)
 	GateTypes.shadow_declared(tokens, reg.script_class_names if reg != null else {})
-	var module: GateAST.Module = parser_for(reg).parse(tokens, text, diagnostics)
+	var module: GateAST._Module = parser_for(reg).parse(tokens, text, diagnostics)
 	GateTypes.shadowed.clear()
 	return module

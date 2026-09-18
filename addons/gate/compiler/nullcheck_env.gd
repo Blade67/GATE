@@ -18,7 +18,7 @@ var _locals: Dictionary = {}
 var _local_names: Dictionary = {}
 var _field_names: Dictionary = {}
 var _cls: String = ""
-var _ret: GateAST.TypeRef = null
+var _ret: GateAST._TypeRef = null
 var _quiet: int = 0
 
 var _break_envs: Array = []
@@ -56,27 +56,27 @@ func _path_of(e, depth: int = 0) -> String:
 
 
 func _path_of_inner(e, depth: int) -> String:
-	if e is GateAST.SelfExpr:
+	if e is GateAST._SelfExpr:
 		return "self"
-	if e is GateAST.Ident:
-		var n: String = (e as GateAST.Ident).name
+	if e is GateAST._Ident:
+		var n: String = (e as GateAST._Ident).name
 		if n == "super":
 			return "self"
 		if not _local_names.has(n) and _field_names.has(n) and not _in_static:
 			return "self." + n
 		return n
-	if e is GateAST.Member:
-		var m: GateAST.Member = e
+	if e is GateAST._Member:
+		var m: GateAST._Member = e
 		if m.safe:
 			return ""
-		if m.target is GateAST.Ident and (m.target as GateAST.Ident).name == _cls and _field_names.has(m.name):
+		if m.target is GateAST._Ident and (m.target as GateAST._Ident).name == _cls and _field_names.has(m.name):
 			return m.name if _in_static else "self." + m.name
 		var base: String = _path_of(m.target, depth + 1)
 		if base == "":
 			return ""
 		return base + "." + m.name
-	if e is GateAST.Index:
-		var ix: GateAST.Index = e
+	if e is GateAST._Index:
+		var ix: GateAST._Index = e
 		if ix.safe:
 			return ""
 		var b: String = _path_of(ix.target, depth + 1)
@@ -90,91 +90,91 @@ func _path_of_inner(e, depth: int) -> String:
 
 
 func _index_key(e) -> String:
-	if e is GateAST.Literal:
-		var l: GateAST.Literal = e
+	if e is GateAST._Literal:
+		var l: GateAST._Literal = e
 		if l.kind == "number" or l.kind == "string":
 			return l.raw
 		return ""
-	if e is GateAST.Ident:
-		return (e as GateAST.Ident).name
-	if e is GateAST.Unary:
-		var u: GateAST.Unary = e
-		if u.op == "-" and u.operand is GateAST.Literal \
-			and (u.operand as GateAST.Literal).kind == "number":
-			return "-" + (u.operand as GateAST.Literal).raw
+	if e is GateAST._Ident:
+		return (e as GateAST._Ident).name
+	if e is GateAST._Unary:
+		var u: GateAST._Unary = e
+		if u.op == "-" and u.operand is GateAST._Literal \
+			and (u.operand as GateAST._Literal).kind == "number":
+			return "-" + (u.operand as GateAST._Literal).raw
 	return ""
 
 
-func _narrowed_type(path: String) -> GateAST.TypeRef:
+func _narrowed_type(path: String) -> GateAST._TypeRef:
 	return _narrowed.get(path, null)
 
 
-func _type_of(e) -> GateAST.TypeRef:
+func _type_of(e) -> GateAST._TypeRef:
 	if _narrowed.is_empty():
 		return _static_type_of(e)
 	return _narrowed_type_of(e, 0)
 
 
-func _static_type_of(e) -> GateAST.TypeRef:
-	if e is GateAST.Member and not infer.static_fields.is_empty():
-		var m: GateAST.Member = e
-		if not m.safe and m.target is GateAST.Ident:
-			var cls: String = (m.target as GateAST.Ident).name
+func _static_type_of(e) -> GateAST._TypeRef:
+	if e is GateAST._Member and not infer.static_fields.is_empty():
+		var m: GateAST._Member = e
+		if not m.safe and m.target is GateAST._Ident:
+			var cls: String = (m.target as GateAST._Ident).name
 			var sf = infer.static_fields.get("%s.%s" % [cls, m.name])
 			if sf != null:
 				return sf
 	return infer.type_of(e, _locals)
 
 
-func _narrowed_type_of(e, depth: int) -> GateAST.TypeRef:
+func _narrowed_type_of(e, depth: int) -> GateAST._TypeRef:
 	if depth > MAX_PATH_DEPTH:
 		return _static_type_of(e)
 	var p: String = _path_of(e)
 	if p != "" and _narrowed.has(p):
 		return _narrowed[p]
-	if e is GateAST.Member:
-		var m: GateAST.Member = e
-		if not m.safe and m.target is GateAST.Ident and not infer.static_fields.is_empty():
-			var sf = infer.static_fields.get("%s.%s" % [(m.target as GateAST.Ident).name, m.name])
+	if e is GateAST._Member:
+		var m: GateAST._Member = e
+		if not m.safe and m.target is GateAST._Ident and not infer.static_fields.is_empty():
+			var sf = infer.static_fields.get("%s.%s" % [(m.target as GateAST._Ident).name, m.name])
 			if sf != null:
 				return sf
-		var base: GateAST.TypeRef = _narrowed_type_of(m.target, depth + 1)
+		var base: GateAST._TypeRef = _narrowed_type_of(m.target, depth + 1)
 		if base == null or base.array_depth > 0 or base.is_dict():
 			return null
 		return GateInfer.maybe_null(infer.field_type(base.name, m.name), m.safe and base.nullable)
-	if e is GateAST.Index:
-		var ie: GateAST.Index = e
-		var it: GateAST.TypeRef = _narrowed_type_of(ie.target, depth + 1)
+	if e is GateAST._Index:
+		var ie: GateAST._Index = e
+		var it: GateAST._TypeRef = _narrowed_type_of(ie.target, depth + 1)
 		return GateInfer.maybe_null(infer.element_type(it), ie.safe and it != null and it.nullable)
-	if e is GateAST.NullCoalesce:
-		var nc: GateAST.NullCoalesce = e
+	if e is GateAST._NullCoalesce:
+		var nc: GateAST._NullCoalesce = e
 		return infer.coalesce_type(_narrowed_type_of(nc.left, depth + 1),
 			_narrowed_type_of(nc.right, depth + 1))
-	if e is GateAST.Binary:
-		if infer.COMPARISONS.has((e as GateAST.Binary).op):
-			return infer.binary_type((e as GateAST.Binary).op, null, null)
+	if e is GateAST._Binary:
+		if infer.COMPARISONS.has((e as GateAST._Binary).op):
+			return infer.binary_type((e as GateAST._Binary).op, null, null)
 		var spine: Array = []
 		var cur = e
-		while cur is GateAST.Binary:
+		while cur is GateAST._Binary:
 			spine.append(cur)   # top down: read back to front for left to right
-			cur = (cur as GateAST.Binary).left
-		var acc: GateAST.TypeRef = _narrowed_type_of(cur, depth + 1)
+			cur = (cur as GateAST._Binary).left
+		var acc: GateAST._TypeRef = _narrowed_type_of(cur, depth + 1)
 		for i in range(spine.size() - 1, -1, -1):
-			var b: GateAST.Binary = spine[i]
+			var b: GateAST._Binary = spine[i]
 			acc = infer.binary_type(b.op, acc,
 				null if infer.COMPARISONS.has(b.op) else _narrowed_type_of(b.right, depth + 1))
 		return acc
-	if e is GateAST.Call and (e as GateAST.Call).callee is GateAST.Member:
-		var c: GateAST.Call = e
-		var cm: GateAST.Member = c.callee
-		if cm.name == "new" and cm.target is GateAST.Ident:
+	if e is GateAST._Call and (e as GateAST._Call).callee is GateAST._Member:
+		var c: GateAST._Call = e
+		var cm: GateAST._Member = c.callee
+		if cm.name == "new" and cm.target is GateAST._Ident:
 			return _static_type_of(e)
-		var recv: GateAST.TypeRef = _narrowed_type_of(cm.target, depth + 1)
+		var recv: GateAST._TypeRef = _narrowed_type_of(cm.target, depth + 1)
 		if recv != null and cm.name in ["call", "callv", "bind"] \
 			and GateTypes.canonical(recv.name) == "Callable":
 			return recv.callable_return
 		if recv != null and recv.array_depth == 0 and not recv.is_dict():
-			var fd: GateAST.FuncDecl = infer._pick(
+			var fd: GateAST._FuncDecl = infer._pick(
 				infer.method_candidates(recv.name, cm.name), c.args.size())
 			if fd != null:
 				return fd.return_type
@@ -201,7 +201,7 @@ func _is_subclass(sub: String, sup: String) -> bool:
 
 
 func _tracked(e) -> bool:
-	var t: GateAST.TypeRef = _type_of(e)
+	var t: GateAST._TypeRef = _type_of(e)
 	return t != null and t.nullable
 
 
@@ -260,7 +260,7 @@ func _kill_path(path: String) -> void:
 	_invalidate_under(path)
 
 
-func _kill_suffix(base: String, sfx: String, bt: GateAST.TypeRef = null) -> void:
+func _kill_suffix(base: String, sfx: String, bt: GateAST._TypeRef = null) -> void:
 	_kill_suffix_aliases(base, sfx, bt)
 	if base == "":
 		return
@@ -274,7 +274,7 @@ func _kill_suffix(base: String, sfx: String, bt: GateAST.TypeRef = null) -> void
 	_kill_path(_join_path(base, sfx))
 
 
-func _kill_self_suffix(recv: String, sfx: String, recv_t: GateAST.TypeRef = null) -> void:
+func _kill_self_suffix(recv: String, sfx: String, recv_t: GateAST._TypeRef = null) -> void:
 	if recv != "self" or not _in_static:
 		_kill_suffix(recv, sfx, recv_t)
 		return
@@ -339,7 +339,7 @@ func _static_head(path: String, owner: String, field: String, slot: Array) -> St
 		var f: String = path.substr(seps[i] + 1, end - seps[i] - 1)
 		var holder: String = root if i == 0 and class_root else ""
 		if holder == "":
-			var ht: GateAST.TypeRef = _type_of_path(path.substr(0, seps[i]))
+			var ht: GateAST._TypeRef = _type_of_path(path.substr(0, seps[i]))
 			if ht == null or ht.array_depth > 0 or ht.is_dict():
 				continue
 			holder = ht.name
@@ -355,18 +355,18 @@ func _is_static_of(cls: String, f: String, owner: String, field: String) -> bool
 
 
 func _kill_target(target, value_state: int = -1) -> void:
-	if target is GateAST.Ident:
-		_kill_index_var((target as GateAST.Ident).name)
+	if target is GateAST._Ident:
+		_kill_index_var((target as GateAST._Ident).name)
 		var fp: String = _path_of(target)
 		if fp.begins_with("self."):
 			_kill_aliases("self", _locals.get("self", null), fp.substr(5), value_state)
-	if target is GateAST.Index:
-		var ix: GateAST.Index = target
+	if target is GateAST._Index:
+		var ix: GateAST._Index = target
 		var container: String = _path_of(ix.target)
 		_invalidate_siblings(container)
 		_kill_aliases(container, _type_of(ix.target), "", value_state)
-	elif target is GateAST.Member:
-		var m: GateAST.Member = target
+	elif target is GateAST._Member:
+		var m: GateAST._Member = target
 		_kill_aliases(_path_of(m.target), _type_of(m.target), m.name, value_state)
 	var p: String = _path_of(target)
 	if p != "":
@@ -390,7 +390,7 @@ func _write_static_spellings(path: String, value_state: int) -> void:
 
 
 ## A write to a slot clears that slot on every path that may be the same object.
-func _kill_aliases(base: String, bt: GateAST.TypeRef, f: String, new_state: int = -1) -> void:
+func _kill_aliases(base: String, bt: GateAST._TypeRef, f: String, new_state: int = -1) -> void:
 	if base != "" and _fresh.has(base):
 		return
 	var needle: String = ("." + f) if f != "" else "["
@@ -422,7 +422,7 @@ func _kill_aliases(base: String, bt: GateAST.TypeRef, f: String, new_state: int 
 			d[k3] = joins[k3]
 
 
-func _kill_suffix_aliases(base: String, sfx: String, bt: GateAST.TypeRef) -> void:
+func _kill_suffix_aliases(base: String, sfx: String, bt: GateAST._TypeRef) -> void:
 	var star: int = sfx.find("*")
 	var pre: String = sfx if star < 0 else sfx.substr(0, star)
 	while pre.ends_with("."):
@@ -431,7 +431,7 @@ func _kill_suffix_aliases(base: String, sfx: String, bt: GateAST.TypeRef) -> voi
 		return
 	var segs: PackedStringArray = pre.split(".")
 	var holder: String = base
-	var ht: GateAST.TypeRef = bt if base == "" else _type_of_path(base)
+	var ht: GateAST._TypeRef = bt if base == "" else _type_of_path(base)
 	for i in segs.size() - 1:
 		if holder != "":
 			holder = holder + "." + segs[i]
@@ -444,13 +444,13 @@ func _kill_suffix_aliases(base: String, sfx: String, bt: GateAST.TypeRef) -> voi
 		_kill_alias_subtrees(sub, _field_step(ht, last))
 
 
-func _field_step(t: GateAST.TypeRef, f: String) -> GateAST.TypeRef:
+func _field_step(t: GateAST._TypeRef, f: String) -> GateAST._TypeRef:
 	if t == null or t.array_depth > 0 or t.is_dict():
 		return null
 	return infer.field_type(t.name, f)
 
 
-func _kill_alias_subtrees(sub: String, st: GateAST.TypeRef) -> void:
+func _kill_alias_subtrees(sub: String, st: GateAST._TypeRef) -> void:
 	if sub != "" and _fresh.has(sub):
 		return
 	var memo: Dictionary = {}
@@ -515,7 +515,7 @@ func _path_seps(path: String) -> PackedInt32Array:
 	return out
 
 
-func _type_of_path(path: String, depth: int = 0) -> GateAST.TypeRef:
+func _type_of_path(path: String, depth: int = 0) -> GateAST._TypeRef:
 	if _narrowed.has(path):
 		return _narrowed[path]
 	if depth > MAX_PATH_DEPTH:
@@ -524,7 +524,7 @@ func _type_of_path(path: String, depth: int = 0) -> GateAST.TypeRef:
 	if seps.is_empty():
 		return _locals.get(path, null)
 	var cut: int = seps[seps.size() - 1]
-	var bt: GateAST.TypeRef = _type_of_path(path.substr(0, cut), depth + 1)
+	var bt: GateAST._TypeRef = _type_of_path(path.substr(0, cut), depth + 1)
 	if bt == null:
 		return null
 	if path[cut] == "[":
@@ -536,7 +536,7 @@ func _type_of_path(path: String, depth: int = 0) -> GateAST.TypeRef:
 
 ## Whether two paths may name the same object. `b` is "" for an object reached
 ## through a call.
-func _may_alias(x: String, xt: GateAST.TypeRef, b: String, bt: GateAST.TypeRef,
+func _may_alias(x: String, xt: GateAST._TypeRef, b: String, bt: GateAST._TypeRef,
 		depth: int = 0) -> bool:
 	if _is_struct_type(xt) or _is_struct_type(bt):
 		if b == "" or depth > MAX_PATH_DEPTH:
@@ -578,11 +578,11 @@ func _related(a: String, b: String) -> bool:
 	return _is_subclass(a, b) or _is_subclass(b, a)
 
 
-func _is_plain(t: GateAST.TypeRef, name: String) -> bool:
+func _is_plain(t: GateAST._TypeRef, name: String) -> bool:
 	return t.array_depth == 0 and not t.is_dict() and GateTypes.canonical(t.name) == name
 
 
-func _is_struct_type(t: GateAST.TypeRef) -> bool:
+func _is_struct_type(t: GateAST._TypeRef) -> bool:
 	return t != null and t.array_depth == 0 and not t.is_dict() \
 		and infer.struct_names.has(t.name)
 
@@ -629,7 +629,7 @@ func _types_diff(a: Dictionary, b: Dictionary) -> Dictionary:
 	return out
 
 
-static func _same_type(a: GateAST.TypeRef, b: GateAST.TypeRef) -> bool:
+static func _same_type(a: GateAST._TypeRef, b: GateAST._TypeRef) -> bool:
 	if a == b:
 		return true
 	if a == null or b == null:

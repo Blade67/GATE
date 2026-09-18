@@ -49,7 +49,7 @@ const OPS2 := [
 ]
 
 
-class Token extends RefCounted:
+class _Token extends RefCounted:
 	var type: int
 	var value: String
 	var line: int
@@ -72,7 +72,7 @@ class Token extends RefCounted:
 	func _to_string() -> String:
 		return "[%s %s @%d:%d]" % [T.keys()[type], value, line, col]
 
-var tokens: Array[Token] = []
+var tokens: Array[_Token] = []
 var diagnostics: GateDiagnostics
 
 var _src: String = ""
@@ -93,13 +93,13 @@ func _is_quote(c: String) -> bool:
 	return c == "\"" or c == "'"
 
 
-func _push(t: int, v: String, line: int = -1, col: int = -1) -> Token:
-	var tok: Token = Token.new(t, v, line if line >= 0 else _line, col if col >= 0 else _col())
+func _push(t: int, v: String, line: int = -1, col: int = -1) -> _Token:
+	var tok: _Token = _Token.new(t, v, line if line >= 0 else _line, col if col >= 0 else _col())
 	tokens.append(tok)
 	return tok
 
 
-func tokenize(src: String, diags: GateDiagnostics, first_line: int = 1) -> Array[Token]:
+func tokenize(src: String, diags: GateDiagnostics, first_line: int = 1) -> Array[_Token]:
 	diagnostics = diags
 	tokens = []
 	if src.length() > 0 and src.unicode_at(0) == 0xFEFF:
@@ -340,14 +340,14 @@ func _lex_string(is_fstring: bool, prefix: String = "") -> void:
 		_i += 1
 	if not closed:
 		diagnostics.error("unterminated string literal", line, col)
-		var t: Token = _push(T.STRING, "\"\"", line, col)
+		var t: _Token = _push(T.STRING, "\"\"", line, col)
 		return
 	if spans_lines:
 		diagnostics.warn("string literal spans more than one line", line, col,
 			"if a closing quote is missing, this is not what you meant")
 	var body: String = _src.substr(body_start, _i - body_start)
 	_i += 3 if triple else 1
-	var tok: Token = _push(T.FSTRING if is_fstring else T.STRING, body, line, col)
+	var tok: _Token = _push(T.FSTRING if is_fstring else T.STRING, body, line, col)
 	tok.extra = quote if not triple else quote.repeat(3)
 	tok.prefix = prefix
 
@@ -451,7 +451,7 @@ func _lex_operator() -> void:
 
 func _prev_ends_expr() -> bool:
 	for i in range(tokens.size() - 1, -1, -1):
-		var t: Token = tokens[i]
+		var t: _Token = tokens[i]
 		if t.type == T.COMMENT:
 			continue
 		match t.type:
@@ -470,11 +470,11 @@ func _prev_ends_expr() -> bool:
 
 
 func _contextual_is_name(i: int) -> bool:
-	var t: Token = tokens[i]
+	var t: _Token = tokens[i]
 	var j: int = i - 1
 	while j >= 0 and tokens[j].type == T.COMMENT:
 		j -= 1
-	var prev: Token = tokens[j] if j >= 0 else null
+	var prev: _Token = tokens[j] if j >= 0 else null
 	if prev != null and prev.type == T.OP and prev.value == ".":
 		return true
 	match t.value:

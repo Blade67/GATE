@@ -20,10 +20,10 @@ func _expr(e) -> String:
 	if e == null:
 		return "null"
 
-	if e is GateAST.Literal:
-		return (e as GateAST.Literal).raw
-	if e is GateAST.Ident:
-		var iname: String = (e as GateAST.Ident).name
+	if e is GateAST._Literal:
+		return (e as GateAST._Literal).raw
+	if e is GateAST._Ident:
+		var iname: String = (e as GateAST._Ident).name
 		if _ident_renames.has(iname):
 			return _ident_renames[iname]
 		if _soa_cursors.has(iname):
@@ -43,11 +43,11 @@ func _expr(e) -> String:
 				% iname
 				+ "`for i in range(%s.size())` with `%s[i].field`." % [iname, iname])
 			return "null"
-		var gb: String = (e as GateAST.Ident).generic_base
+		var gb: String = (e as GateAST._Ident).generic_base
 		if gb != "":
-			var gt: GateAST.TypeRef = (e as GateAST.Ident).generic_type
+			var gt: GateAST._TypeRef = (e as GateAST._Ident).generic_type
 			if gt != null:
-				var st: GateAST.TypeRef = _substituted(gt)
+				var st: GateAST._TypeRef = _substituted(gt)
 				if _generics.has(gb):
 					iname = _generic_name(st)
 				else:
@@ -66,34 +66,34 @@ func _expr(e) -> String:
 		if gb == "" and not _fn_locals.has(iname):
 			return _member_name(_scope_class, iname)   # a `priv` member is `_name`
 		return iname
-	if e is GateAST.SelfExpr:
+	if e is GateAST._SelfExpr:
 		return "self"
-	if e is GateAST.NodePathExpr:
-		return (e as GateAST.NodePathExpr).raw
-	if e is GateAST.RawExpr:
-		return (e as GateAST.RawExpr).text
+	if e is GateAST._NodePathExpr:
+		return (e as GateAST._NodePathExpr).raw
+	if e is GateAST._RawExpr:
+		return (e as GateAST._RawExpr).text
 
-	if e is GateAST.Unary:
-		var u: GateAST.Unary = e
+	if e is GateAST._Unary:
+		var u: GateAST._Unary = e
 		var op: String = u.op
 		if op == "not":
 			return "not %s" % _paren_below(u.operand, PREC_ATOM)
-		if u.operand is GateAST.Binary and (u.operand as GateAST.Binary).op == "**":
+		if u.operand is GateAST._Binary and (u.operand as GateAST._Binary).op == "**":
 			return "%s(%s)" % [op, _expr(u.operand)]
-		if op == "+" and not u.tight and u.operand is GateAST.Literal:
-			var raw: String = (u.operand as GateAST.Literal).raw
+		if op == "+" and not u.tight and u.operand is GateAST._Literal:
+			var raw: String = (u.operand as GateAST._Literal).raw
 			if raw.begins_with("0x") or raw.begins_with("0b") or raw.begins_with("0X") or raw.begins_with("0B"):
 				return "+(%s)" % raw
 		return "%s%s" % [op, _paren_below(u.operand, PREC_UNARY)]
 
-	if e is GateAST.Binary:
+	if e is GateAST._Binary:
 		return _emit_binary(e)
 
-	if e is GateAST.NullCoalesce:
+	if e is GateAST._NullCoalesce:
 		return _emit_coalesce(e, false)
 
-	if e is GateAST.Ternary:
-		var t3: GateAST.Ternary = e
+	if e is GateAST._Ternary:
+		var t3: GateAST._Ternary = e
 		var copy_arms: bool = _copy_arms_node == e
 		_copy_arms_node = null
 		var cond: String = _paren_below(t3.cond, PREC_TERNARY + 1)
@@ -114,7 +114,7 @@ func _expr(e) -> String:
 			bv = _lazy_part(t3.if_false) if _lazy_ctx() else _expr(t3.if_false)
 		var bp: PackedStringArray = _pending
 		_pending = saved_p
-		if t3.if_false is GateAST.Lambda:
+		if t3.if_false is GateAST._Lambda:
 			bv = "(%s)" % bv
 		if ap.is_empty() and bp.is_empty():
 			return _ternary_text(av, cond, bv)
@@ -128,30 +128,30 @@ func _expr(e) -> String:
 		_hoist_in_block("%s = %s" % [tmp, bv])
 		return tmp
 
-	if e is GateAST.Member and (e as GateAST.Member).target is GateAST.Ident:
-		var sm: GateAST.Member = e
-		var skey: String = "%s.%s" % [(sm.target as GateAST.Ident).name, sm.name]
+	if e is GateAST._Member and (e as GateAST._Member).target is GateAST._Ident:
+		var sm: GateAST._Member = e
+		var skey: String = "%s.%s" % [(sm.target as GateAST._Ident).name, sm.name]
 		if _scalar_names.has(skey):
 			return _scalar_names[skey]
 
-	if e is GateAST.Member and (e as GateAST.Member).target is GateAST.SelfExpr \
-			and _soa.has((e as GateAST.Member).name):
+	if e is GateAST._Member and (e as GateAST._Member).target is GateAST._SelfExpr \
+			and _soa.has((e as GateAST._Member).name):
 		return _expr(_as_ident(e))
 
-	if e is GateAST.Member:
+	if e is GateAST._Member:
 		var sw: Dictionary = _swizzle_of(e)
 		if not sw.is_empty():
 			return _emit_swizzle_read(e, sw)
 
-	if e is GateAST.Member or e is GateAST.Index:
+	if e is GateAST._Member or e is GateAST._Index:
 		var flat: String = _emit_postfix_spine(e)
 		if flat != "":
 			return flat
 
-	if e is GateAST.Member:
-		var m: GateAST.Member = e
-		if m.target is GateAST.Ident and _soa_cursors.has((m.target as GateAST.Ident).name):
-			var cur: Dictionary = _soa_cursors[(m.target as GateAST.Ident).name]
+	if e is GateAST._Member:
+		var m: GateAST._Member = e
+		if m.target is GateAST._Ident and _soa_cursors.has((m.target as GateAST._Ident).name):
+			var cur: Dictionary = _soa_cursors[(m.target as GateAST._Ident).name]
 			var cinfo: Dictionary = _soa[cur["soa"]]
 			var carr: String = _soa_field_array(cinfo, m.name)
 			if carr == "":
@@ -161,8 +161,8 @@ func _expr(e) -> String:
 						% ", ".join(PackedStringArray(cinfo["fields"])))
 				return "null"
 			return "%s[%s]" % [carr, cur["idx"]]
-		if m.target is GateAST.Index:
-			var mix: GateAST.Index = m.target
+		if m.target is GateAST._Index:
+			var mix: GateAST._Index = m.target
 			var sname: String = _soa_name(mix.target)
 			if sname != "":
 				var info: Dictionary = _soa[sname]
@@ -200,8 +200,8 @@ func _expr(e) -> String:
 		var mname: String = _member_name(m.member_class if m.member_class != "" else _owner_key(m.target), m.name)
 		return "%s.%s" % [base, mname]
 
-	if e is GateAST.Index:
-		var ix: GateAST.Index = e
+	if e is GateAST._Index:
+		var ix: GateAST._Index = e
 		if ix.safe and _no_hoist_ctx() != "":
 			return _safe_inplace(ix.target, _postfix_base(ix.target), "[%s]" % _lazy_part(ix.index))
 		if ix.safe:
@@ -231,25 +231,25 @@ func _expr(e) -> String:
 			return _expr(ix.index))
 		return "%s[%s]" % [pair[0], pair[1]]
 
-	if e is GateAST.Widen and not (e as GateAST.Widen).guards.is_empty():
+	if e is GateAST._Widen and not (e as GateAST._Widen).guards.is_empty():
 		return _emit_widen(e)
 
-	if e is GateAST.Call:
+	if e is GateAST._Call:
 		return _emit_call(e)
 
-	if e is GateAST.ArrayLit:
-		var al: GateAST.ArrayLit = e
+	if e is GateAST._ArrayLit:
+		var al: GateAST._ArrayLit = e
 		var lines: PackedInt32Array = PackedInt32Array()
 		_coll_depth += 1
 		var parts: PackedStringArray = _ordered(al.elements,
 			func(i: int) -> String: return _copy_value(al.elements[i]))
 		for el in al.elements:
-			lines.append((el as GateAST.Expr).line)
+			lines.append((el as GateAST._Expr).line)
 		_coll_depth -= 1
 		return _collection("[", parts, "]", lines)
 
-	if e is GateAST.DictLit:
-		var dl: GateAST.DictLit = e
+	if e is GateAST._DictLit:
+		var dl: GateAST._DictLit = e
 		var parts2: PackedStringArray = PackedStringArray()
 		var lines2: PackedInt32Array = PackedInt32Array()
 		_coll_depth += 1
@@ -270,10 +270,10 @@ func _expr(e) -> String:
 			return _copy_value(ops[i]) if op_value[i] else _expr(ops[i]))
 		var at: int = 0
 		for i in dl.keys.size():
-			lines2.append((dl.keys[i] as GateAST.Expr).line)
+			lines2.append((dl.keys[i] as GateAST._Expr).line)
 			var v = dl.values[i] if i < dl.values.size() else null
 			var lua: bool = i < dl.lua_keys.size() and dl.lua_keys[i]
-			var ktext: String = ((dl.keys[i] as GateAST.Ident).name if dl.keys[i] is GateAST.Ident
+			var ktext: String = ((dl.keys[i] as GateAST._Ident).name if dl.keys[i] is GateAST._Ident
 				else _expr(dl.keys[i])) if lua else texts[at]
 			if not lua:
 				at += 1
@@ -285,11 +285,11 @@ func _expr(e) -> String:
 		_coll_depth -= 1
 		return _collection("{", parts2, "}", lines2)
 
-	if e is GateAST.AwaitExpr:
-		return "await " + _expr((e as GateAST.AwaitExpr).operand)
+	if e is GateAST._AwaitExpr:
+		return "await " + _expr((e as GateAST._AwaitExpr).operand)
 
-	if e is GateAST.CastExpr:
-		var ce: GateAST.CastExpr = e
+	if e is GateAST._CastExpr:
+		var ce: GateAST._CastExpr = e
 		if ce.type != null and ce.type.array_depth == 0 and not _is_known_native(ce.type.name) \
 				and _looks_like_interface(ce.type.name):
 			_want_iface_helper()
@@ -298,32 +298,32 @@ func _expr(e) -> String:
 		var inner: String = _expr(ce.operand)
 		# A lambda body extends as far right as it can, so it needs parentheses before
 		# the cast or the cast lands inside the body.
-		if ce.operand is GateAST.Lambda:
+		if ce.operand is GateAST._Lambda:
 			inner = "(%s)" % inner
-		if ce.operand is GateAST.CastExpr:
+		if ce.operand is GateAST._CastExpr:
 			return "%s as %s" % [inner, _map_type(ce.type)]
 		return "(%s as %s)" % [inner, _map_type(ce.type)]
 
-	if e is GateAST.IsExpr:
+	if e is GateAST._IsExpr:
 		return _emit_is(e)
 
-	if e is GateAST.FString:
+	if e is GateAST._FString:
 		return _emit_fstring(e)
 
-	if e is GateAST.ObjectInit:
-		var oi: GateAST.ObjectInit = e
+	if e is GateAST._ObjectInit:
+		var oi: GateAST._ObjectInit = e
 		var oalias: String = _extern_alias(oi.type.name)
 		var octor: String = "%s.%s" % [oalias, oi.type.name] if oalias != "" else oi.type.name
 		return _lower_init(oi.type.name, octor, oi.keys, oi.values, oi)
 
-	if e is GateAST.Lambda:
+	if e is GateAST._Lambda:
 		return _emit_lambda(e)
 
 	diagnostics.warn("unhandled expression kind", e.line, e.col)
 	return "null"
 
 
-func _emit_coalesce(nc: GateAST.NullCoalesce, copy: bool, guard: bool = false) -> String:
+func _emit_coalesce(nc: GateAST._NullCoalesce, copy: bool, guard: bool = false) -> String:
 	var ltext: String = _expr(nc.left)
 	if _lazy_ctx() and not _repeatable(nc.left, ltext) and not _keeps_inplace(nc.left):
 		var took_v: String = "__v._gate_copy()" if copy else (_guarded_copy("__v") if guard else "__v")
@@ -385,7 +385,7 @@ func _guard_owner(want: String = "_gate_value") -> String:
 	return fallback
 
 
-func _eqv_text(b: GateAST.Binary) -> String:
+func _eqv_text(b: GateAST._Binary) -> String:
 	var es: String = _eq_struct(b)
 	if es != "":
 		return "%s.%s" % [_struct_class_text(es), _eq_helper(_struct_of(es), "_gate_eqv")]
@@ -398,11 +398,11 @@ func _eqv_text(b: GateAST.Binary) -> String:
 	return _guard_owner("_gate_eqv")
 
 
-func _in_struct_text(b: GateAST.Binary) -> String:
-	var ct: GateAST.TypeRef = _container_tref(b.right)
+func _in_struct_text(b: GateAST._Binary) -> String:
+	var ct: GateAST._TypeRef = _container_tref(b.right)
 	if not _is_array_tref(ct):
 		return ""
-	var et: GateAST.TypeRef = _array_elem(ct)
+	var et: GateAST._TypeRef = _array_elem(ct)
 	if et == null or et.array_depth != 0 or not _is_value_class(et.name):
 		return ""
 	return "%s.%s" % [_struct_class_text(et.name), _eq_helper(_struct_of(et.name), "_gate_index")]
@@ -417,13 +417,13 @@ func _dep_const_for(origin: String) -> String:
 		return _used_origins[origin]
 	var target: String = "\"%s.gd\"" % String(origin).get_basename()
 	for m in _module_members:
-		if m is GateAST.VarDecl and (m as GateAST.VarDecl).is_const \
-				and (m as GateAST.VarDecl).value is GateAST.Call:
-			var c: GateAST.Call = (m as GateAST.VarDecl).value
-			if c.callee is GateAST.Ident and (c.callee as GateAST.Ident).name == "preload" \
-					and c.args.size() == 1 and c.args[0] is GateAST.Literal \
-					and (c.args[0] as GateAST.Literal).raw == target:
-				return (m as GateAST.VarDecl).name
+		if m is GateAST._VarDecl and (m as GateAST._VarDecl).is_const \
+				and (m as GateAST._VarDecl).value is GateAST._Call:
+			var c: GateAST._Call = (m as GateAST._VarDecl).value
+			if c.callee is GateAST._Ident and (c.callee as GateAST._Ident).name == "preload" \
+					and c.args.size() == 1 and c.args[0] is GateAST._Literal \
+					and (c.args[0] as GateAST._Literal).raw == target:
+				return (m as GateAST._VarDecl).name
 	return _origin_alias(origin)
 
 
@@ -447,14 +447,14 @@ func _lazy_part(e, copy: bool = false, floor_prec: int = -1) -> String:
 	return text
 
 
-func _emit_swizzle_read(m: GateAST.Member, sw: Dictionary) -> String:
+func _emit_swizzle_read(m: GateAST._Member, sw: Dictionary) -> String:
 	if not _swizzle_in_range(m, sw):
 		return "null"
 	var result: String = _swizzle_result(sw, m.name.length())
 	var names: String = m.name
 	var target = m.target
-	while target is GateAST.Member and not _swizzle_of(target).is_empty():
-		var inner: GateAST.Member = target
+	while target is GateAST._Member and not _swizzle_of(target).is_empty():
+		var inner: GateAST._Member = target
 		if not _swizzle_in_range(inner, _swizzle_of(inner)):
 			return "null"
 		var composed: String = ""
@@ -510,11 +510,11 @@ static func _reads_as_ternary(text: String) -> bool:
 	return saw_if
 
 
-func _tmp_like(name: String, like) -> GateAST.Ident:
-	var id: GateAST.Ident = _tmp_ident(name, like)
-	id.flow_type = (like as GateAST.Expr).flow_type if like is GateAST.Expr else null
+func _tmp_like(name: String, like) -> GateAST._Ident:
+	var id: GateAST._Ident = _tmp_ident(name, like)
+	id.flow_type = (like as GateAST._Expr).flow_type if like is GateAST._Expr else null
 	var info: Dictionary = {"t": _declared_type_of(like), "e": ""}
-	var tr: GateAST.TypeRef = _value_tref(like)
+	var tr: GateAST._TypeRef = _value_tref(like)
 	if tr != null:
 		info = _decl_info(_scope_class, tr)
 	_fn_locals[name] = info
@@ -525,21 +525,21 @@ func _tmp_like(name: String, like) -> GateAST.Ident:
 	return id
 
 
-func _raw_like(text: String, like) -> GateAST.RawExpr:
-	var r: GateAST.RawExpr = GateAST.RawExpr.new()
+func _raw_like(text: String, like) -> GateAST._RawExpr:
+	var r: GateAST._RawExpr = GateAST._RawExpr.new()
 	r.at(like.line, like.col)
 	r.text = text
 	return r
 
 
-func _tmp_ident(name: String, at_node) -> GateAST.Ident:
-	var id: GateAST.Ident = GateAST.Ident.new()
+func _tmp_ident(name: String, at_node) -> GateAST._Ident:
+	var id: GateAST._Ident = GateAST._Ident.new()
 	id.at(at_node.line, at_node.col)
 	id.name = name
 	return id
 
 
-func _emit_safe_member(m: GateAST.Member) -> String:
+func _emit_safe_member(m: GateAST._Member) -> String:
 	var base: String = _postfix_base(m.target)
 	if _no_hoist_ctx() != "":
 		if _repeatable(m.target, base) or _keeps_inplace(m.target):
@@ -555,7 +555,7 @@ func _emit_safe_member(m: GateAST.Member) -> String:
 	return res
 
 
-func _safe_step(m: GateAST.Member, base: String) -> String:
+func _safe_step(m: GateAST._Member, base: String) -> String:
 	var had_local: bool = _fn_locals.has(base)
 	var was_local = _fn_locals.get(base)
 	var had_type: bool = _var_types.has(base)
@@ -563,9 +563,9 @@ func _safe_step(m: GateAST.Member, base: String) -> String:
 	var had_depth: bool = _var_depths.has(base)
 	var was_depth = _var_depths.get(base)
 	var had_tmp: bool = _tmp_names.has(base)
-	var stand: GateAST.Ident = _tmp_like(base, m.target)
+	var stand: GateAST._Ident = _tmp_like(base, m.target)
 	_tmp_names[base] = true
-	var step: GateAST.Member = GateAST.Member.new()
+	var step: GateAST._Member = GateAST._Member.new()
 	step.at(m.line, m.col)
 	step.name = m.name
 	step.member_class = m.member_class
@@ -596,7 +596,7 @@ func _safe_inplace(target, base: String, suffix: String) -> String:
 
 
 func _needs_copy(e) -> bool:
-	if e is GateAST.Call or e is GateAST.ObjectInit or e is GateAST.Binary:
+	if e is GateAST._Call or e is GateAST._ObjectInit or e is GateAST._Binary:
 		return false   # a fresh value (an overloaded operator is a call)
 	var tn: String = _static_type_of(e)
 	if tn == "":
@@ -606,19 +606,19 @@ func _needs_copy(e) -> bool:
 
 
 func _engine_result(e) -> Dictionary:
-	if e is GateAST.Binary and (e as GateAST.Binary).op == "+":
-		var bt: GateAST.TypeRef = _container_tref(e)
+	if e is GateAST._Binary and (e as GateAST._Binary).op == "+":
+		var bt: GateAST._TypeRef = _container_tref(e)
 		var bs: String = _innermost_struct(bt)
 		return {"deep": bs} if bs != "" else {}
-	if not (e is GateAST.Call) or not ((e as GateAST.Call).callee is GateAST.Member):
+	if not (e is GateAST._Call) or not ((e as GateAST._Call).callee is GateAST._Member):
 		return {}
-	var cm: GateAST.Member = (e as GateAST.Call).callee
+	var cm: GateAST._Member = (e as GateAST._Call).callee
 	if cm.safe:
 		return {}
-	var rt: GateAST.TypeRef = _container_tref(cm.target)
+	var rt: GateAST._TypeRef = _container_tref(cm.target)
 	if rt == null:
 		return {}
-	var elem: GateAST.TypeRef = null
+	var elem: GateAST._TypeRef = null
 	var parts: Array = _dict_parts(rt)
 	if not parts.is_empty():
 		if cm.name == "get":
@@ -642,8 +642,8 @@ func _engine_result(e) -> Dictionary:
 	return {"deep": inner} if inner != "" else {}
 
 
-func _innermost_struct(t: GateAST.TypeRef) -> String:
-	var node: GateAST.TypeRef = t
+func _innermost_struct(t: GateAST._TypeRef) -> String:
+	var node: GateAST._TypeRef = t
 	for _guard in 16:
 		if node == null:
 			return ""
@@ -670,7 +670,7 @@ func _struct_class_text(sname: String) -> String:
 	var scope: String = String(_struct_of(sname).get("scope", ""))
 	if scope != "" and scope != ".":
 		return "%s.%s" % [scope, sname.get_slice(".", sname.get_slice_count(".") - 1)]
-	var t: GateAST.TypeRef = GateAST.TypeRef.new()
+	var t: GateAST._TypeRef = GateAST._TypeRef.new()
 	t.name = sname
 	return _map_type(t)
 
@@ -683,16 +683,16 @@ func _eq_helper(st: Dictionary, want: String) -> String:
 	return n
 
 
-func _struct_search(c: GateAST.Call) -> String:
-	if not (c.callee is GateAST.Member) or (c.callee as GateAST.Member).safe:
+func _struct_search(c: GateAST._Call) -> String:
+	if not (c.callee is GateAST._Member) or (c.callee as GateAST._Member).safe:
 		return ""
-	var cm: GateAST.Member = c.callee
+	var cm: GateAST._Member = c.callee
 	if not (cm.name in ["has", "find", "rfind", "count", "erase"]) or c.args.is_empty():
 		return ""
-	var ct: GateAST.TypeRef = _container_tref(cm.target)
+	var ct: GateAST._TypeRef = _container_tref(cm.target)
 	if not _is_array_tref(ct):
 		return ""
-	var et: GateAST.TypeRef = _array_elem(ct)
+	var et: GateAST._TypeRef = _array_elem(ct)
 	if et == null or et.array_depth != 0 or not _is_value_class(et.name):
 		return ""
 	var st: Dictionary = _struct_of(et.name)
@@ -713,10 +713,10 @@ func _struct_search(c: GateAST.Call) -> String:
 	return "%s.%s(%s, %s)" % [cls, _eq_helper(st, "_gate_erase"), parts[0], parts[1]]
 
 
-func _struct_store(c: GateAST.Call) -> String:
-	if not (c.callee is GateAST.Member) or (c.callee as GateAST.Member).safe:
+func _struct_store(c: GateAST._Call) -> String:
+	if not (c.callee is GateAST._Member) or (c.callee as GateAST._Member).safe:
 		return ""
-	var cm: GateAST.Member = c.callee
+	var cm: GateAST._Member = c.callee
 	if not (cm.name in ["append_array", "assign", "merge"]) or c.args.is_empty():
 		return ""
 	var sname: String = _innermost_struct(_container_tref(cm.target))
@@ -744,42 +744,42 @@ func _deep_helper(st: Dictionary) -> String:
 func _copy_value(e) -> String:
 	if _in_gate_helper:
 		return _expr(e)
-	var sft: GateAST.TypeRef = _soa_field_tref(e)
+	var sft: GateAST._TypeRef = _soa_field_tref(e)
 	if sft != null:
 		return _copied(_expr(e), sft)
 	var er: Dictionary = _engine_result(e)
 	if er.has("elem"):
-		var etr: GateAST.TypeRef = GateChecker.copy_type(er["elem"])
+		var etr: GateAST._TypeRef = GateChecker.copy_type(er["elem"])
 		etr.nullable = true   # an empty container hands out null
 		if _no_hoist_ctx() in ["param", "annotation", "guard", "const"]:
 			return "(func(__v): return (__v._gate_copy() if __v != null else null)).call(%s)" % _expr(e)
 		return _copied(_render_once(e, _expr(e)), etr)
 	if er.has("deep"):
-		var dst: GateAST.TypeRef = GateAST.TypeRef.new()
+		var dst: GateAST._TypeRef = GateAST._TypeRef.new()
 		dst.name = er["deep"]
 		return "%s.%s(%s)" % [_map_type(dst), _deep_helper(_struct_of(er["deep"])), _expr(e)]
-	if e is GateAST.NullCoalesce:
-		var nlt: String = _static_type_of((e as GateAST.NullCoalesce).left)
+	if e is GateAST._NullCoalesce:
+		var nlt: String = _static_type_of((e as GateAST._NullCoalesce).left)
 		if _is_value_class(nlt):
 			return _emit_coalesce(e, true)
-		if nlt == "" and (_is_value_class(_static_type_of((e as GateAST.NullCoalesce).right))
-				or (_structs_visible() and _may_hold_struct((e as GateAST.NullCoalesce).left))):
+		if nlt == "" and (_is_value_class(_static_type_of((e as GateAST._NullCoalesce).right))
+				or (_structs_visible() and _may_hold_struct((e as GateAST._NullCoalesce).left))):
 			return _emit_coalesce(e, true, true)
-	if e is GateAST.Ternary and (_is_value_class(_static_type_of((e as GateAST.Ternary).if_true))
-			or _is_value_class(_static_type_of((e as GateAST.Ternary).if_false))
-			or (_structs_visible() and (_may_hold_struct((e as GateAST.Ternary).if_true)
-				or _may_hold_struct((e as GateAST.Ternary).if_false)))):
+	if e is GateAST._Ternary and (_is_value_class(_static_type_of((e as GateAST._Ternary).if_true))
+			or _is_value_class(_static_type_of((e as GateAST._Ternary).if_false))
+			or (_structs_visible() and (_may_hold_struct((e as GateAST._Ternary).if_true)
+				or _may_hold_struct((e as GateAST._Ternary).if_false)))):
 		_copy_arms_node = e
 		return _expr(e)
-	if e is GateAST.CastExpr and _is_value_class(_static_type_of(e)):
+	if e is GateAST._CastExpr and _is_value_class(_static_type_of(e)):
 		return _with_once(e, _expr(e), func(n: String) -> String:
 			return "(%s._gate_copy() if %s != null else null)" % [n, n])
-	if e is GateAST.Index and _structs_visible() and _from_tuple((e as GateAST.Index).target):
+	if e is GateAST._Index and _structs_visible() and _from_tuple((e as GateAST._Index).target):
 		return _guard_value(e)
-	var tr: GateAST.TypeRef = _declared_tref(e)
-	if tr == null and e is GateAST.Member:
+	var tr: GateAST._TypeRef = _declared_tref(e)
+	if tr == null and e is GateAST._Member:
 		tr = _value_tref(e)   # another object's field, `h.st`, declared `Ctr?`
-	if tr == null and e is GateAST.Ident and _null_locals.has((e as GateAST.Ident).name) and _needs_copy(e):
+	if tr == null and e is GateAST._Ident and _null_locals.has((e as GateAST._Ident).name) and _needs_copy(e):
 		var nt: String = _expr(e)
 		return "(%s._gate_copy() if %s != null else null)" % [nt, nt]
 	if tr != null and tr.array_depth == 0 and (tr.is_union() or tr.nullable):
@@ -806,16 +806,16 @@ func _copy_value(e) -> String:
 
 
 func _value_may_be_null(e) -> bool:
-	if e is GateAST.Ident and _fn_locals.has((e as GateAST.Ident).name) \
-			and (_fn_locals[(e as GateAST.Ident).name] as Dictionary).get("tr", null) == null:
-		return _null_locals.has((e as GateAST.Ident).name)
+	if e is GateAST._Ident and _fn_locals.has((e as GateAST._Ident).name) \
+			and (_fn_locals[(e as GateAST._Ident).name] as Dictionary).get("tr", null) == null:
+		return _null_locals.has((e as GateAST._Ident).name)
 	return _may_be_null(e)
 
 
 func _from_tuple(e) -> bool:
 	if _tuple_tref(_container_tref(e)) != null:
 		return true
-	return e is GateAST.Index and _from_tuple((e as GateAST.Index).target)
+	return e is GateAST._Index and _from_tuple((e as GateAST._Index).target)
 
 
 func _with_once(e, text: String, build: Callable) -> String:
@@ -834,9 +834,9 @@ func _guard_value(e) -> String:
 
 
 func _union_struct_members(e) -> Array:
-	if not (e is GateAST.Expr) or e is GateAST.Call or e is GateAST.ObjectInit:
+	if not (e is GateAST._Expr) or e is GateAST._Call or e is GateAST._ObjectInit:
 		return []
-	var ft: GateAST.TypeRef = (e as GateAST.Expr).flow_type
+	var ft: GateAST._TypeRef = (e as GateAST._Expr).flow_type
 	if ft == null or not ft.is_union() or ft.array_depth != 0:
 		return []
 	var out: Array = []
@@ -849,16 +849,16 @@ func _union_struct_members(e) -> Array:
 func _observable_prop(e) -> String:
 	var owner: String = _scope_class
 	var n: String = ""
-	if e is GateAST.Ident:
-		n = (e as GateAST.Ident).name
+	if e is GateAST._Ident:
+		n = (e as GateAST._Ident).name
 		if _fn_locals.has(n):
 			return ""
-	elif e is GateAST.Member and not (e as GateAST.Member).safe:
-		n = (e as GateAST.Member).name
-		if not ((e as GateAST.Member).target is GateAST.SelfExpr):
-			owner = _declared_type_of((e as GateAST.Member).target)
-			if owner == "" and _static_type_of((e as GateAST.Member).target) != "":
-				owner = _name_key(_scope_class, _static_type_of((e as GateAST.Member).target))
+	elif e is GateAST._Member and not (e as GateAST._Member).safe:
+		n = (e as GateAST._Member).name
+		if not ((e as GateAST._Member).target is GateAST._SelfExpr):
+			owner = _declared_type_of((e as GateAST._Member).target)
+			if owner == "" and _static_type_of((e as GateAST._Member).target) != "":
+				owner = _name_key(_scope_class, _static_type_of((e as GateAST._Member).target))
 	if n == "" or owner == "":
 		return ""
 	var q: String = owner
@@ -875,7 +875,7 @@ func _observable_prop(e) -> String:
 
 func _observable_root_of(e) -> Dictionary:
 	var node = e
-	while node is GateAST.Member or node is GateAST.Index:
+	while node is GateAST._Member or node is GateAST._Index:
 		var inner = node.target
 		var sn: String = _observable_prop(inner)
 		if sn != "":
@@ -885,10 +885,10 @@ func _observable_root_of(e) -> Dictionary:
 
 
 func _observable_lvalue(node) -> String:
-	if node is GateAST.Ident:
+	if node is GateAST._Ident:
 		return _expr(node)
-	var m: GateAST.Member = node
-	if m.target is GateAST.SelfExpr:
+	var m: GateAST._Member = node
+	if m.target is GateAST._SelfExpr:
 		return "self." + m.name
 	return "%s.%s" % [_render_once(m.target, _postfix_base(m.target)), m.name]
 
@@ -900,7 +900,7 @@ func _observable_open(obs: Dictionary, e) -> Array:
 	_fn_locals[t] = {"t": obs["struct"], "e": ""}
 	_var_types[t] = obs["struct"]
 	_var_depths[t] = 0
-	var id: GateAST.Ident = GateAST.Ident.new()
+	var id: GateAST._Ident = GateAST._Ident.new()
 	id.at(obs["node"].line, obs["node"].col)
 	id.name = t
 	return [lv, t, _with_root(e, obs["node"], id)]
@@ -909,17 +909,17 @@ func _observable_open(obs: Dictionary, e) -> Array:
 static func _with_root(e, root, repl):
 	if e == root:
 		return repl
-	if e is GateAST.Member:
-		var m: GateAST.Member = GateAST.Member.new()
+	if e is GateAST._Member:
+		var m: GateAST._Member = GateAST._Member.new()
 		m.at(e.line, e.col)
-		m.name = (e as GateAST.Member).name
-		m.target = _with_root((e as GateAST.Member).target, root, repl)
+		m.name = (e as GateAST._Member).name
+		m.target = _with_root((e as GateAST._Member).target, root, repl)
 		return m
-	if e is GateAST.Index:
-		var ix: GateAST.Index = GateAST.Index.new()
+	if e is GateAST._Index:
+		var ix: GateAST._Index = GateAST._Index.new()
 		ix.at(e.line, e.col)
-		ix.index = (e as GateAST.Index).index
-		ix.target = _with_root((e as GateAST.Index).target, root, repl)
+		ix.index = (e as GateAST._Index).index
+		ix.target = _with_root((e as GateAST._Index).target, root, repl)
 		return ix
 	return e
 
@@ -932,15 +932,15 @@ func _struct_mutators(sname: String) -> Dictionary:
 	if st.is_empty() or not st.has("decl"):
 		return {}
 	var funcs: Dictionary = {}
-	for m in (st["decl"] as GateAST.ClassDecl).members:
-		if m is GateAST.FuncDecl and not (m as GateAST.FuncDecl).is_static:
-			funcs[(m as GateAST.FuncDecl).name] = m
+	for m in (st["decl"] as GateAST._ClassDecl).members:
+		if m is GateAST._FuncDecl and not (m as GateAST._FuncDecl).is_static:
+			funcs[(m as GateAST._FuncDecl).name] = m
 	var out: Dictionary = {}
 	var changed: bool = true
 	while changed:
 		changed = false
 		for fname in funcs:
-			var fd: GateAST.FuncDecl = funcs[fname]
+			var fd: GateAST._FuncDecl = funcs[fname]
 			if not out.has(fname) and _mutates(fd.body, st,
 					GateChecker.local_names(fd.params, fd.body), out):
 				out[fname] = true
@@ -958,29 +958,29 @@ func _mutates(node, st: Dictionary, locals: Dictionary, mut: Dictionary) -> bool
 	if node == null or not (node is Object) or (node as Object).get_script() == null:
 		return false
 	var targets: Array = []
-	if node is GateAST.AssignStmt:
-		targets.append((node as GateAST.AssignStmt).target)
-	elif node is GateAST.MultiAssign and not (node as GateAST.MultiAssign).destructure:
-		targets.append_array((node as GateAST.MultiAssign).targets)
+	if node is GateAST._AssignStmt:
+		targets.append((node as GateAST._AssignStmt).target)
+	elif node is GateAST._MultiAssign and not (node as GateAST._MultiAssign).destructure:
+		targets.append_array((node as GateAST._MultiAssign).targets)
 	for t in targets:
 		var root = t
-		while root is GateAST.Member or root is GateAST.Index:
+		while root is GateAST._Member or root is GateAST._Index:
 			root = root.target
-		if root is GateAST.SelfExpr or (root is GateAST.Ident
-				and (st["fields"] as Array).has((root as GateAST.Ident).name)
-				and not locals.has((root as GateAST.Ident).name)):
+		if root is GateAST._SelfExpr or (root is GateAST._Ident
+				and (st["fields"] as Array).has((root as GateAST._Ident).name)
+				and not locals.has((root as GateAST._Ident).name)):
 			return true
-	if node is GateAST.Call:
-		var callee = (node as GateAST.Call).callee
-		if callee is GateAST.Ident and mut.has((callee as GateAST.Ident).name) \
-				and not locals.has((callee as GateAST.Ident).name):
+	if node is GateAST._Call:
+		var callee = (node as GateAST._Call).callee
+		if callee is GateAST._Ident and mut.has((callee as GateAST._Ident).name) \
+				and not locals.has((callee as GateAST._Ident).name):
 			return true
-		if callee is GateAST.Member:
-			var cm: GateAST.Member = callee
-			if cm.target is GateAST.SelfExpr and mut.has(cm.name):
+		if callee is GateAST._Member:
+			var cm: GateAST._Member = callee
+			if cm.target is GateAST._SelfExpr and mut.has(cm.name):
 				return true
-			if cm.target is GateAST.Ident and not locals.has((cm.target as GateAST.Ident).name):
-				var at: int = (st["fields"] as Array).find((cm.target as GateAST.Ident).name)
+			if cm.target is GateAST._Ident and not locals.has((cm.target as GateAST._Ident).name):
+				var at: int = (st["fields"] as Array).find((cm.target as GateAST._Ident).name)
 				if at >= 0 and _struct_mutators(String(st["types"][at])).has(cm.name):
 					return true
 	for prop in (node as Object).get_property_list():
@@ -993,10 +993,10 @@ func _mutates(node, st: Dictionary, locals: Dictionary, mut: Dictionary) -> bool
 	return false
 
 
-func _observable_call_root(c: GateAST.Call) -> Dictionary:
-	if not (c.callee is GateAST.Member) or (c.callee as GateAST.Member).safe:
+func _observable_call_root(c: GateAST._Call) -> Dictionary:
+	if not (c.callee is GateAST._Member) or (c.callee as GateAST._Member).safe:
 		return {}
-	var cm: GateAST.Member = c.callee
+	var cm: GateAST._Member = c.callee
 	var obs: Dictionary = _observable_root_of(cm)
 	if obs.is_empty():
 		return {}
@@ -1014,12 +1014,12 @@ func _namespace_qualifier(n: String) -> String:
 		var names: Dictionary = _names_of_scope(q)
 		if names.has(n):
 			var cd = _class_decls.get(q)
-			if cd == null or (cd as GateAST.ClassDecl).form != "namespace":
+			if cd == null or (cd as GateAST._ClassDecl).form != "namespace":
 				return ""
-			for m in (cd as GateAST.ClassDecl).members:
-				if (m is GateAST.FuncDecl and (m as GateAST.FuncDecl).name == n) \
-						or (m is GateAST.VarDecl and (m as GateAST.VarDecl).name == n
-							and not (m as GateAST.VarDecl).is_const):
+			for m in (cd as GateAST._ClassDecl).members:
+				if (m is GateAST._FuncDecl and (m as GateAST._FuncDecl).name == n) \
+						or (m is GateAST._VarDecl and (m as GateAST._VarDecl).name == n
+							and not (m as GateAST._VarDecl).is_const):
 					return q
 			return ""
 		if _class_declares(q, n):
@@ -1028,22 +1028,22 @@ func _namespace_qualifier(n: String) -> String:
 	return ""
 
 
-static func _as_ident(m: GateAST.Member) -> GateAST.Ident:
-	var id: GateAST.Ident = GateAST.Ident.new()
+static func _as_ident(m: GateAST._Member) -> GateAST._Ident:
+	var id: GateAST._Ident = GateAST._Ident.new()
 	id.at(m.line, m.col)
 	id.name = m.name
 	return id
 
 
-func _soa_field_tref(e) -> GateAST.TypeRef:
-	if not (e is GateAST.Member) or (e as GateAST.Member).safe:
+func _soa_field_tref(e) -> GateAST._TypeRef:
+	if not (e is GateAST._Member) or (e as GateAST._Member).safe:
 		return null
-	var m: GateAST.Member = e
+	var m: GateAST._Member = e
 	var sname: String = ""
-	if m.target is GateAST.Ident and _soa_cursors.has((m.target as GateAST.Ident).name):
-		sname = String(_soa_cursors[(m.target as GateAST.Ident).name]["soa"])
-	elif m.target is GateAST.Index:
-		sname = _soa_name((m.target as GateAST.Index).target)
+	if m.target is GateAST._Ident and _soa_cursors.has((m.target as GateAST._Ident).name):
+		sname = String(_soa_cursors[(m.target as GateAST._Ident).name]["soa"])
+	elif m.target is GateAST._Index:
+		sname = _soa_name((m.target as GateAST._Index).target)
 	if sname == "":
 		return null
 	var st: Dictionary = _struct_of(String(_soa[sname]["struct"]))
@@ -1056,8 +1056,8 @@ func _structs_visible() -> bool:
 
 
 func _may_hold_struct(e) -> bool:
-	if e is GateAST.Ident:
-		var n: String = (e as GateAST.Ident).name
+	if e is GateAST._Ident:
+		var n: String = (e as GateAST._Ident).name
 		if _scalar_repl.has(n) or _soa.has(n) or _soa_cursors.has(n):
 			return false
 		if _fn_locals.has(n):
@@ -1065,18 +1065,18 @@ func _may_hold_struct(e) -> bool:
 			if tr != null:
 				return _unknown_tref(tr)
 			return not _never_holds_struct(n, {})
-		var ft: GateAST.TypeRef = _member_tref(_scope_class, n, false)
+		var ft: GateAST._TypeRef = _member_tref(_scope_class, n, false)
 		if ft != null:
 			return _unknown_tref(ft)
 		return _declares_value(_scope_class, n)
-	if e is GateAST.Member:
-		var m: GateAST.Member = e
+	if e is GateAST._Member:
+		var m: GateAST._Member = e
 		var root = m.target
-		while root is GateAST.Member:
-			root = (root as GateAST.Member).target
-		if root is GateAST.Ident and not _may_be_value(root as GateAST.Ident) \
-				and not (root is GateAST.Ident and _fn_locals.has((root as GateAST.Ident).name)):
-			if m.target is GateAST.Ident or _class_path(m.target):
+		while root is GateAST._Member:
+			root = (root as GateAST._Member).target
+		if root is GateAST._Ident and not _may_be_value(root as GateAST._Ident) \
+				and not (root is GateAST._Ident and _fn_locals.has((root as GateAST._Ident).name)):
+			if m.target is GateAST._Ident or _class_path(m.target):
 				return false
 		var ot: String = _static_type_of(m.target)
 		var cot: String = GateTypes.canonical(ot)
@@ -1089,35 +1089,35 @@ func _may_hold_struct(e) -> bool:
 			if ft != null:
 				return _unknown_tref(ft)
 		return true
-	if e is GateAST.Index:
-		var it: String = GateTypes.canonical(_static_type_of((e as GateAST.Index).target))
+	if e is GateAST._Index:
+		var it: String = GateTypes.canonical(_static_type_of((e as GateAST._Index).target))
 		if it == "":
-			it = GateTypes.canonical(_declared_type_of((e as GateAST.Index).target))
+			it = GateTypes.canonical(_declared_type_of((e as GateAST._Index).target))
 		return not (it.begins_with("Packed") and it.ends_with("Array")) and it != "String"
-	if e is GateAST.AwaitExpr:
+	if e is GateAST._AwaitExpr:
 		return true
-	if e is GateAST.Call:
+	if e is GateAST._Call:
 		return _call_may_hold_struct(e)
 	return false
 
 
 func _class_path(e) -> bool:
-	if e is GateAST.Ident:
-		var n: String = (e as GateAST.Ident).name
+	if e is GateAST._Ident:
+		var n: String = (e as GateAST._Ident).name
 		return (not _may_be_value(e) and (_local_types.has(n) or _extern_origin.has(n)
 			or n.begins_with("__gate_dep_") or n.begins_with("___gate_dep_") or ClassDB.class_exists(n)))
-	if e is GateAST.Member:
-		var n2: String = (e as GateAST.Member).name
-		return _class_path((e as GateAST.Member).target) and n2.length() > 0 and n2[0] == n2[0].to_upper()
+	if e is GateAST._Member:
+		var n2: String = (e as GateAST._Member).name
+		return _class_path((e as GateAST._Member).target) and n2.length() > 0 and n2[0] == n2[0].to_upper()
 	return false
 
 
-static func _unknown_tref(t: GateAST.TypeRef) -> bool:
+static func _unknown_tref(t: GateAST._TypeRef) -> bool:
 	return (t.array_depth == 0 and not t.is_dict() and not t.is_tuple()
 		and (t.is_union() or GateTypes.canonical(t.name) == "Variant"))
 
 
-func _may_be_value(id: GateAST.Ident) -> bool:
+func _may_be_value(id: GateAST._Ident) -> bool:
 	return _fn_locals.has(id.name) or _declares_value(_scope_class, id.name)
 
 
@@ -1135,24 +1135,24 @@ func _declares_value(key: String, n: String) -> bool:
 	return false
 
 
-func _call_may_hold_struct(c: GateAST.Call) -> bool:
+func _call_may_hold_struct(c: GateAST._Call) -> bool:
 	if _gate_callee(c) != null:
 		return false
-	if c.callee is GateAST.Ident:
-		var n: String = (c.callee as GateAST.Ident).name
+	if c.callee is GateAST._Ident:
+		var n: String = (c.callee as GateAST._Ident).name
 		if not _struct_of(n).is_empty() or CTOR_SHORTHAND.has(n) or GateTypes.BUILTIN.has(n) \
 				or _local_types.has(n) or ClassDB.class_exists(n):
 			return false
 		var base: String = _engine_base_of(_scope_class)
 		return base != "" and ClassDB.class_has_method(base, n) and _engine_may_return_struct(base, n)
-	if c.callee is GateAST.Member:
-		var cm: GateAST.Member = c.callee
+	if c.callee is GateAST._Member:
+		var cm: GateAST._Member = c.callee
 		if cm.name == "new" or cm.name.begins_with("_gate_") or _gate_lambda_call(c) \
 				or (not _struct_of(cm.name).is_empty() and _is_namespace_ref(cm.target)):
 			return false
-		if cm.target is GateAST.Ident and not _may_be_value(cm.target as GateAST.Ident) \
-				and ClassDB.class_exists((cm.target as GateAST.Ident).name):
-			var eng: String = (cm.target as GateAST.Ident).name
+		if cm.target is GateAST._Ident and not _may_be_value(cm.target as GateAST._Ident) \
+				and ClassDB.class_exists((cm.target as GateAST._Ident).name):
+			var eng: String = (cm.target as GateAST._Ident).name
 			return not ClassDB.class_has_method(eng, cm.name) or _engine_may_return_struct(eng, cm.name)
 		if _builtin_scalar_method(cm):
 			return false
@@ -1163,23 +1163,23 @@ func _call_may_hold_struct(c: GateAST.Call) -> bool:
 
 
 func _iter_unknown(it) -> bool:
-	if it is GateAST.Literal or it is GateAST.Binary or it is GateAST.Unary:
+	if it is GateAST._Literal or it is GateAST._Binary or it is GateAST._Unary:
 		return false
-	if it is GateAST.Call:
-		var c: GateAST.Call = it
-		if c.callee is GateAST.Ident and (c.callee as GateAST.Ident).name == "range":
+	if it is GateAST._Call:
+		var c: GateAST._Call = it
+		if c.callee is GateAST._Ident and (c.callee as GateAST._Ident).name == "range":
 			return false
-		if c.callee is GateAST.Member and _builtin_scalar_method(c.callee):
+		if c.callee is GateAST._Member and _builtin_scalar_method(c.callee):
 			return false
 	var st: String = GateTypes.canonical(_static_type_of(it))
 	if st in ["int", "float", "String", "StringName", "bool"]:
 		return false
-	var tr: GateAST.TypeRef = _value_tref(it)
+	var tr: GateAST._TypeRef = _value_tref(it)
 	return tr == null or _unknown_tref(tr) or (GateTypes.canonical(tr.name) in ["Array", "Dictionary"]
 		and tr.array_depth == 0 and tr.generic_args.is_empty() and not tr.is_dict())
 
 
-func _builtin_scalar_method(cm: GateAST.Member) -> bool:
+func _builtin_scalar_method(cm: GateAST._Member) -> bool:
 	return cm.name in ["size", "is_empty", "find", "rfind", "count", "has", "hash", "bsearch",
 		"length", "to_int", "to_float", "is_valid_int", "begins_with", "ends_with", "contains",
 		"substr", "replace", "to_lower", "to_upper", "strip_edges", "split", "join", "has_all",
@@ -1219,32 +1219,32 @@ func _engine_base_of(key: String) -> String:
 	return ""
 
 
-func _gate_callee(c: GateAST.Call) -> GateAST.FuncDecl:
+func _gate_callee(c: GateAST._Call) -> GateAST._FuncDecl:
 	var owner: String = ""
 	var name: String = ""
-	if c.callee is GateAST.Ident:
-		name = (c.callee as GateAST.Ident).name
+	if c.callee is GateAST._Ident:
+		name = (c.callee as GateAST._Ident).name
 		if _fn_locals.has(name):
 			return null
 		owner = _scope_class
-	elif c.callee is GateAST.Member:
-		var cm: GateAST.Member = c.callee
+	elif c.callee is GateAST._Member:
+		var cm: GateAST._Member = c.callee
 		name = cm.name
-		if cm.target is GateAST.SelfExpr:
+		if cm.target is GateAST._SelfExpr:
 			owner = _scope_class
-		elif cm.target is GateAST.Ident and (cm.target as GateAST.Ident).name == "super":
+		elif cm.target is GateAST._Ident and (cm.target as GateAST._Ident).name == "super":
 			var b: Dictionary = _base_of(_scope_class) if (_scope_class == "." or _class_decls.has(_scope_class)) else {"kind": "none"}
 			owner = String(b["key"]) if String(b["kind"]) == "local" else ""
-		elif cm.target is GateAST.Ident and not _may_be_value(cm.target as GateAST.Ident) \
-				and _resolve_class(_scope_class, (cm.target as GateAST.Ident).name) != "":
-			owner = _resolve_class(_scope_class, (cm.target as GateAST.Ident).name)
+		elif cm.target is GateAST._Ident and not _may_be_value(cm.target as GateAST._Ident) \
+				and _resolve_class(_scope_class, (cm.target as GateAST._Ident).name) != "":
+			owner = _resolve_class(_scope_class, (cm.target as GateAST._Ident).name)
 		else:
 			owner = _declared_type_of(cm.target)
 			if owner == "" and _static_type_of(cm.target) != "":
 				owner = _name_key(_scope_class, _static_type_of(cm.target))
 			var sst: Dictionary = _struct_of(owner)
 			if not sst.is_empty() and sst.has("decl"):
-				return _pick_overload((sst["decl"] as GateAST.ClassDecl).members, name, c.args.size())
+				return _pick_overload((sst["decl"] as GateAST._ClassDecl).members, name, c.args.size())
 	if owner == "" or name == "":
 		return null
 	var q: String = owner
@@ -1256,7 +1256,7 @@ func _gate_callee(c: GateAST.Call) -> GateAST.FuncDecl:
 			return _pick_overload(fns, name, c.args.size())
 		if not (q == "." or _class_decls.has(q)):
 			if _reg_classes.has(q):
-				return _pick_overload((_reg_classes[q] as GateAST.ClassDecl).members, name, c.args.size())
+				return _pick_overload((_reg_classes[q] as GateAST._ClassDecl).members, name, c.args.size())
 			return null
 		var b2: Dictionary = _base_of(q)
 		if String(b2["kind"]) == "local":
@@ -1268,17 +1268,17 @@ func _gate_callee(c: GateAST.Call) -> GateAST.FuncDecl:
 	return null
 
 
-static func _pick_overload(members: Array, name: String, argc: int) -> GateAST.FuncDecl:
+static func _pick_overload(members: Array, name: String, argc: int) -> GateAST._FuncDecl:
 	for m in members:
-		if not (m is GateAST.FuncDecl) or (m as GateAST.FuncDecl).name != name:
+		if not (m is GateAST._FuncDecl) or (m as GateAST._FuncDecl).name != name:
 			continue
-		var fd: GateAST.FuncDecl = m
+		var fd: GateAST._FuncDecl = m
 		var required: int = 0
 		for p in fd.params:
-			if (p as GateAST.Param).default == null and not (p as GateAST.Param).is_rest:
+			if (p as GateAST._Param).default == null and not (p as GateAST._Param).is_rest:
 				required += 1
 		if argc >= required and (argc <= fd.params.size() or (not fd.params.is_empty()
-				and (fd.params[fd.params.size() - 1] as GateAST.Param).is_rest)):
+				and (fd.params[fd.params.size() - 1] as GateAST._Param).is_rest)):
 			return fd
 	return null
 
@@ -1287,11 +1287,11 @@ static func _copies_first(stmts: Array, n: String) -> bool:
 	for k in mini(stmts.size(), 8):
 		var s = stmts[k]
 		var v = null
-		if s is GateAST.AssignStmt and (s as GateAST.AssignStmt).target is GateAST.Ident \
-				and ((s as GateAST.AssignStmt).target as GateAST.Ident).name == n:
-			v = (s as GateAST.AssignStmt).value
-		elif s is GateAST.VarDecl:
-			v = (s as GateAST.VarDecl).value
+		if s is GateAST._AssignStmt and (s as GateAST._AssignStmt).target is GateAST._Ident \
+				and ((s as GateAST._AssignStmt).target as GateAST._Ident).name == n:
+			v = (s as GateAST._AssignStmt).value
+		elif s is GateAST._VarDecl:
+			v = (s as GateAST._VarDecl).value
 		if v != null and _gate_helper_on(v, n):
 			return true
 	return false
@@ -1310,7 +1310,7 @@ static func _gate_helper_on(v, n: String) -> bool:
 static func _find_gate_call(e, found: Array) -> void:
 	if e == null or found[0] or not (e is Object) or (e as Object).get_script() == null:
 		return
-	if e is GateAST.Member and (e as GateAST.Member).name.begins_with("_gate_"):
+	if e is GateAST._Member and (e as GateAST._Member).name.begins_with("_gate_"):
 		found[0] = true
 		return
 	for prop in (e as Object).get_property_list():
@@ -1325,10 +1325,10 @@ static func _find_gate_call(e, found: Array) -> void:
 			_find_gate_call(x, found)
 
 
-func _would_copy(pp: GateAST.Param) -> bool:
+func _would_copy(pp: GateAST._Param) -> bool:
 	if pp.is_rest or _in_gate_helper:
 		return false
-	var t: GateAST.TypeRef = pp.type
+	var t: GateAST._TypeRef = pp.type
 	if t == null or (t.array_depth == 0 and not t.is_union() and not t.is_tuple() and not t.is_dict()
 			and GateTypes.canonical(t.name) == "Variant"):
 		return _structs_visible()
@@ -1336,26 +1336,26 @@ func _would_copy(pp: GateAST.Param) -> bool:
 		return false
 	if t.is_union():
 		for m in t.union_members:
-			if (m as GateAST.TypeRef).array_depth == 0 and _is_value_class((m as GateAST.TypeRef).name):
+			if (m as GateAST._TypeRef).array_depth == 0 and _is_value_class((m as GateAST._TypeRef).name):
 				return true
 		return false
 	return _is_value_class(t.name)
 
 
-func _entry_copy(pp: GateAST.Param) -> String:
+func _entry_copy(pp: GateAST._Param) -> String:
 	if pp.is_rest:
 		return ""
 	var c: String = _copied(pp.name, pp.type)
 	return "" if c == pp.name else "%s = %s" % [pp.name, c]
 
 
-func _arg_text(c: GateAST.Call, fd: GateAST.FuncDecl, i: int) -> String:
+func _arg_text(c: GateAST._Call, fd: GateAST._FuncDecl, i: int) -> String:
 	return _copy_value(c.args[i]) if _arg_copies(c, fd, i) else _expr(c.args[i])
 
 
-func _arg_copies(c: GateAST.Call, fd: GateAST.FuncDecl, i: int) -> bool:
-	if fd == null and i > 0 and c.callee is GateAST.Member \
-			and ASKS_KEY_ONLY.has((c.callee as GateAST.Member).name):
+func _arg_copies(c: GateAST._Call, fd: GateAST._FuncDecl, i: int) -> bool:
+	if fd == null and i > 0 and c.callee is GateAST._Member \
+			and ASKS_KEY_ONLY.has((c.callee as GateAST._Member).name):
 		return true   # the value it adds is stored
 	if fd == null and _keeps_no_arg(c):
 		return false
@@ -1364,7 +1364,7 @@ func _arg_copies(c: GateAST.Call, fd: GateAST.FuncDecl, i: int) -> bool:
 	for j in range(i + 1, c.args.size()):
 		if not _runs_no_code(c.args[j]):
 			return true
-	return c.callee is GateAST.Member and not _runs_no_code((c.callee as GateAST.Member).target)
+	return c.callee is GateAST._Member and not _runs_no_code((c.callee as GateAST._Member).target)
 
 
 const ASKS_ONLY := {"get": true, "has": true, "erase": true, "find_key": true,
@@ -1372,15 +1372,15 @@ const ASKS_ONLY := {"get": true, "has": true, "erase": true, "find_key": true,
 const ASKS_KEY_ONLY := {"get_or_add": true}
 
 
-func _keeps_no_arg(c: GateAST.Call) -> bool:
-	if c.callee is GateAST.Member:
-		if ASKS_ONLY.has((c.callee as GateAST.Member).name):
+func _keeps_no_arg(c: GateAST._Call) -> bool:
+	if c.callee is GateAST._Member:
+		if ASKS_ONLY.has((c.callee as GateAST._Member).name):
 			return true   # a key or a value looked for, never a value stored
-		return (c.callee as GateAST.Member).name.begins_with("_gate_") or _gate_lambda_call(c)
-	if c.callee is GateAST.Ident:
-		var n: String = (c.callee as GateAST.Ident).name
+		return (c.callee as GateAST._Member).name.begins_with("_gate_") or _gate_lambda_call(c)
+	if c.callee is GateAST._Ident:
+		var n: String = (c.callee as GateAST._Ident).name
 		return ((GateInfer.PURE_GLOBALS.has(n) or INSPECT_ONLY.has(n)) and not _declared_funcs.has(n)
-			and not _may_be_value(c.callee as GateAST.Ident) and _structs_visible())
+			and not _may_be_value(c.callee as GateAST._Ident) and _structs_visible())
 	return false
 
 
@@ -1388,14 +1388,14 @@ const INSPECT_ONLY := {"is_same": true, "var_to_bytes": true, "var_to_bytes_with
 	"inst_to_dict": true, "print_verbose": true}
 
 
-static func _gate_lambda_call(c: GateAST.Call) -> bool:
-	return (c.callee is GateAST.Member and (c.callee as GateAST.Member).name == "call"
-		and _gate_lambda((c.callee as GateAST.Member).target))
+static func _gate_lambda_call(c: GateAST._Call) -> bool:
+	return (c.callee is GateAST._Member and (c.callee as GateAST._Member).name == "call"
+		and _gate_lambda((c.callee as GateAST._Member).target))
 
 
 static func _gate_lambda(e) -> bool:
-	if not (e is GateAST.Lambda) or (e as GateAST.Lambda).params.size() != 1 \
-			or ((e as GateAST.Lambda).params[0] as GateAST.Param).name != "__v":
+	if not (e is GateAST._Lambda) or (e as GateAST._Lambda).params.size() != 1 \
+			or ((e as GateAST._Lambda).params[0] as GateAST._Param).name != "__v":
 		return false
 	var found: Array = [false]
 	_find_gate_call(e, found)
@@ -1403,20 +1403,20 @@ static func _gate_lambda(e) -> bool:
 
 
 func _runs_no_code(e) -> bool:
-	if e == null or e is GateAST.Literal or e is GateAST.Ident or e is GateAST.SelfExpr \
-			or e is GateAST.Lambda:
+	if e == null or e is GateAST._Literal or e is GateAST._Ident or e is GateAST._SelfExpr \
+			or e is GateAST._Lambda:
 		return true
-	if e is GateAST.Member:
-		return _runs_no_code((e as GateAST.Member).target)
-	if e is GateAST.Index:
-		return _runs_no_code((e as GateAST.Index).target) and _runs_no_code((e as GateAST.Index).index)
-	if e is GateAST.Unary:
-		return _runs_no_code((e as GateAST.Unary).operand)
-	if e is GateAST.Binary:
-		return (_binary_lowering(e) == "" and _runs_no_code((e as GateAST.Binary).left)
-			and _runs_no_code((e as GateAST.Binary).right))
-	if e is GateAST.ArrayLit:
-		for el in (e as GateAST.ArrayLit).elements:
+	if e is GateAST._Member:
+		return _runs_no_code((e as GateAST._Member).target)
+	if e is GateAST._Index:
+		return _runs_no_code((e as GateAST._Index).target) and _runs_no_code((e as GateAST._Index).index)
+	if e is GateAST._Unary:
+		return _runs_no_code((e as GateAST._Unary).operand)
+	if e is GateAST._Binary:
+		return (_binary_lowering(e) == "" and _runs_no_code((e as GateAST._Binary).left)
+			and _runs_no_code((e as GateAST._Binary).right))
+	if e is GateAST._ArrayLit:
+		for el in (e as GateAST._ArrayLit).elements:
 			if not _runs_no_code(el):
 				return false
 		return true
@@ -1428,7 +1428,7 @@ func _is_value_class(n: String) -> bool:
 	return not st.is_empty() and st["lowering"] != "vector"
 
 
-func _copied(text: String, tr: GateAST.TypeRef) -> String:
+func _copied(text: String, tr: GateAST._TypeRef) -> String:
 	if tr == null or (tr.array_depth == 0 and not tr.is_union() and not tr.is_tuple()
 			and not tr.is_dict() and GateTypes.canonical(tr.name) == "Variant"):
 		return _guarded_copy(text) if _structs_visible() else text
@@ -1437,9 +1437,9 @@ func _copied(text: String, tr: GateAST.TypeRef) -> String:
 	if tr.is_union():
 		var tests: PackedStringArray = PackedStringArray()
 		for m in tr.union_members:
-			var mt: GateAST.TypeRef = m
+			var mt: GateAST._TypeRef = m
 			if mt.array_depth == 0 and _is_value_class(mt.name):
-				var bare: GateAST.TypeRef = GateAST.TypeRef.new()
+				var bare: GateAST._TypeRef = GateAST._TypeRef.new()
 				bare.name = mt.name
 				tests.append("%s is %s" % [text, _map_type(bare)])
 		if tests.is_empty():
@@ -1456,18 +1456,18 @@ func _emit_postfix_spine(e) -> String:
 	var steps: Array = []
 	var node = e
 	while true:
-		if node is GateAST.Member:
-			var m: GateAST.Member = node
+		if node is GateAST._Member:
+			var m: GateAST._Member = node
 			if m.safe or _soa_name(m.target) != "" or not _vector_struct_of(m.target).is_empty():
 				return ""
 			if not _swizzle_of(m).is_empty():
 				return ""   # a swizzle is not a member access; let _expr rewrite it
-			if m.target is GateAST.Ident and _soa_cursors.has((m.target as GateAST.Ident).name):
+			if m.target is GateAST._Ident and _soa_cursors.has((m.target as GateAST._Ident).name):
 				return ""
 			steps.push_front(node)
 			node = m.target
-		elif node is GateAST.Index:
-			var ix: GateAST.Index = node
+		elif node is GateAST._Index:
+			var ix: GateAST._Index = node
 			if ix.safe or _soa_name(ix.target) != "":
 				return ""
 			steps.push_front(node)
@@ -1479,12 +1479,12 @@ func _emit_postfix_spine(e) -> String:
 	var out: String = _postfix_base(node)
 	var plain: bool = _stable(node, out)   # nothing read yet that could change
 	for st in steps:
-		if st is GateAST.Member:
-			out += ".%s" % (st as GateAST.Member).name
+		if st is GateAST._Member:
+			out += ".%s" % (st as GateAST._Member).name
 			plain = false
 			continue
 		var before: int = _pending.size()
-		var itext: String = _expr((st as GateAST.Index).index)
+		var itext: String = _expr((st as GateAST._Index).index)
 		if _pending.size() > before and not plain and _no_hoist_ctx() == "" and _in_lvalue == 0:
 			var t: String = _new_tmp()
 			_hoist_at(before, "var %s = %s" % [t, out])
@@ -1505,7 +1505,7 @@ func _paren_below(e, floor_prec: int) -> String:
 	return s
 
 
-func _emit_binary(b: GateAST.Binary) -> String:
+func _emit_binary(b: GateAST._Binary) -> String:
 	var sops: Dictionary = _ops_of(_static_type_of(b.left))
 	var low: String = _binary_lowering(b)
 	if low != "" and (sops.has(b.op) or b.op == "!=" and sops.has("==")):
@@ -1541,41 +1541,41 @@ func _emit_binary(b: GateAST.Binary) -> String:
 			func(i: int) -> String: return _expr(b.left) if i == 0 else _expr(b.right))
 		return "not (%s in %s)" % [np[0], np[1]]
 	var p: int = PREC.get(op, PREC_ATOM)
-	if (op == "and" or op == "or") and b.left is GateAST.Binary and (b.left as GateAST.Binary).op == op:
+	if (op == "and" or op == "or") and b.left is GateAST._Binary and (b.left as GateAST._Binary).op == op:
 		var achain: Array = []
 		var anode = b
-		while anode is GateAST.Binary and (anode as GateAST.Binary).op == op:
+		while anode is GateAST._Binary and (anode as GateAST._Binary).op == op:
 			achain.append(anode)
-			anode = (anode as GateAST.Binary).left
+			anode = (anode as GateAST._Binary).left
 		achain.reverse()
 		if achain.size() > 1:
 			var saved_p: PackedStringArray = _pending
 			var diag_mark: int = diagnostics.items.size()
 			_pending = PackedStringArray()
 			var parts: PackedStringArray = PackedStringArray()
-			parts.append(_paren_below((achain[0] as GateAST.Binary).left, p))
+			parts.append(_paren_below((achain[0] as GateAST._Binary).left, p))
 			for n in achain:
-				parts.append(_paren_below((n as GateAST.Binary).right, p + 1))
+				parts.append(_paren_below((n as GateAST._Binary).right, p + 1))
 			var chain_pending: PackedStringArray = _pending
 			_pending = saved_p
 			if chain_pending.is_empty():
 				return (" %s " % op).join(parts)
 			diagnostics.items.resize(diag_mark)
 
-	if op != "and" and op != "or" and b.left is GateAST.Binary:
+	if op != "and" and op != "or" and b.left is GateAST._Binary:
 		var spine_types: Dictionary = _left_spine_types(b)
 		var chain: Array = []
 		var node = b
-		while node is GateAST.Binary:
-			var nb: GateAST.Binary = node
+		while node is GateAST._Binary:
+			var nb: GateAST._Binary = node
 			if nb.op == "and" or nb.op == "or" or nb.op == "not in":
 				break
 			var lt2: String = String(spine_types.get(nb, ""))
 			if lt2 != "" and not (_ops_of(lt2) as Dictionary).is_empty():
 				break
-			if not (nb.left is GateAST.Binary):
+			if not (nb.left is GateAST._Binary):
 				break
-			var child: GateAST.Binary = nb.left
+			var child: GateAST._Binary = nb.left
 			if int(PREC.get(child.op, PREC_ATOM)) < int(PREC.get(nb.op, PREC_ATOM)):
 				break
 			if child.op == "and" or child.op == "or" or child.op == "not in":
@@ -1584,18 +1584,18 @@ func _emit_binary(b: GateAST.Binary) -> String:
 			node = child
 		chain.reverse()
 		if chain.size() > 1:
-			var first: GateAST.Binary = chain[0]
+			var first: GateAST._Binary = chain[0]
 			var nodes: Array = [first.left]
 			for n in chain:
-				nodes.append((n as GateAST.Binary).right)
+				nodes.append((n as GateAST._Binary).right)
 			var texts: PackedStringArray = _ordered(nodes, func(i: int) -> String:
 				if i == 0:
 					return _paren_below(first.left, int(PREC.get(first.op, PREC_ATOM)))
-				var bn: GateAST.Binary = chain[i - 1]
+				var bn: GateAST._Binary = chain[i - 1]
 				return _paren_below(bn.right, int(PREC.get(bn.op, PREC_ATOM)) + 1))
 			var out: String = texts[0]
 			for i in chain.size():
-				out += " %s %s" % [(chain[i] as GateAST.Binary).op, texts[i + 1]]
+				out += " %s %s" % [(chain[i] as GateAST._Binary).op, texts[i + 1]]
 			return out
 	if op == "and" or op == "or":
 		var lhs: String = _paren_below(b.left, p)
@@ -1623,7 +1623,7 @@ func _guarded_operand(op: String, left, lhs: String, rhs_pending: PackedStringAr
 	return t
 
 
-func _emit_widen(w: GateAST.Widen) -> String:
+func _emit_widen(w: GateAST._Widen) -> String:
 	var inner = w.args[0]
 	var text: String = _expr(inner)
 	var subject: String = text
@@ -1654,7 +1654,7 @@ func _emit_widen(w: GateAST.Widen) -> String:
 	return out
 
 
-func _emit_is(ie: GateAST.IsExpr) -> String:
+func _emit_is(ie: GateAST._IsExpr) -> String:
 	var tname: String = ie.type.name
 	if not _is_known_native(tname) and _looks_like_interface(tname):
 		_want_iface_helper()
@@ -1672,7 +1672,7 @@ func _emit_is(ie: GateAST.IsExpr) -> String:
 	return "not (%s)" % s if ie.negated else s
 
 
-func _check_struct_arity(name: String, st: Dictionary, c: GateAST.Call) -> void:
+func _check_struct_arity(name: String, st: Dictionary, c: GateAST._Call) -> void:
 	var n_fields: int = (st["fields"] as Array).size()
 	var given: int = c.args.size()
 	if given <= n_fields and _defaults_cover(st, given):
@@ -1684,17 +1684,17 @@ func _check_struct_arity(name: String, st: Dictionary, c: GateAST.Call) -> void:
 			% ", ".join(PackedStringArray(st["fields"])))
 
 
-func _partial_vector_ctor(c: GateAST.Call) -> Dictionary:
+func _partial_vector_ctor(c: GateAST._Call) -> Dictionary:
 	var sname: String = ""
 	var st: Dictionary = {}
-	if c.callee is GateAST.Ident:
-		sname = (c.callee as GateAST.Ident).name
+	if c.callee is GateAST._Ident:
+		sname = (c.callee as GateAST._Ident).name
 		if CTOR_SHORTHAND.has(sname) and not _shorthand_taken(sname) and not GateTypes.shadowed.has(sname):
 			return {}
 		st = _ctor_struct_of(sname)
-	elif c.callee is GateAST.Member and not (c.callee as GateAST.Member).safe:
-		sname = (c.callee as GateAST.Member).name
-		if not _is_namespace_ref((c.callee as GateAST.Member).target):
+	elif c.callee is GateAST._Member and not (c.callee as GateAST._Member).safe:
+		sname = (c.callee as GateAST._Member).name
+		if not _is_namespace_ref((c.callee as GateAST._Member).target):
 			return {}
 		st = _struct_of(sname)
 	if st.is_empty() or st["lowering"] != "vector" or c.args.is_empty() \
@@ -1709,17 +1709,17 @@ func _defaults_cover(st: Dictionary, given: int) -> bool:
 	var trefs: Array = st.get("typerefs", [])
 	for fi in range(given, (st["fields"] as Array).size()):
 		var tr = trefs[fi] if fi < trefs.size() else null
-		if tr != null and (tr as GateAST.TypeRef).nullable:
+		if tr != null and (tr as GateAST._TypeRef).nullable:
 			continue   # `T?` defaults to null
 		if _default_kind(st, fi) == "none":
 			return false
 	return true
 
 
-func _emit_call(c: GateAST.Call) -> String:
-	if (c.callee is GateAST.Ident and (c.callee as GateAST.Ident).name == "preload"
-			and c.args.size() == 1 and c.args[0] is GateAST.Literal):
-		var lit: GateAST.Literal = c.args[0]
+func _emit_call(c: GateAST._Call) -> String:
+	if (c.callee is GateAST._Ident and (c.callee as GateAST._Ident).name == "preload"
+			and c.args.size() == 1 and c.args[0] is GateAST._Literal):
+		var lit: GateAST._Literal = c.args[0]
 		if lit.kind == "string":
 			var target: String = lit.raw
 			if target.length() >= 2:
@@ -1727,8 +1727,8 @@ func _emit_call(c: GateAST.Call) -> String:
 			if target != "":
 				_preload_targets[target] = true
 
-	if c.callee is GateAST.Member:
-		var cm: GateAST.Member = c.callee
+	if c.callee is GateAST._Member:
+		var cm: GateAST._Member = c.callee
 		var sname: String = _soa_name(cm.target)
 		if sname != "":
 			var soa_text: String = _emit_soa_call(sname, cm, c)
@@ -1744,8 +1744,8 @@ func _emit_call(c: GateAST.Call) -> String:
 	if search != "":
 		return search
 
-	if c.callee is GateAST.Member and (c.callee as GateAST.Member).safe:
-		var scm: GateAST.Member = c.callee
+	if c.callee is GateAST._Member and (c.callee as GateAST._Member).safe:
+		var scm: GateAST._Member = c.callee
 		var ssn: String = _observable_prop(scm.target)
 		if ssn != "" and _struct_mutators(ssn).has(scm.name):
 			if _no_hoist_ctx() != "":
@@ -1759,14 +1759,14 @@ func _emit_call(c: GateAST.Call) -> String:
 			var st: String = _new_tmp()
 			_fn_locals[st] = {"t": ssn, "e": ""}
 			_var_types[st] = ssn
-			var srecv: GateAST.Member = GateAST.Member.new()
+			var srecv: GateAST._Member = GateAST._Member.new()
 			srecv.at(scm.line, scm.col)
 			srecv.name = scm.name
-			var sid: GateAST.Ident = GateAST.Ident.new()
+			var sid: GateAST._Ident = GateAST._Ident.new()
 			sid.at(scm.line, scm.col)
 			sid.name = st
 			srecv.target = sid
-			var soc: GateAST.Call = GateAST.Call.new()
+			var soc: GateAST._Call = GateAST._Call.new()
 			soc.at(c.line, c.col)
 			soc.callee = srecv
 			soc.args = c.args
@@ -1794,7 +1794,7 @@ func _emit_call(c: GateAST.Call) -> String:
 			return "null"
 		var first_args: Array = _args_first(c)
 		var opened: Array = _observable_open(obs, c.callee)
-		var oc: GateAST.Call = GateAST.Call.new()
+		var oc: GateAST._Call = GateAST._Call.new()
 		oc.at(c.line, c.col)
 		oc.callee = opened[2]
 		oc.args = first_args
@@ -1811,17 +1811,17 @@ func _emit_call(c: GateAST.Call) -> String:
 		return _emit_instantiate_init(inst_form)
 	_warn_init_traps(c)
 
-	var callee_fd: GateAST.FuncDecl = _gate_callee(c)
-	if c.callee is GateAST.Member and (c.callee as GateAST.Member).safe and _no_hoist_ctx() != "":
-		var im: GateAST.Member = c.callee
+	var callee_fd: GateAST._FuncDecl = _gate_callee(c)
+	if c.callee is GateAST._Member and (c.callee as GateAST._Member).safe and _no_hoist_ctx() != "":
+		var im: GateAST._Member = c.callee
 		var iargs: PackedStringArray = PackedStringArray()
 		for ai in c.args.size():
 			iargs.append(_lazy_part(c.args[ai], _arg_copies(c, callee_fd, ai)))
 		return _safe_inplace(im.target, _postfix_base(im.target), ".%s(%s)"
 			% [_method_emit_name(im.target, im.name, c.args.size(), im.member_class),
 				", ".join(iargs)])
-	if c.callee is GateAST.Member and (c.callee as GateAST.Member).safe:
-		var sm: GateAST.Member = c.callee
+	if c.callee is GateAST._Member and (c.callee as GateAST._Member).safe:
+		var sm: GateAST._Member = c.callee
 		var recv: String = _render_once(sm.target, _postfix_base(sm.target))
 		var saved_p: PackedStringArray = _pending
 		_pending = PackedStringArray()
@@ -1844,7 +1844,7 @@ func _emit_call(c: GateAST.Call) -> String:
 		_hoist_in_block("%s = %s.%s(%s)" % [sres, recv, sname, ", ".join(sargs)])
 		return sres
 
-	if (c.callee is GateAST.Ident and (c.callee as GateAST.Ident).name == "assert"
+	if (c.callee is GateAST._Ident and (c.callee as GateAST._Ident).name == "assert"
 			and not _declared_funcs.has("assert") and _no_hoist_ctx() == ""):
 		var saved_nh: String = _no_hoist
 		_no_hoist = "assert"
@@ -1864,8 +1864,8 @@ func _emit_call(c: GateAST.Call) -> String:
 		return _build_struct(vpart["st"], "", vfields.slice(0, c.args.size()), c.args, c)
 
 	var recv_node = null
-	if c.callee is GateAST.Member and _plain_callee(c.callee):
-		recv_node = (c.callee as GateAST.Member).target
+	if c.callee is GateAST._Member and _plain_callee(c.callee):
+		recv_node = (c.callee as GateAST._Member).target
 	var parts: Array = c.args.duplicate()
 	if recv_node != null:
 		parts.append(recv_node)
@@ -1874,8 +1874,8 @@ func _emit_call(c: GateAST.Call) -> String:
 	var args: PackedStringArray = texts.slice(0, c.args.size())
 	var recv_text: String = texts[c.args.size()] if recv_node != null else ""
 
-	if c.callee is GateAST.Ident:
-		var n: String = (c.callee as GateAST.Ident).name
+	if c.callee is GateAST._Ident:
+		var n: String = (c.callee as GateAST._Ident).name
 		if CTOR_SHORTHAND.has(n) and not _shorthand_taken(n) and not GateTypes.shadowed.has(n):
 			return "%s(%s)" % [CTOR_SHORTHAND[n], ", ".join(args)]
 		var st: Dictionary = _ctor_struct_of(n)
@@ -1890,8 +1890,8 @@ func _emit_call(c: GateAST.Call) -> String:
 				return "%s.%s.new(%s)" % [salias, n, ", ".join(args)]
 			return "%s.new(%s)" % [n, ", ".join(args)]
 
-	if c.callee is GateAST.Member and (c.callee as GateAST.Member).name == "new":
-		var nm: GateAST.Member = c.callee
+	if c.callee is GateAST._Member and (c.callee as GateAST._Member).name == "new":
+		var nm: GateAST._Member = c.callee
 		var nref: String = _class_ref_text(nm.target)
 		var nst: Dictionary = _struct_of(nref) if nref != "" else {}
 		if not nst.is_empty() and not _fn_locals.has(nref.get_slice(".", 0)):
@@ -1902,8 +1902,8 @@ func _emit_call(c: GateAST.Call) -> String:
 					return _build_struct(nst, "", [], [], c)
 				return "%s(%s)" % [nst["vector"], ", ".join(_vec_args(nst, args))]
 
-	if c.callee is GateAST.Member:
-		var qm: GateAST.Member = c.callee
+	if c.callee is GateAST._Member:
+		var qm: GateAST._Member = c.callee
 		var qpath: String = _class_ref_text(qm)
 		var qst: Dictionary = _struct_of(qpath) if qpath != "" else {}
 		if qst.is_empty():
@@ -1916,13 +1916,13 @@ func _emit_call(c: GateAST.Call) -> String:
 				return "%s(%s)" % [qst["vector"], ", ".join(_vec_args(qst, args))]
 			return "%s.%s.new(%s)" % [_expr(qm.target), qm.name, ", ".join(args)]
 
-	if c.callee is GateAST.Ident:
-		var base: String = (c.callee as GateAST.Ident).name
+	if c.callee is GateAST._Ident:
+		var base: String = (c.callee as GateAST._Ident).name
 		var mangled: String = _resolve_overload(base, c.args.size())
 		if mangled != "" and _overload_declared_by_chain(base, _cur_class):
 			return "%s(%s)" % [mangled, ", ".join(args)]
-	elif c.callee is GateAST.Member:
-		var mem: GateAST.Member = c.callee
+	elif c.callee is GateAST._Member:
+		var mem: GateAST._Member = c.callee
 		var mangled2: String = _resolve_overload(mem.name, c.args.size())
 		if mangled2 != "" and mem.member_class != "":
 			if _overload_declared_by_chain(mem.name, mem.member_class):
@@ -1930,18 +1930,18 @@ func _emit_call(c: GateAST.Call) -> String:
 					mangled2, ", ".join(args)]
 		if mangled2 != "":
 			var mrecv: String = recv_text if recv_node != null else _postfix_base(mem.target)
-			if mem.target is GateAST.SelfExpr:
+			if mem.target is GateAST._SelfExpr:
 				if _overload_declared_by_chain(mem.name, _cur_class):
 					return "%s.%s(%s)" % [mrecv, mangled2, ", ".join(args)]
 				return "%s.%s(%s)" % [mrecv, mem.name, ", ".join(args)]
 			var owner: String = _static_type_of(mem.target)
 			if owner != "" and _overload_declared_by_chain(mem.name, owner):
 				return "%s.%s(%s)" % [mrecv, mangled2, ", ".join(args)]
-			if owner == "" and mem.target is GateAST.Ident:
-				var tn: String = (mem.target as GateAST.Ident).name
+			if owner == "" and mem.target is GateAST._Ident:
+				var tn: String = (mem.target as GateAST._Ident).name
 				if _local_types.has(tn) or not _struct_of(tn).is_empty():
 					owner = tn
-			if owner == "" and mem.target is GateAST.Ident and (mem.target as GateAST.Ident).name == "super":
+			if owner == "" and mem.target is GateAST._Ident and (mem.target as GateAST._Ident).name == "super":
 				owner = _cur_base
 			if owner != "" and _overload_declared_by(mem.name, owner):
 				return "%s.%s(%s)" % [mrecv, mangled2, ", ".join(args)]
@@ -1954,12 +1954,12 @@ func _emit_call(c: GateAST.Call) -> String:
 				return "%s.%s(%s)" % [mrecv, mem.name, ", ".join(args)]
 
 	if recv_node != null:
-		var cmm: GateAST.Member = c.callee
+		var cmm: GateAST._Member = c.callee
 		return "%s.%s(%s)" % [recv_text, _member_name(
 			cmm.member_class if cmm.member_class != "" else _owner_key(recv_node),
-			(c.callee as GateAST.Member).name), ", ".join(args)]
-	if c.callee is GateAST.Ident:
-		var fname: String = (c.callee as GateAST.Ident).name
+			(c.callee as GateAST._Member).name), ", ".join(args)]
+	if c.callee is GateAST._Ident:
+		var fname: String = (c.callee as GateAST._Ident).name
 		if not _struct_of(fname).is_empty() and _ctor_struct_of(fname).is_empty():
 			return "%s(%s)" % [fname, ", ".join(args)]   # a function, not the other file's struct
 	_swizzle_exempt = c.callee
@@ -1968,7 +1968,7 @@ func _emit_call(c: GateAST.Call) -> String:
 	return "%s(%s)" % [callee, ", ".join(args)]
 
 
-func _args_first(c: GateAST.Call) -> Array:
+func _args_first(c: GateAST._Call) -> Array:
 	var texts: PackedStringArray = _ordered(c.args,
 		func(i: int) -> String: return _copy_value(c.args[i]))
 	var out: Array = []
@@ -1978,24 +1978,24 @@ func _args_first(c: GateAST.Call) -> Array:
 			var t: String = _new_tmp()
 			_hoist("var %s = %s" % [t, text])
 			text = t
-		var r: GateAST.RawExpr = GateAST.RawExpr.new()
+		var r: GateAST._RawExpr = GateAST._RawExpr.new()
 		r.at(c.args[i].line, c.args[i].col)
 		r.text = text
 		out.append(r)
 	return out
 
 
-func _plain_callee(cm: GateAST.Member) -> bool:
+func _plain_callee(cm: GateAST._Member) -> bool:
 	if cm.safe or _soa_name(cm.target) != "":
 		return false
-	if cm.target is GateAST.Ident and _soa_cursors.has((cm.target as GateAST.Ident).name):
+	if cm.target is GateAST._Ident and _soa_cursors.has((cm.target as GateAST._Ident).name):
 		return false
-	if cm.target is GateAST.Index and _soa_name((cm.target as GateAST.Index).target) != "":
+	if cm.target is GateAST._Index and _soa_name((cm.target as GateAST._Index).target) != "":
 		return false
 	if not _vector_struct_of(cm.target).is_empty():
 		return false
-	if cm.target is GateAST.Ident and _scalar_names.has(
-			"%s.%s" % [(cm.target as GateAST.Ident).name, cm.name]):
+	if cm.target is GateAST._Ident and _scalar_names.has(
+			"%s.%s" % [(cm.target as GateAST._Ident).name, cm.name]):
 		return false
 	if not _struct_of(cm.name).is_empty() and _is_namespace_ref(cm.target):
 		return false
@@ -2004,23 +2004,23 @@ func _plain_callee(cm: GateAST.Member) -> bool:
 
 ## `X.new({...})` sets properties only when GDScript would reject the call, i.e. when
 ## `_init` takes nothing. Otherwise the dictionary is an argument, as written.
-func _init_call_form(c: GateAST.Call) -> Dictionary:
-	if c.args.size() != 1 or not (c.args[0] is GateAST.DictLit):
+func _init_call_form(c: GateAST._Call) -> Dictionary:
+	if c.args.size() != 1 or not (c.args[0] is GateAST._DictLit):
 		return {}
-	var dl: GateAST.DictLit = c.args[0]
+	var dl: GateAST._DictLit = c.args[0]
 	for i in dl.keys.size():
-		if not (dl.keys[i] is GateAST.Ident) or i >= dl.values.size() or dl.values[i] == null:
+		if not (dl.keys[i] is GateAST._Ident) or i >= dl.values.size() or dl.values[i] == null:
 			return {}
-	if c.callee is GateAST.Member:
-		var cm: GateAST.Member = c.callee
+	if c.callee is GateAST._Member:
+		var cm: GateAST._Member = c.callee
 		if cm.safe:
 			return {}
 		if cm.name == "new":
 			var ref: String = _class_ref_text(cm.target)
-			var generic: bool = cm.target is GateAST.Ident and (cm.target as GateAST.Ident).generic_base != ""
+			var generic: bool = cm.target is GateAST._Ident and (cm.target as GateAST._Ident).generic_base != ""
 			if generic:
-				ref = (cm.target as GateAST.Ident).generic_base
-			if ref == "" or (cm.target is GateAST.Ident and _fn_locals.has(ref)):
+				ref = (cm.target as GateAST._Ident).generic_base
+			if ref == "" or (cm.target is GateAST._Ident and _fn_locals.has(ref)):
 				return {}
 			var nst: Dictionary = _struct_of(ref) if not generic else {}
 			if not nst.is_empty():
@@ -2029,14 +2029,14 @@ func _init_call_form(c: GateAST.Call) -> Dictionary:
 				return {}
 			var ctor: String = _expr(cm.target)
 			return {"name": ref, "dict": dl, "ctor": ctor}
-		if not (cm.target is GateAST.Ident):
+		if not (cm.target is GateAST._Ident):
 			return {}
 		var nst: Dictionary = _struct_of(cm.name)
 		if not nst.is_empty() and _is_namespace_ref(cm.target) and not _dict_positional(nst, dl):
 			return {"name": cm.name, "dict": dl, "ctor": "%s.%s" % [_expr(cm.target), cm.name]}
 		return {}
-	if c.callee is GateAST.Ident:
-		var sn: String = (c.callee as GateAST.Ident).name
+	if c.callee is GateAST._Ident:
+		var sn: String = (c.callee as GateAST._Ident).name
 		if CTOR_SHORTHAND.has(sn) and not _shorthand_taken(sn) and not GateTypes.shadowed.has(sn):
 			return {}
 		var st: Dictionary = _ctor_struct_of(sn)
@@ -2047,7 +2047,7 @@ func _init_call_form(c: GateAST.Call) -> Dictionary:
 	return {}
 
 
-func _dict_positional(st: Dictionary, dl: GateAST.DictLit) -> bool:
+func _dict_positional(st: Dictionary, dl: GateAST._DictLit) -> bool:
 	var types: Array = st["types"]
 	var trefs: Array = st.get("typerefs", [])
 	if types.is_empty():
@@ -2055,26 +2055,26 @@ func _dict_positional(st: Dictionary, dl: GateAST.DictLit) -> bool:
 	var first = trefs[0] if not trefs.is_empty() else null
 	var holds_dict: bool = (String(types[0]) == "Variant"
 		or GateTypes.canonical(String(types[0])) == "Dictionary"
-		or (first != null and (first as GateAST.TypeRef).is_dict()))
+		or (first != null and (first as GateAST._TypeRef).is_dict()))
 	if not holds_dict:
 		return false
 	if dl.keys.is_empty():
 		return true
 	for k in dl.keys:
-		if not (st["fields"] as Array).has((k as GateAST.Ident).name):
+		if not (st["fields"] as Array).has((k as GateAST._Ident).name):
 			return true
 	return false
 
 
-func _emit_init_call(c: GateAST.Call, form: Dictionary) -> String:
-	var dl: GateAST.DictLit = form["dict"]
+func _emit_init_call(c: GateAST._Call, form: Dictionary) -> String:
+	var dl: GateAST._DictLit = form["dict"]
 	var name: String = form["name"]
 	var st: Dictionary = _struct_of(name)
 	var keys: Array = []
 	var values: Array = []
 	var ok: bool = _init_keys_distinct(dl)
 	for i in dl.keys.size():
-		var kid: GateAST.Ident = dl.keys[i]
+		var kid: GateAST._Ident = dl.keys[i]
 		if i < dl.lua_keys.size() and dl.lua_keys[i]:
 			diagnostics.error("initializer keys are written name: value", kid.line, kid.col,
 				"write `{ %s: ... }`. With `=` it would be a dictionary whose key is the "
@@ -2101,11 +2101,11 @@ func _emit_init_call(c: GateAST.Call, form: Dictionary) -> String:
 	return _lower_init(name, String(form["ctor"]), keys, values, c)
 
 
-func _init_keys_distinct(dl: GateAST.DictLit) -> bool:
+func _init_keys_distinct(dl: GateAST._DictLit) -> bool:
 	var seen: Dictionary = {}
 	var ok: bool = true
 	for k in dl.keys:
-		var kid: GateAST.Ident = k
+		var kid: GateAST._Ident = k
 		if seen.has(kid.name):
 			diagnostics.error("initializer key '%s' is given twice" % kid.name, kid.line, kid.col,
 				"each property can be set once.")
@@ -2142,24 +2142,24 @@ func _default_kind(st: Dictionary, i: int) -> String:
 
 
 func _portable_default(st: Dictionary, e, i: int) -> bool:
-	if e is GateAST.Literal:
+	if e is GateAST._Literal:
 		return true
-	if e is GateAST.Unary:
-		return _portable_default(st, (e as GateAST.Unary).operand, i)
-	if e is GateAST.Binary:
-		return (_portable_default(st, (e as GateAST.Binary).left, i)
-			and _portable_default(st, (e as GateAST.Binary).right, i))
-	if e is GateAST.Ternary:
-		var t: GateAST.Ternary = e
+	if e is GateAST._Unary:
+		return _portable_default(st, (e as GateAST._Unary).operand, i)
+	if e is GateAST._Binary:
+		return (_portable_default(st, (e as GateAST._Binary).left, i)
+			and _portable_default(st, (e as GateAST._Binary).right, i))
+	if e is GateAST._Ternary:
+		var t: GateAST._Ternary = e
 		return (_portable_default(st, t.cond, i) and _portable_default(st, t.if_true, i)
 			and _portable_default(st, t.if_false, i))
-	if e is GateAST.ArrayLit:
-		for el in (e as GateAST.ArrayLit).elements:
+	if e is GateAST._ArrayLit:
+		for el in (e as GateAST._ArrayLit).elements:
 			if not _portable_default(st, el, i):
 				return false
 		return true
-	if e is GateAST.Ident:
-		var at: int = (st["fields"] as Array).find((e as GateAST.Ident).name)
+	if e is GateAST._Ident:
+		var at: int = (st["fields"] as Array).find((e as GateAST._Ident).name)
 		return at >= 0 and at < i and _struct_of(String(st["types"][at])).is_empty()
 	return false
 
@@ -2167,11 +2167,11 @@ func _portable_default(st: Dictionary, e, i: int) -> bool:
 func _default_needs_instance(st: Dictionary, e) -> bool:
 	if e == null or not (e is Object) or (e as Object).get_script() == null:
 		return false
-	if (e is GateAST.SelfExpr or e is GateAST.Lambda or e is GateAST.RawExpr
-			or e is GateAST.AwaitExpr):
+	if (e is GateAST._SelfExpr or e is GateAST._Lambda or e is GateAST._RawExpr
+			or e is GateAST._AwaitExpr):
 		return true
-	if e is GateAST.Ident:
-		var n: String = (e as GateAST.Ident).name
+	if e is GateAST._Ident:
+		var n: String = (e as GateAST._Ident).name
 		var methods: Dictionary = st.get("methods", {})
 		if methods.has(n):
 			return not methods[n]
@@ -2285,7 +2285,7 @@ func _site_name(st: Dictionary, n: String) -> Dictionary:
 		var origin: String = String(_reg_origin.get(st["name"], ""))
 		var chain: Array = _extern_container(st["decl"])
 		for k in range(chain.size() - 1, -1, -1):
-			var ccd: GateAST.ClassDecl = chain[k][1]
+			var ccd: GateAST._ClassDecl = chain[k][1]
 			var cn: Dictionary = GateChecker.scope_names(ccd.members, ccd.form == "namespace")
 			if cn.has(n):
 				if cn[n] == "instance":
@@ -2377,7 +2377,7 @@ func _ext_declares(cls: String, n: String) -> bool:
 			return false
 		if not _reg_classes.has(c):
 			return true
-		if GateChecker.scope_names((_reg_classes[c] as GateAST.ClassDecl).members, false).has(n):
+		if GateChecker.scope_names((_reg_classes[c] as GateAST._ClassDecl).members, false).has(n):
 			return true
 		c = String(_reg_bases.get(c, "RefCounted"))
 	return true
@@ -2393,14 +2393,14 @@ func _names_of_scope(key: String) -> Dictionary:
 		if key == ".":
 			_scope_names[key] = GateChecker.scope_names(_module_members, false)
 		elif _class_decls.has(key) and _class_decls[key] != null:
-			var cd: GateAST.ClassDecl = _class_decls[key]
+			var cd: GateAST._ClassDecl = _class_decls[key]
 			_scope_names[key] = GateChecker.scope_names(cd.members, cd.form == "namespace")
 		else:
 			_scope_names[key] = {}
 	return _scope_names[key]
 
 
-func _extern_container(cd: GateAST.ClassDecl) -> Array:
+func _extern_container(cd: GateAST._ClassDecl) -> Array:
 	for table in [_reg_namespaces, _reg_classes]:
 		for top in table:
 			if not _extern_origin.has(top):
@@ -2411,12 +2411,12 @@ func _extern_container(cd: GateAST.ClassDecl) -> Array:
 	return []
 
 
-func _container_path(outer: GateAST.ClassDecl, cd: GateAST.ClassDecl, prefix: String) -> Array:
+func _container_path(outer: GateAST._ClassDecl, cd: GateAST._ClassDecl, prefix: String) -> Array:
 	for m in outer.members:
 		if m == cd:
 			return [[prefix, outer]]
-		if m is GateAST.ClassDecl:
-			var inner: Array = _container_path(m, cd, "%s.%s" % [prefix, (m as GateAST.ClassDecl).name])
+		if m is GateAST._ClassDecl:
+			var inner: Array = _container_path(m, cd, "%s.%s" % [prefix, (m as GateAST._ClassDecl).name])
 			if not inner.is_empty():
 				return [[prefix, outer]] + inner
 	return []
@@ -2550,9 +2550,9 @@ func _build_keyed(st: Dictionary, ctor: String, keys: Array, values: Array,
 
 
 func _placeholder_for(tr) -> String:
-	if tr == null or (tr as GateAST.TypeRef).nullable or (tr as GateAST.TypeRef).is_union():
+	if tr == null or (tr as GateAST._TypeRef).nullable or (tr as GateAST._TypeRef).is_union():
 		return "null"
-	var t: GateAST.TypeRef = tr
+	var t: GateAST._TypeRef = tr
 	var fst: Dictionary = _struct_of(t.name) if t.array_depth == 0 and not t.is_dict() else {}
 	if not fst.is_empty():
 		return "null" if fst["lowering"] != "vector" else "%s()" % fst["vector"]
@@ -2577,15 +2577,15 @@ func _lower_construct(construct: String, cast: String, keys: Array, values: Arra
 	return t
 
 
-func _instantiate_form(c: GateAST.Call) -> Dictionary:
-	if not (c.callee is GateAST.Member) or c.args.size() != 1 or not (c.args[0] is GateAST.DictLit):
+func _instantiate_form(c: GateAST._Call) -> Dictionary:
+	if not (c.callee is GateAST._Member) or c.args.size() != 1 or not (c.args[0] is GateAST._DictLit):
 		return {}
-	var cm: GateAST.Member = c.callee
+	var cm: GateAST._Member = c.callee
 	if cm.safe or cm.name != "instantiate":
 		return {}
-	var dl: GateAST.DictLit = c.args[0]
+	var dl: GateAST._DictLit = c.args[0]
 	for i in dl.keys.size():
-		if not (dl.keys[i] is GateAST.Ident) or i >= dl.values.size() or dl.values[i] == null:
+		if not (dl.keys[i] is GateAST._Ident) or i >= dl.values.size() or dl.values[i] == null:
 			return {}
 	if GateTypes.canonical(_declared_type_of(cm.target)) != "PackedScene":
 		return {}
@@ -2593,13 +2593,13 @@ func _instantiate_form(c: GateAST.Call) -> Dictionary:
 
 
 func _emit_instantiate_init(form: Dictionary) -> String:
-	var dl: GateAST.DictLit = form["dict"]
+	var dl: GateAST._DictLit = form["dict"]
 	var keys: Array = []
 	var values: Array = []
 	var ok: bool = _init_keys_distinct(dl)
 	var root: String = _declared_scene_root(form["recv"])
 	for i in dl.keys.size():
-		var kid: GateAST.Ident = dl.keys[i]
+		var kid: GateAST._Ident = dl.keys[i]
 		if i < dl.lua_keys.size() and dl.lua_keys[i]:
 			diagnostics.error("initializer keys are written name: value", kid.line, kid.col,
 				"write `{ %s: ... }`." % kid.name)
@@ -2622,37 +2622,37 @@ func _emit_instantiate_init(form: Dictionary) -> String:
 
 
 func _declared_scene_root(e) -> String:
-	if e is GateAST.Expr and (e as GateAST.Expr).flow_type != null:
-		return _name_key(_scope_class, _scene_root_name((e as GateAST.Expr).flow_type))
+	if e is GateAST._Expr and (e as GateAST._Expr).flow_type != null:
+		return _name_key(_scope_class, _scene_root_name((e as GateAST._Expr).flow_type))
 	var info: Dictionary = {}
-	if e is GateAST.Ident:
-		var n: String = (e as GateAST.Ident).name
+	if e is GateAST._Ident:
+		var n: String = (e as GateAST._Ident).name
 		info = (_fn_locals[n] as Dictionary) if _fn_locals.has(n) else _field_info(_scope_class, n)
-	elif e is GateAST.Member and not (e as GateAST.Member).safe:
-		var m: GateAST.Member = e
-		var owner: String = _scope_class if m.target is GateAST.SelfExpr else _declared_type_of(m.target)
+	elif e is GateAST._Member and not (e as GateAST._Member).safe:
+		var m: GateAST._Member = e
+		var owner: String = _scope_class if m.target is GateAST._SelfExpr else _declared_type_of(m.target)
 		if owner != "":
 			info = _field_info(owner, m.name)
 	return String(info.get("g", ""))
 
 
-func _warn_init_traps(c: GateAST.Call) -> void:
-	if c.args.size() != 1 or not (c.args[0] is GateAST.DictLit) or not (c.callee is GateAST.Member):
+func _warn_init_traps(c: GateAST._Call) -> void:
+	if c.args.size() != 1 or not (c.args[0] is GateAST._DictLit) or not (c.callee is GateAST._Member):
 		return
-	var cm: GateAST.Member = c.callee
+	var cm: GateAST._Member = c.callee
 	if cm.safe:
 		return
-	var dl: GateAST.DictLit = c.args[0]
+	var dl: GateAST._DictLit = c.args[0]
 	if cm.name == "new":
 		var cls: String = _class_ref_text(cm.target)
-		if (cls == "" or dl.keys.is_empty() or (cm.target is GateAST.Ident and _fn_locals.has(cls))
+		if (cls == "" or dl.keys.is_empty() or (cm.target is GateAST._Ident and _fn_locals.has(cls))
 				or _ctor_takes_params(_scope_class, cls) != 1):
 			return
 		for j in dl.keys.size():
 			var bk = dl.keys[j]
-			if not (bk is GateAST.Ident) or (j < dl.lua_keys.size() and dl.lua_keys[j]):
+			if not (bk is GateAST._Ident) or (j < dl.lua_keys.size() and dl.lua_keys[j]):
 				continue
-			var bn: String = (bk as GateAST.Ident).name
+			var bn: String = (bk as GateAST._Ident).name
 			var prop: int = _class_has_property(_scope_class, cls, bn)
 			if prop == -1 or _name_in_scope(bn):
 				continue
@@ -2666,9 +2666,9 @@ func _warn_init_traps(c: GateAST.Call) -> void:
 			return
 		for i in dl.keys.size():
 			var k = dl.keys[i]
-			if not (k is GateAST.Ident) or (i < dl.lua_keys.size() and dl.lua_keys[i]):
+			if not (k is GateAST._Ident) or (i < dl.lua_keys.size() and dl.lua_keys[i]):
 				return
-			if _class_has_property(_scope_class, cls, (k as GateAST.Ident).name) != 1:
+			if _class_has_property(_scope_class, cls, (k as GateAST._Ident).name) != 1:
 				return
 		diagnostics.warn(
 			"this passes the dictionary to %s._init; property initialisation needs a "
@@ -2677,7 +2677,7 @@ func _warn_init_traps(c: GateAST.Call) -> void:
 			+ "GDScript hands it the dictionary instead. Drop the parameter to set "
 			+ "the properties, or write the assignments out.")
 	elif cm.name == "instantiate":
-		if cm.target is GateAST.SelfExpr or _declared_funcs.has("instantiate"):
+		if cm.target is GateAST._SelfExpr or _declared_funcs.has("instantiate"):
 			return
 		var rt: String = GateTypes.canonical(_static_type_of(cm.target))
 		if rt != "" and rt != "PackedScene":
@@ -2690,13 +2690,13 @@ func _warn_init_traps(c: GateAST.Call) -> void:
 
 
 func _is_namespace_ref(e) -> bool:
-	if not (e is GateAST.Ident):
+	if not (e is GateAST._Ident):
 		return false
-	var n: String = (e as GateAST.Ident).name
+	var n: String = (e as GateAST._Ident).name
 	return not _var_types.has(n) and not _fn_locals.has(n) and not _declares_value(_scope_class, n)
 
 
-func _emit_soa_call(sname: String, cm: GateAST.Member, c: GateAST.Call) -> String:
+func _emit_soa_call(sname: String, cm: GateAST._Member, c: GateAST._Call) -> String:
 	var info: Dictionary = _soa[sname]
 	var arrays: Array = info["arrays"]
 	var accessors: Array = info["accessors"]
@@ -2733,7 +2733,7 @@ func _emit_soa_call(sname: String, cm: GateAST.Member, c: GateAST.Call) -> Strin
 	return "null"
 
 
-func _emit_fstring(fs: GateAST.FString) -> String:
+func _emit_fstring(fs: GateAST._FString) -> String:
 	var fmt: String = ""
 	var exprs: Array = []
 	for part in fs.parts:
@@ -2782,17 +2782,17 @@ func _collection(open_b: String, parts: PackedStringArray, close_b: String, elem
 	return "\n".join(lines)
 
 
-func _discards_safe_call(l: GateAST.Lambda) -> bool:
+func _discards_safe_call(l: GateAST._Lambda) -> bool:
 	if l.return_type != null and l.return_type.name != "void":
 		return false   # the value is used, so the ternary is right
-	var e = (l.body[0] as GateAST.ExprStmt).expr
-	if not (e is GateAST.Call):
+	var e = (l.body[0] as GateAST._ExprStmt).expr
+	if not (e is GateAST._Call):
 		return false
-	var c: GateAST.Call = e
-	return c.callee is GateAST.Member and (c.callee as GateAST.Member).safe
+	var c: GateAST._Call = e
+	return c.callee is GateAST._Member and (c.callee as GateAST._Member).safe
 
 
-func _capture_copies(l: GateAST.Lambda) -> Dictionary:
+func _capture_copies(l: GateAST._Lambda) -> Dictionary:
 	var out: Dictionary = {}
 	if _fn_locals.is_empty() or _no_hoist_ctx() != "":
 		return out
@@ -2804,7 +2804,7 @@ func _capture_copies(l: GateAST.Lambda) -> Dictionary:
 			continue
 		if _tmp_names.has(n) or (String(n).begins_with("__g") and String(n).substr(3, 1).is_valid_int()):
 			continue   # GATE's own copy, made for this capture
-		var id: GateAST.Ident = GateAST.Ident.new()
+		var id: GateAST._Ident = GateAST._Ident.new()
 		id.at(l.line, l.col)
 		id.name = String(n)
 		var saved_p: PackedStringArray = _pending
@@ -2822,7 +2822,7 @@ func _capture_copies(l: GateAST.Lambda) -> Dictionary:
 	return out
 
 
-func _emit_lambda(l: GateAST.Lambda) -> String:
+func _emit_lambda(l: GateAST._Lambda) -> String:
 	if not _soa_cursors.is_empty():
 		var read: Dictionary = {}
 		GateChecker.idents_in(l.body, read)
@@ -2848,7 +2848,7 @@ func _emit_lambda(l: GateAST.Lambda) -> String:
 	_in_func_body = true
 	_no_hoist = ""
 	for p in l.params:
-		var pp: GateAST.Param = p
+		var pp: GateAST._Param = p
 		if _ident_renames.has(pp.name):
 			_ident_renames = _ident_renames.duplicate()
 			_ident_renames.erase(pp.name)
@@ -2874,16 +2874,16 @@ func _emit_lambda(l: GateAST.Lambda) -> String:
 	return out
 
 
-func _emit_lambda_inner(l: GateAST.Lambda, outer: int) -> String:
+func _emit_lambda_inner(l: GateAST._Lambda, outer: int) -> String:
 	var head: String = "func%s(%s)" % [(" " + l.name) if l.name != "" else "", _params(l.params)]
 	if l.return_type != null:
 		head += " -> " + _map_type(l.return_type)
 	var entry: PackedStringArray = PackedStringArray()
 	for p in l.params:
-		if _would_copy(p) and not _copies_first(l.body, (p as GateAST.Param).name):
+		if _would_copy(p) and not _copies_first(l.body, (p as GateAST._Param).name):
 			entry.append(_entry_copy(p))
-	if l.body.size() == 1 and l.body[0] is GateAST.ReturnStmt:
-		var r: GateAST.ReturnStmt = l.body[0]
+	if l.body.size() == 1 and l.body[0] is GateAST._ReturnStmt:
+		var r: GateAST._ReturnStmt = l.body[0]
 		if r.value == null:
 			return "%s: return" % head
 		var saved_pending: PackedStringArray = _pending
@@ -2894,11 +2894,11 @@ func _emit_lambda_inner(l: GateAST.Lambda, outer: int) -> String:
 		if hoisted.is_empty():
 			return "%s: return %s" % [head, rv]
 		return _lambda_block(head, hoisted, "return " + rv, outer)
-	elif (l.body.size() == 1 and l.body[0] is GateAST.ExprStmt
+	elif (l.body.size() == 1 and l.body[0] is GateAST._ExprStmt
 			and not _discards_safe_call(l)):
 		var saved_pending2: PackedStringArray = _pending
 		_pending = PackedStringArray()
-		var ex: String = _expr((l.body[0] as GateAST.ExprStmt).expr)
+		var ex: String = _expr((l.body[0] as GateAST._ExprStmt).expr)
 		var hoisted2: PackedStringArray = entry + _pending
 		_pending = saved_pending2
 		var last: String = ex
@@ -2923,7 +2923,7 @@ func _emit_lambda_inner(l: GateAST.Lambda, outer: int) -> String:
 	_map = saved_map
 	_indent = saved_indent
 	_pending_line_src = body_map.duplicate()
-	if not l.body.is_empty() and l.body[l.body.size() - 1] is GateAST.MatchStmt:
+	if not l.body.is_empty() and l.body[l.body.size() - 1] is GateAST._MatchStmt:
 		body_lines.append("	".repeat(_indent))
 		_pending_line_src.append(body_map[body_map.size() - 1] if not body_map.is_empty() else l.line)
 	return head + ":\n" + "\n".join(body_lines)
@@ -2933,7 +2933,7 @@ func _params(params: Array, fname: String = "", helpers: Array = []) -> String:
 	var parts: PackedStringArray = PackedStringArray()
 	var earlier: PackedStringArray = PackedStringArray()
 	for p in params:
-		var pp: GateAST.Param = p
+		var pp: GateAST._Param = p
 		var s: String = ("..." if pp.is_rest else "") + pp.name
 		if pp.type != null:
 			s += ": " + _map_type(pp.type)
@@ -2952,7 +2952,7 @@ func _params(params: Array, fname: String = "", helpers: Array = []) -> String:
 				for ep in params:
 					if ep == p:
 						break
-					_fn_locals[(ep as GateAST.Param).name] = _decl_info(_scope_class, (ep as GateAST.Param).type)
+					_fn_locals[(ep as GateAST._Param).name] = _decl_info(_scope_class, (ep as GateAST._Param).type)
 				_pending = PackedStringArray()
 				value = _expr(pp.default) if _would_copy(pp) else _copy_value(pp.default)
 				hoisted = _pending

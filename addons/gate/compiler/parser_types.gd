@@ -5,12 +5,12 @@ extends "res://addons/gate/compiler/parser_cursor.gd"
 ## type-first declaration from an expression statement.
 
 
-func _parse_extends_type() -> GateAST.TypeRef:
+func _parse_extends_type() -> GateAST._TypeRef:
 	if _check(GateLexer.T.STRING):
-		var t: GateLexer.Token = _cur()
+		var t: GateLexer._Token = _cur()
 		_advance()
 		var q: String = t.extra if t.extra != "" else "\""
-		var tr: GateAST.TypeRef = GateAST.TypeRef.new()
+		var tr: GateAST._TypeRef = GateAST._TypeRef.new()
 		tr.at(t.line, t.col)
 		tr.name = q + t.value + q
 		tr.is_path_literal = true
@@ -21,13 +21,13 @@ func _parse_extends_type() -> GateAST.TypeRef:
 	return _parse_type()
 
 
-func _parse_type() -> GateAST.TypeRef:
-	var t: GateAST.TypeRef = GateAST.TypeRef.new()
-	var start: GateLexer.Token = _cur()
+func _parse_type() -> GateAST._TypeRef:
+	var t: GateAST._TypeRef = GateAST._TypeRef.new()
+	var start: GateLexer._Token = _cur()
 	t.at(start.line, start.col)
 
 	if _match_op("{"):
-		var first: GateAST.TypeRef = _parse_type()
+		var first: GateAST._TypeRef = _parse_type()
 		if _match_op(","):
 			t.dict_key = first
 			t.dict_value = _parse_type()
@@ -98,7 +98,7 @@ func _parse_type() -> GateAST.TypeRef:
 	return t
 
 
-func _parse_type_list(t: GateAST.TypeRef) -> void:
+func _parse_type_list(t: GateAST._TypeRef) -> void:
 	_saw_gate_type = true
 	_split_generic_span(_i)
 	_advance()  # '<'
@@ -133,7 +133,7 @@ func _parse_type_list(t: GateAST.TypeRef) -> void:
 		t.tuple_elems = members
 
 
-func _parse_func_type(t: GateAST.TypeRef) -> void:
+func _parse_func_type(t: GateAST._TypeRef) -> void:
 	_saw_gate_type = true
 	_advance()  # func
 	_advance()  # (
@@ -153,7 +153,7 @@ func _parse_func_type(t: GateAST.TypeRef) -> void:
 	if _match_op("->"):
 		t.callable_return = _parse_type()
 	else:
-		var v: GateAST.TypeRef = GateAST.TypeRef.new()
+		var v: GateAST._TypeRef = GateAST._TypeRef.new()
 		v.at(t.line, t.col)
 		v.name = "void"
 		t.callable_return = v
@@ -178,7 +178,7 @@ func _looks_like_paren_type_decl() -> bool:
 func _skip_type_span(j: int) -> int:
 	if j >= _toks.size():
 		return -1
-	var t: GateLexer.Token = _toks[j]
+	var t: GateLexer._Token = _toks[j]
 	if t.is_op("(") and j + 1 < _toks.size() and _toks[j + 1].is_kw("func"):
 		var inner: int = _skip_type_span(j + 1)
 		if inner < 0 or inner >= _toks.size() or not _toks[inner].is_op(")"):
@@ -190,7 +190,7 @@ func _skip_type_span(j: int) -> int:
 		var depth: int = 0
 		var k: int = j + 1
 		while k < _toks.size():
-			var b: GateLexer.Token = _toks[k]
+			var b: GateLexer._Token = _toks[k]
 			if b.type == GateLexer.T.NEWLINE or b.type == GateLexer.T.EOF:
 				return -1
 			if b.is_op("("): depth += 1
@@ -214,7 +214,7 @@ func _skip_type_span(j: int) -> int:
 	elif t.is_op("{"):
 		var d: int = 0
 		while i < _toks.size():
-			var c: GateLexer.Token = _toks[i]
+			var c: GateLexer._Token = _toks[i]
 			if c.type == GateLexer.T.NEWLINE:
 				return -1
 			if c.is_op("{"): d += 1
@@ -239,7 +239,7 @@ func _skip_type_span(j: int) -> int:
 
 func _skip_type_suffixes(i: int) -> int:
 	while i < _toks.size():
-		var s: GateLexer.Token = _toks[i]
+		var s: GateLexer._Token = _toks[i]
 		if s.is_op("?") or s.is_op("??"):
 			i += 1
 		elif (s.is_op("[") or s.is_op("?[")) and i + 1 < _toks.size() and _toks[i + 1].is_op("]"):
@@ -261,9 +261,9 @@ func _at_type_alias() -> bool:
 	return false
 
 
-func _parse_type_alias() -> GateAST.TypeAliasDecl:
-	var kw: GateLexer.Token = _advance()  # type
-	var ad: GateAST.TypeAliasDecl = GateAST.TypeAliasDecl.new()
+func _parse_type_alias() -> GateAST._TypeAliasDecl:
+	var kw: GateLexer._Token = _advance()  # type
+	var ad: GateAST._TypeAliasDecl = GateAST._TypeAliasDecl.new()
 	ad.at(kw.line, kw.col)
 	ad.name = _advance().value
 	if _check_op("<"):
@@ -283,9 +283,9 @@ func _parse_type_alias() -> GateAST.TypeAliasDecl:
 var _tested_type: int = 0
 
 
-func _parse_tested_type(kw: String) -> GateAST.TypeRef:
+func _parse_tested_type(kw: String) -> GateAST._TypeRef:
 	_tested_type += 1
-	var tr: GateAST.TypeRef = _parse_type()
+	var tr: GateAST._TypeRef = _parse_type()
 	_tested_type -= 1
 	# `x is Box<float>` names the class, so it has to exist even if nothing builds one.
 	if not tr.generic_args.is_empty():
@@ -294,14 +294,14 @@ func _parse_tested_type(kw: String) -> GateAST.TypeRef:
 
 
 func _looks_like_typed_decl() -> bool:
-	var t: GateLexer.Token = _cur()
+	var t: GateLexer._Token = _cur()
 	if t.type == GateLexer.T.OP and (t.value == "<" or t.value == "<<"):
 		var close: int = _generic_span_end(_i, false)
 		if close < 0:
 			return false
 		var j: int = close + 1
 		while j < _toks.size():
-			var s: GateLexer.Token = _toks[j]
+			var s: GateLexer._Token = _toks[j]
 			if s.is_op("?"):
 				j += 1
 			elif (s.is_op("[") or s.is_op("?[")) and j + 1 < _toks.size() and _toks[j + 1].is_op("]"):
@@ -313,12 +313,12 @@ func _looks_like_typed_decl() -> bool:
 		var j: int = _i
 		var depth: int = 0
 		while j < _toks.size():
-			var tk: GateLexer.Token = _toks[j]
+			var tk: GateLexer._Token = _toks[j]
 			if tk.type == GateLexer.T.OP and tk.value == "{": depth += 1
 			elif tk.type == GateLexer.T.OP and tk.value == "}":
 				depth -= 1
 				if depth == 0:
-					var nxt: GateLexer.Token = _toks[j + 1] if j + 1 < _toks.size() else null
+					var nxt: GateLexer._Token = _toks[j + 1] if j + 1 < _toks.size() else null
 					return nxt != null and nxt.type == GateLexer.T.IDENT
 			elif tk.type == GateLexer.T.NEWLINE:
 				return false
@@ -330,16 +330,16 @@ func _looks_like_typed_decl() -> bool:
 
 	var j2: int = _i + 1
 	while j2 < _toks.size():
-		var tk2: GateLexer.Token = _toks[j2]
+		var tk2: GateLexer._Token = _toks[j2]
 		if tk2.type == GateLexer.T.OP and (tk2.value == "[" or tk2.value == "?["):
-			var nxt2: GateLexer.Token = _toks[j2 + 1] if j2 + 1 < _toks.size() else null
+			var nxt2: GateLexer._Token = _toks[j2 + 1] if j2 + 1 < _toks.size() else null
 			if nxt2 != null and nxt2.type == GateLexer.T.OP and nxt2.value == "]":
 				j2 += 2
 				continue
 			var d3: int = 0
 			var k3: int = j2
 			while k3 < _toks.size():
-				var b: GateLexer.Token = _toks[k3]
+				var b: GateLexer._Token = _toks[k3]
 				if b.type == GateLexer.T.NEWLINE:
 					return false
 				if b.type == GateLexer.T.OP and (b.value == "[" or b.value == "?["): d3 += 1
@@ -384,14 +384,14 @@ func _looks_like_typed_decl() -> bool:
 func _decl_name_follows(j2: int) -> bool:
 	if j2 >= _toks.size():
 		return false
-	var name_tok: GateLexer.Token = _toks[j2]
+	var name_tok: GateLexer._Token = _toks[j2]
 	if not _is_name_token(name_tok):
 		return false
-	var after: GateLexer.Token = _toks[j2 + 1] if j2 + 1 < _toks.size() else null
+	var after: GateLexer._Token = _toks[j2 + 1] if j2 + 1 < _toks.size() else null
 	if after == null:
 		return false
 	if after.type == GateLexer.T.OP and after.value == "{":
-		var inner: GateLexer.Token = _toks[j2 + 2] if j2 + 2 < _toks.size() else null
+		var inner: GateLexer._Token = _toks[j2 + 2] if j2 + 2 < _toks.size() else null
 		return inner != null and inner.value in ["get", "set"]
 	# A comment is a token, so a trailing one sits where the NEWLINE would be.
 	return after.type == GateLexer.T.NEWLINE \
@@ -417,7 +417,7 @@ func _is_type_looking(name: String) -> bool:
 func _qualified_generic_ahead() -> bool:
 	if not _peek(1).is_op(".") or _peek(2).type != GateLexer.T.IDENT:
 		return false
-	var open: GateLexer.Token = _peek(3)
+	var open: GateLexer._Token = _peek(3)
 	if not (open.is_op("<") or open.is_op("<<")):
 		return false
 	if not _is_generic_name(_peek(2).value):
@@ -426,7 +426,7 @@ func _qualified_generic_ahead() -> bool:
 
 
 func _check_generic_instantiation() -> bool:
-	var nx: GateLexer.Token = _peek(1)
+	var nx: GateLexer._Token = _peek(1)
 	if nx.type != GateLexer.T.OP or not (nx.value == "<" or nx.value == "<<"):
 		return false
 	return _is_generic_name(_cur().value) and _generic_after(_i + 1, nx.value == "<<")
@@ -446,7 +446,7 @@ func _generic_span_end(from: int, strict: bool) -> int:
 	var depth: int = 0
 	var i: int = from
 	while i < _toks.size():
-		var t: GateLexer.Token = _toks[i]
+		var t: GateLexer._Token = _toks[i]
 		if t.type == GateLexer.T.NEWLINE or t.type == GateLexer.T.EOF:
 			return -1
 		if t.type == GateLexer.T.OP:
@@ -475,11 +475,11 @@ func _split_generic_span(from: int) -> void:
 		return
 	var i: int = from
 	while i <= end:
-		var t: GateLexer.Token = _toks[i]
+		var t: GateLexer._Token = _toks[i]
 		if t.type == GateLexer.T.OP and (t.value == ">>" or t.value == "<<"):
 			var half: String = t.value.substr(0, 1)
-			_toks[i] = GateLexer.Token.new(GateLexer.T.OP, half, t.line, t.col)
-			_toks.insert(i + 1, GateLexer.Token.new(GateLexer.T.OP, half, t.line, t.col + 1))
+			_toks[i] = GateLexer._Token.new(GateLexer.T.OP, half, t.line, t.col)
+			_toks.insert(i + 1, GateLexer._Token.new(GateLexer.T.OP, half, t.line, t.col + 1))
 			_shift_spans(i + 1)
 			end += 1
 			i += 1
@@ -499,7 +499,7 @@ func _closes_generic_args() -> bool:
 	return _generic_span_end(_i, true) >= 0
 
 
-static func mangle_generic(t: GateAST.TypeRef) -> String:
+static func mangle_generic(t: GateAST._TypeRef) -> String:
 	var parts: PackedStringArray = PackedStringArray()
 	for g in t.generic_args:
 		var one: String = String(g.name).replace(".", "_")
@@ -515,7 +515,7 @@ static func mangle_generic(t: GateAST.TypeRef) -> String:
 	return "__%s_%s" % [t.name, "_".join(parts)]
 
 
-static func _mangle_shape(g: GateAST.TypeRef) -> String:
+static func _mangle_shape(g: GateAST._TypeRef) -> String:
 	if g.is_dict():
 		return "D_%s_%s" % [_mangle_part(g.dict_key), _mangle_part(g.dict_value)]
 	if g.is_set():
@@ -533,10 +533,10 @@ static func _mangle_shape(g: GateAST.TypeRef) -> String:
 	return s
 
 
-static func union_parts(g: GateAST.TypeRef) -> PackedStringArray:
+static func union_parts(g: GateAST._TypeRef) -> PackedStringArray:
 	var ps: PackedStringArray = PackedStringArray()
 	for m in g.union_members:
-		var mt: GateAST.TypeRef = m
+		var mt: GateAST._TypeRef = m
 		var parts: PackedStringArray = union_parts(mt) if mt.is_union() and mt.array_depth == 0 \
 			and not mt.nullable else PackedStringArray([_mangle_part(mt)])
 		for p in parts:
@@ -546,7 +546,7 @@ static func union_parts(g: GateAST.TypeRef) -> PackedStringArray:
 	return ps
 
 
-static func _mangle_part(k: GateAST.TypeRef) -> String:
+static func _mangle_part(k: GateAST._TypeRef) -> String:
 	if k == null:
 		return "Variant"
 	var one: String = GateTypes.canonical(k.name).replace(".", "_")

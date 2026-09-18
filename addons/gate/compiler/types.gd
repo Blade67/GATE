@@ -60,11 +60,11 @@ static var shadowed: Dictionary = {}
 static func shadow_declared(tokens: Array, class_names: Dictionary = {}) -> void:
 	shadowed = {}
 	for i in tokens.size() - 1:
-		var t: GateLexer.Token = tokens[i]
+		var t: GateLexer._Token = tokens[i]
 		if t.type != GateLexer.T.KEYWORD:
 			continue
 		if t.value in ["class", "class_name", "enum", "const", "struct", "interface", "trait", "namespace"]:
-			var nx: GateLexer.Token = tokens[i + 1]
+			var nx: GateLexer._Token = tokens[i + 1]
 			if nx.type == GateLexer.T.IDENT and SHORTHAND.has(nx.value):
 				shadowed[nx.value] = true
 	for cn in class_names:
@@ -103,14 +103,14 @@ static func is_gd_nullable(mapped: String) -> bool:
 	return not BUILTIN.has(mapped)
 
 
-static func resolve(t: GateAST.TypeRef, diags: GateDiagnostics = null, packed_hint := false) -> String:
+static func resolve(t: GateAST._TypeRef, diags: GateDiagnostics = null, packed_hint := false) -> String:
 	var mapped: String = _resolve_core(t, diags, packed_hint)
 	if t != null and t.nullable and not is_gd_nullable(mapped):
 		return "Variant"
 	return mapped
 
 
-static func _resolve_core(t: GateAST.TypeRef, diags: GateDiagnostics, packed_hint: bool) -> String:
+static func _resolve_core(t: GateAST._TypeRef, diags: GateDiagnostics, packed_hint: bool) -> String:
 	if t == null:
 		return ""
 
@@ -172,15 +172,15 @@ static func _resolve_core(t: GateAST.TypeRef, diags: GateDiagnostics, packed_hin
 	return base
 
 
-static func _arrayed_arg(t: GateAST.TypeRef) -> GateAST.TypeRef:
-	var arg: GateAST.TypeRef = GateChecker.copy_type(t.generic_args[0])
+static func _arrayed_arg(t: GateAST._TypeRef) -> GateAST._TypeRef:
+	var arg: GateAST._TypeRef = GateChecker.copy_type(t.generic_args[0])
 	arg.at(t.line, t.col)
 	arg.array_depth += 1 + t.array_depth
 	arg.nullable = t.nullable
 	return arg
 
 
-static func _resolve_nested(t: GateAST.TypeRef, diags: GateDiagnostics) -> String:
+static func _resolve_nested(t: GateAST._TypeRef, diags: GateDiagnostics) -> String:
 	if t == null:
 		return "Variant"
 	if t.is_dict() or t.is_set():
@@ -193,7 +193,7 @@ static func _resolve_nested(t: GateAST.TypeRef, diags: GateDiagnostics) -> Strin
 	return canonical(t.name)
 
 
-static func _outer_only(t: GateAST.TypeRef) -> String:
+static func _outer_only(t: GateAST._TypeRef) -> String:
 	if t == null:
 		return "Variant"
 	if t.is_dict():
@@ -203,7 +203,7 @@ static func _outer_only(t: GateAST.TypeRef) -> String:
 	return canonical(t.name)
 
 
-static func _packed_of_annotation(current: String, elem: String, diags: GateDiagnostics, t: GateAST.TypeRef) -> String:
+static func _packed_of_annotation(current: String, elem: String, diags: GateDiagnostics, t: GateAST._TypeRef) -> String:
 	if has_packed(elem):
 		return packed_for(elem)
 	if diags:
@@ -213,7 +213,7 @@ static func _packed_of_annotation(current: String, elem: String, diags: GateDiag
 	return "Array"
 
 
-static func default_value(t: GateAST.TypeRef) -> String:
+static func default_value(t: GateAST._TypeRef) -> String:
 	if t == null:
 		return ""
 	if t.nullable:
@@ -264,7 +264,7 @@ const NARROWABLE_INT := {"int": true, "i32": true}
 static func struct_field_kind(tr) -> String:
 	if tr == null:
 		return "Variant"
-	var t: GateAST.TypeRef = tr
+	var t: GateAST._TypeRef = tr
 	if t.array_depth != 0 or t.is_dict() or t.is_set() or t.is_union() or t.is_tuple() \
 			or t.is_func_type or not t.generic_args.is_empty():
 		return ""

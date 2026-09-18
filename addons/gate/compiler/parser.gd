@@ -8,7 +8,7 @@ extends "res://addons/gate/compiler/parser_expr.gd"
 ## so an unfamiliar GDScript construct degrades to pass-through, not an error.
 
 
-func parse(tokens: Array, source: String, diags: GateDiagnostics) -> GateAST.Module:
+func parse(tokens: Array, source: String, diags: GateDiagnostics) -> GateAST._Module:
 	diagnostics = diags
 	_toks = tokens
 	_i = 0
@@ -24,11 +24,11 @@ func parse(tokens: Array, source: String, diags: GateDiagnostics) -> GateAST.Mod
 	_templates = {}
 	_seed_aliases()
 
-	var mod: GateAST.Module = GateAST.Module.new()
+	var mod: GateAST._Module = GateAST._Module.new()
 	_skip_newlines()
 	while not _at_end():
 		var before: int = diags.error_count()
-		var m: GateAST.Stmt = _parse_module_member(mod)
+		var m: GateAST._Stmt = _parse_module_member(mod)
 		if m != null:
 			mod.members.append(m)
 		_drain_extras(mod.members)
@@ -37,7 +37,7 @@ func parse(tokens: Array, source: String, diags: GateDiagnostics) -> GateAST.Mod
 			if _at_stmt_end():
 				break
 			var before2: int = diags.error_count()
-			var m2: GateAST.Stmt = _parse_module_member(mod)
+			var m2: GateAST._Stmt = _parse_module_member(mod)
 			if m2 != null:
 				mod.members.append(m2)
 			_drain_extras(mod.members)
@@ -60,7 +60,7 @@ func _annotation_is_file_level() -> bool:
 		return true
 	var i: int = _i + 1
 	while i < _toks.size():
-		var t: GateLexer.Token = _toks[i]
+		var t: GateLexer._Token = _toks[i]
 		if t.type == GateLexer.T.NEWLINE or t.type == GateLexer.T.COMMENT or t.type == GateLexer.T.ANNOTATION:
 			i += 1
 			continue
@@ -68,9 +68,9 @@ func _annotation_is_file_level() -> bool:
 	return true
 
 
-func _parse_module_member(mod: GateAST.Module) -> GateAST.Stmt:
+func _parse_module_member(mod: GateAST._Module) -> GateAST._Stmt:
 	if _check(GateLexer.T.ANNOTATION) and _annotation_is_file_level():
-		var fa: GateAST.Annotation = _parse_one_annotation()
+		var fa: GateAST._Annotation = _parse_one_annotation()
 		if fa != null:
 			mod.header_annotations.append(fa)
 			if fa.name == "tool":
@@ -79,12 +79,12 @@ func _parse_module_member(mod: GateAST.Module) -> GateAST.Stmt:
 		return null
 
 	if _check(GateLexer.T.COMMENT):
-		var c: GateAST.CommentStmt = GateAST.CommentStmt.new()
+		var c: GateAST._CommentStmt = GateAST._CommentStmt.new()
 		c.text = _advance().value
 		return c
 
 	if _check_kw("class_name"):
-		var cn_tok: GateLexer.Token = _advance()
+		var cn_tok: GateLexer._Token = _advance()
 		mod.class_name_line = cn_tok.line
 		if _check(GateLexer.T.IDENT):
 			mod.class_name_decl = _advance().value
@@ -103,11 +103,11 @@ func _parse_module_member(mod: GateAST.Module) -> GateAST.Stmt:
 	return _parse_member()
 
 
-func _parse_one_annotation() -> GateAST.Annotation:
+func _parse_one_annotation() -> GateAST._Annotation:
 	if not _check(GateLexer.T.ANNOTATION):
 		return null
-	var t: GateLexer.Token = _advance()
-	var a: GateAST.Annotation = GateAST.Annotation.new()
+	var t: GateLexer._Token = _advance()
+	var a: GateAST._Annotation = GateAST._Annotation.new()
 	a.name = t.value.substr(1)
 	a.at(t.line, t.col)
 	if _check_op("("):
@@ -129,7 +129,7 @@ func _parse_one_annotation() -> GateAST.Annotation:
 func _parse_annotations() -> Array:
 	var out: Array = []
 	while _check(GateLexer.T.ANNOTATION):
-		var a: GateAST.Annotation = _parse_one_annotation()
+		var a: GateAST._Annotation = _parse_one_annotation()
 		if a == null:
 			break
 		out.append(a)
@@ -137,7 +137,7 @@ func _parse_annotations() -> Array:
 	return out
 
 
-func _parse_member() -> GateAST.Stmt:
+func _parse_member() -> GateAST._Stmt:
 	var start_line: int = _cur().line
 	if _check(GateLexer.T.INDENT):
 		if _stray_indent():
@@ -146,7 +146,7 @@ func _parse_member() -> GateAST.Stmt:
 	var annotations: Array = _parse_annotations()
 	# Annotations that close a block have nothing to attach to; keep them as they are.
 	if not annotations.is_empty() and (_check(GateLexer.T.DEDENT) or _at_end()):
-		var lone: GateAST.AnnotatedStmt = GateAST.AnnotatedStmt.new()
+		var lone: GateAST._AnnotatedStmt = GateAST._AnnotatedStmt.new()
 		lone.at(start_line, 0)
 		lone.annotations = annotations
 		return lone
@@ -175,14 +175,14 @@ func _parse_member() -> GateAST.Stmt:
 
 	if _check_kw("class") or _check_kw("struct") or _check_kw("interface") \
 		or _check_kw("trait") or _check_kw("namespace"):
-		var cd: GateAST.ClassDecl = _parse_class_like()
+		var cd: GateAST._ClassDecl = _parse_class_like()
 		if cd != null:
 			cd.annotations = annotations
 			cd.is_abstract = is_abstract
 		return cd
 
 	if _cur().type == GateLexer.T.KEYWORD and _looks_like_func_type_decl():
-		var vd3: GateAST.VarDecl = _parse_typed_decl()
+		var vd3: GateAST._VarDecl = _parse_typed_decl()
 		if vd3 != null:
 			vd3.annotations = annotations
 			vd3.visibility = visibility
@@ -190,7 +190,7 @@ func _parse_member() -> GateAST.Stmt:
 		return vd3
 
 	if _check_kw("func") or _check_kw("operator"):
-		var fd: GateAST.FuncDecl = _parse_func()
+		var fd: GateAST._FuncDecl = _parse_func()
 		if fd != null:
 			fd.annotations = annotations
 			fd.visibility = visibility
@@ -202,27 +202,27 @@ func _parse_member() -> GateAST.Stmt:
 		return fd
 
 	if _check_kw("signal"):
-		var sd: GateAST.SignalDecl = _parse_signal()
+		var sd: GateAST._SignalDecl = _parse_signal()
 		if sd != null:
-			(sd as GateAST.SignalDecl).annotations = annotations
+			(sd as GateAST._SignalDecl).annotations = annotations
 		return sd
 
 	if _check_kw("enum"):
-		var ed: GateAST.EnumDecl = _parse_enum()
+		var ed: GateAST._EnumDecl = _parse_enum()
 		if ed != null:
-			(ed as GateAST.EnumDecl).annotations = annotations
+			(ed as GateAST._EnumDecl).annotations = annotations
 		return ed
 
 	if _check_kw("var") or _check_kw("const"):
 		_leftover = -1
-		var vd: GateAST.VarDecl = _parse_var_decl(true)
+		var vd: GateAST._VarDecl = _parse_var_decl(true)
 		if vd != null:
 			vd.annotations = annotations
 			vd.visibility = visibility
 			vd.is_static = is_static
 			return vd
 		if _leftover >= 0 and _starts_a_second_statement(_leftover):
-			var lt: GateLexer.Token = _toks[_leftover]
+			var lt: GateLexer._Token = _toks[_leftover]
 			diagnostics.error("expected the end of the statement, found '%s'" % lt.value,
 				lt.line, lt.col,
 				"GDScript takes one statement per line; separate two with `;` or a line break. "
@@ -231,7 +231,7 @@ func _parse_member() -> GateAST.Stmt:
 			_skip_to_statement_end()
 			return null
 		_skip_to_statement_end()
-		var vraw: GateAST.RawStmt = _raw_from(start_line, maxi(_cur().line, start_line))
+		var vraw: GateAST._RawStmt = _raw_from(start_line, maxi(_cur().line, start_line))
 		return vraw
 
 	if _cur().type == GateLexer.T.IDENT and _at_type_alias():
@@ -239,7 +239,7 @@ func _parse_member() -> GateAST.Stmt:
 		return _parse_type_alias()
 
 	if _looks_like_typed_decl() or (_cur().type == GateLexer.T.OP and _looks_like_paren_type_decl()):
-		var vd2: GateAST.VarDecl = _parse_typed_decl()
+		var vd2: GateAST._VarDecl = _parse_typed_decl()
 		if vd2 != null:
 			vd2.annotations = annotations
 			vd2.visibility = visibility
@@ -254,7 +254,7 @@ func _parse_member() -> GateAST.Stmt:
 		return null
 
 	_skip_to_statement_end()
-	var raw: GateAST.RawStmt = _raw_from(start_line, maxi(_cur().line, start_line))
+	var raw: GateAST._RawStmt = _raw_from(start_line, maxi(_cur().line, start_line))
 	return raw
 
 
@@ -270,7 +270,7 @@ func _reject_method_modifiers(is_final: bool, is_virtual: bool, is_override: boo
 			_err("`%s` applies to a method" % pair[1], hint)
 
 
-func _raw_block() -> GateAST.RawStmt:
+func _raw_block() -> GateAST._RawStmt:
 	var start_line: int = _toks[_i + 1].line if _i + 1 < _toks.size() else _cur().line
 	var end_line: int = start_line
 	var depth: int = 0
@@ -322,7 +322,7 @@ const ABSTRACT_TARGETS := ["class", "struct", "interface", "trait", "namespace",
 func _abstract_is_modifier() -> bool:
 	var j: int = _i + 1
 	while j < _toks.size():
-		var t: GateLexer.Token = _toks[j]
+		var t: GateLexer._Token = _toks[j]
 		if t.type != GateLexer.T.KEYWORD:
 			return false
 		if t.value in ABSTRACT_TARGETS:
@@ -333,9 +333,9 @@ func _abstract_is_modifier() -> bool:
 	return false
 
 
-func _parse_class_like() -> GateAST.ClassDecl:
-	var kw: GateLexer.Token = _advance()
-	var cd: GateAST.ClassDecl = GateAST.ClassDecl.new()
+func _parse_class_like() -> GateAST._ClassDecl:
+	var kw: GateLexer._Token = _advance()
+	var cd: GateAST._ClassDecl = GateAST._ClassDecl.new()
 	cd.form = kw.value
 	cd.at(kw.line, kw.col)
 
@@ -378,9 +378,9 @@ func _parse_class_like() -> GateAST.ClassDecl:
 	return cd
 
 
-func _parse_func() -> GateAST.FuncDecl:
-	var kw: GateLexer.Token = _advance()  # func | operator
-	var fd: GateAST.FuncDecl = GateAST.FuncDecl.new()
+func _parse_func() -> GateAST._FuncDecl:
+	var kw: GateLexer._Token = _advance()  # func | operator
+	var fd: GateAST._FuncDecl = GateAST._FuncDecl.new()
 	fd.at(kw.line, kw.col)
 
 	if kw.value == "operator":
@@ -448,9 +448,9 @@ func _op_ident(sym: String) -> String:
 	return MAP.get(sym, "op")
 
 
-func _parse_signal() -> GateAST.SignalDecl:
-	var kw: GateLexer.Token = _advance()
-	var sd: GateAST.SignalDecl = GateAST.SignalDecl.new()
+func _parse_signal() -> GateAST._SignalDecl:
+	var kw: GateLexer._Token = _advance()
+	var sd: GateAST._SignalDecl = GateAST._SignalDecl.new()
 	sd.at(kw.line, kw.col)
 	if _at_name():
 		sd.name = _advance().value
@@ -460,9 +460,9 @@ func _parse_signal() -> GateAST.SignalDecl:
 	return sd
 
 
-func _parse_enum() -> GateAST.EnumDecl:
-	var kw: GateLexer.Token = _advance()
-	var ed: GateAST.EnumDecl = GateAST.EnumDecl.new()
+func _parse_enum() -> GateAST._EnumDecl:
+	var kw: GateLexer._Token = _advance()
+	var ed: GateAST._EnumDecl = GateAST._EnumDecl.new()
 	ed.at(kw.line, kw.col)
 	if _at_name():
 		ed.name = _advance().value
@@ -490,10 +490,10 @@ func _parse_enum() -> GateAST.EnumDecl:
 	return ed
 
 
-func _parse_var_decl(strict_end := false) -> GateAST.VarDecl:
+func _parse_var_decl(strict_end := false) -> GateAST._VarDecl:
 	var entry: int = _i
-	var kw: GateLexer.Token = _advance()  # var | const
-	var vd: GateAST.VarDecl = GateAST.VarDecl.new()
+	var kw: GateLexer._Token = _advance()  # var | const
+	var vd: GateAST._VarDecl = GateAST._VarDecl.new()
 	vd.at(kw.line, kw.col)
 	vd.is_const = kw.value == "const"
 
@@ -533,8 +533,8 @@ func _parse_var_decl(strict_end := false) -> GateAST.VarDecl:
 	_parse_accessors(vd)
 	# An accessor block and a block-bodied lambda both consume past the declaration
 	# line, so neither counts as leftover tokens.
-	var value_took_a_block: bool = (vd.value is GateAST.Lambda
-		and (vd.value as GateAST.Lambda).block_body)
+	var value_took_a_block: bool = (vd.value is GateAST._Lambda
+		and (vd.value as GateAST._Lambda).block_body)
 	if (strict_end and vd.setter == "" and vd.inline_accessors == ""
 			and not value_took_a_block
 			and not _at_stmt_end() and not _check_op(";")):
@@ -544,7 +544,7 @@ func _parse_var_decl(strict_end := false) -> GateAST.VarDecl:
 	return vd
 
 
-func _parse_accessors(vd: GateAST.VarDecl) -> void:
+func _parse_accessors(vd: GateAST._VarDecl) -> void:
 	if _check_op(":"):
 		var start: int = _cur().line
 		var colon_col: int = _cur().col
@@ -584,9 +584,9 @@ func _parse_accessors(vd: GateAST.VarDecl) -> void:
 			_i = save
 
 
-func _parse_typed_decl() -> GateAST.VarDecl:
-	var start: GateLexer.Token = _cur()
-	var vd: GateAST.VarDecl = GateAST.VarDecl.new()
+func _parse_typed_decl() -> GateAST._VarDecl:
+	var start: GateLexer._Token = _cur()
+	var vd: GateAST._VarDecl = GateAST._VarDecl.new()
 	vd.at(start.line, start.col)
 	vd.type = _parse_type()
 	vd.type.strict = true
@@ -622,7 +622,7 @@ func _parse_typed_decl() -> GateAST.VarDecl:
 	_parse_accessors(vd)
 
 	for n in extra_names:
-		var clone: GateAST.VarDecl = GateAST.VarDecl.new()
+		var clone: GateAST._VarDecl = GateAST._VarDecl.new()
 		clone.at(vd.line, vd.col)
 		clone.name = n
 		clone.type = vd.type
@@ -638,7 +638,7 @@ func _parse_block(is_class_body: bool) -> Array:
 	var out: Array = []
 	if _block_depth >= MAX_BLOCK_DEPTH:
 		if not _depth_reported:
-			var bt: GateLexer.Token = _cur()
+			var bt: GateLexer._Token = _cur()
 			diagnostics.error(
 				"blocks nest more than %d levels deep" % MAX_BLOCK_DEPTH, bt.line, bt.col,
 				"GATE's parser is written in GDScript and recurses once per level, so it "
@@ -665,7 +665,7 @@ func _parse_block_body(is_class_body: bool) -> Array:
 		if _check(GateLexer.T.DEDENT) or _at_end():
 			break
 		var before: int = diagnostics.error_count()
-		var s: GateAST.Stmt = _parse_member() if is_class_body else _parse_statement()
+		var s: GateAST._Stmt = _parse_member() if is_class_body else _parse_statement()
 		if s != null:
 			out.append(s)
 		_drain_extras(out)
@@ -674,7 +674,7 @@ func _parse_block_body(is_class_body: bool) -> Array:
 			if _at_stmt_end():
 				break
 			var before2: int = diagnostics.error_count()
-			var s2: GateAST.Stmt = _parse_member() if is_class_body else _parse_statement()
+			var s2: GateAST._Stmt = _parse_member() if is_class_body else _parse_statement()
 			if s2 != null:
 				out.append(s2)
 			_drain_extras(out)
@@ -691,7 +691,7 @@ const STATEMENT_STARTERS := ["var", "const", "func", "class", "signal", "enum", 
 
 
 func _starts_a_second_statement(at: int) -> bool:
-	var t: GateLexer.Token = _toks[at]
+	var t: GateLexer._Token = _toks[at]
 	if t.type == GateLexer.T.KEYWORD:
 		return STATEMENT_STARTERS.has(t.value)
 	if t.type in [GateLexer.T.STRING, GateLexer.T.FSTRING, GateLexer.T.NUMBER]:
@@ -741,7 +741,7 @@ func _parse_lambda_inline_body(limit_line: int = 0) -> Array:
 		var saved_col: int = _stmt_col
 		if limit_line == 0:
 			_stmt_col = _cur().col
-		var s: GateAST.Stmt = _parse_statement()
+		var s: GateAST._Stmt = _parse_statement()
 		_stmt_col = saved_col
 		if s != null:
 			out.append(s)
@@ -750,7 +750,7 @@ func _parse_lambda_inline_body(limit_line: int = 0) -> Array:
 		while _match_op(";"):
 			if _at_stmt_end():
 				break
-			var s2: GateAST.Stmt = _parse_statement()
+			var s2: GateAST._Stmt = _parse_statement()
 			if s2 != null:
 				out.append(s2)
 		if _at_end() or _check(GateLexer.T.NEWLINE) or _check(GateLexer.T.DEDENT):
@@ -774,13 +774,13 @@ func _parse_lambda_inline_body(limit_line: int = 0) -> Array:
 
 func _parse_inline_body() -> Array:
 	var out: Array = []
-	var s: GateAST.Stmt = _parse_statement()
+	var s: GateAST._Stmt = _parse_statement()
 	if s != null:
 		out.append(s)
 	while _match_op(";"):
 		if _at_stmt_end():
 			break
-		var s2: GateAST.Stmt = _parse_statement()
+		var s2: GateAST._Stmt = _parse_statement()
 		if s2 != null:
 			out.append(s2)
 	return out
@@ -796,7 +796,7 @@ func _starts_declaration() -> bool:
 	return _looks_like_typed_decl()
 
 
-func _parse_statement() -> GateAST.Stmt:
+func _parse_statement() -> GateAST._Stmt:
 	_skip_newlines()
 	if _at_end() or _check(GateLexer.T.DEDENT):
 		return null
@@ -804,8 +804,8 @@ func _parse_statement() -> GateAST.Stmt:
 	var start_line: int = _cur().line
 
 	if _check(GateLexer.T.COMMENT):
-		var c: GateAST.CommentStmt = GateAST.CommentStmt.new()
-		var ct: GateLexer.Token = _advance()
+		var c: GateAST._CommentStmt = GateAST._CommentStmt.new()
+		var ct: GateLexer._Token = _advance()
 		c.text = ct.value
 		c.at(ct.line, ct.col)
 		return c
@@ -815,17 +815,17 @@ func _parse_statement() -> GateAST.Stmt:
 		var anns: Array = _parse_annotations()
 		_skip_newlines()
 		if not anns.is_empty() and (_check(GateLexer.T.DEDENT) or _at_end()):
-			var lone_stmt: GateAST.AnnotatedStmt = GateAST.AnnotatedStmt.new()
+			var lone_stmt: GateAST._AnnotatedStmt = GateAST._AnnotatedStmt.new()
 			lone_stmt.at(start_line, 0)
 			lone_stmt.annotations = anns
 			return lone_stmt
 		if _starts_declaration():
 			_i = probe
 			return _parse_member()
-		var inner: GateAST.Stmt = _parse_statement()
+		var inner: GateAST._Stmt = _parse_statement()
 		if inner == null:
 			return null
-		var wrapped: GateAST.AnnotatedStmt = GateAST.AnnotatedStmt.new()
+		var wrapped: GateAST._AnnotatedStmt = GateAST._AnnotatedStmt.new()
 		wrapped.at(inner.line, inner.col)
 		wrapped.annotations = anns
 		wrapped.stmt = inner
@@ -836,24 +836,24 @@ func _parse_statement() -> GateAST.Stmt:
 	if _check_kw("while"): return _parse_while()
 	if _check_kw("match") and _match_starts_a_statement(): return _parse_match()
 	if _check_kw("return"):
-		var kw: GateLexer.Token = _advance()
-		var r: GateAST.ReturnStmt = GateAST.ReturnStmt.new()
+		var kw: GateLexer._Token = _advance()
+		var r: GateAST._ReturnStmt = GateAST._ReturnStmt.new()
 		r.at(kw.line, kw.col)
 		if not _at_stmt_end() and _cur().line == kw.line:
 			r.value = _parse_expr()
 		return r
 	if _check_kw("pass") or _check_kw("break") or _check_kw("continue") or _check_kw("breakpoint"):
-		var k: GateLexer.Token = _advance()
-		var ss: GateAST.SimpleStmt = GateAST.SimpleStmt.new()
+		var k: GateLexer._Token = _advance()
+		var ss: GateAST._SimpleStmt = GateAST._SimpleStmt.new()
 		ss.keyword = k.value
 		ss.at(k.line, k.col)
 		return ss
 	if _check_kw("var") or _check_kw("const"):
 		if _peek(1).is_op("["):
 			return _parse_destructure()
-		var vd: GateAST.VarDecl = _parse_var_decl()
+		var vd: GateAST._VarDecl = _parse_var_decl()
 		if vd == null:
-			var raw: GateAST.RawStmt = _raw_from(start_line, _cur().line)
+			var raw: GateAST._RawStmt = _raw_from(start_line, _cur().line)
 			_skip_to_statement_end()
 			return raw
 		return vd
@@ -876,7 +876,7 @@ func _parse_statement() -> GateAST.Stmt:
 func _line_start_col(idx: int) -> int:
 	var j: int = idx
 	while j > 0:
-		var prev: GateLexer.Token = _toks[j - 1]
+		var prev: GateLexer._Token = _toks[j - 1]
 		if prev.line != _toks[idx].line:
 			break
 		if prev.type in [GateLexer.T.NEWLINE, GateLexer.T.INDENT, GateLexer.T.DEDENT]:
@@ -885,10 +885,10 @@ func _line_start_col(idx: int) -> int:
 	return _toks[j].col
 
 
-func _parse_if() -> GateAST.IfStmt:
+func _parse_if() -> GateAST._IfStmt:
 	var anchor_col: int = _line_start_col(_i)
-	var kw: GateLexer.Token = _advance()
-	var st: GateAST.IfStmt = GateAST.IfStmt.new()
+	var kw: GateLexer._Token = _advance()
+	var st: GateAST._IfStmt = GateAST._IfStmt.new()
 	st.at(kw.line, kw.col)
 	st.cond = _parse_expr()
 	_expect_op(":", "after the condition")
@@ -901,7 +901,7 @@ func _parse_if() -> GateAST.IfStmt:
 			break
 		if _check_kw("elif"):
 			_advance()
-			var c: GateAST.Expr = _parse_expr()
+			var c: GateAST._Expr = _parse_expr()
 			_expect_op(":", "after the condition")
 			st.elifs.append([c, _parse_body_after_colon(kw)])
 		elif _check_kw("else"):
@@ -915,7 +915,7 @@ func _parse_if() -> GateAST.IfStmt:
 	return st
 
 
-func _parse_body_after_colon(owner: GateLexer.Token = null) -> Array:
+func _parse_body_after_colon(owner: GateLexer._Token = null) -> Array:
 	if _check(GateLexer.T.COMMENT):
 		_advance()
 	if _check(GateLexer.T.NEWLINE):
@@ -937,14 +937,14 @@ func _parse_bracketed_block(owner_col: int) -> Array:
 		var before: int = _i
 		var saved_col: int = _stmt_col
 		_stmt_col = _cur().col
-		var st: GateAST.Stmt = _parse_statement()
+		var st: GateAST._Stmt = _parse_statement()
 		_stmt_col = saved_col
 		if st != null:
 			out.append(st)
 		while _match_op(";"):
 			if _at_stmt_end():
 				break
-			var st2: GateAST.Stmt = _parse_statement()
+			var st2: GateAST._Stmt = _parse_statement()
 			if st2 != null:
 				out.append(st2)
 		if _i == before:
@@ -952,9 +952,9 @@ func _parse_bracketed_block(owner_col: int) -> Array:
 	return out
 
 
-func _parse_for() -> GateAST.ForStmt:
-	var kw: GateLexer.Token = _advance()
-	var st: GateAST.ForStmt = GateAST.ForStmt.new()
+func _parse_for() -> GateAST._ForStmt:
+	var kw: GateLexer._Token = _advance()
+	var st: GateAST._ForStmt = GateAST._ForStmt.new()
 	st.at(kw.line, kw.col)
 	if _at_name():
 		st.var_names.append(_advance().value)
@@ -966,18 +966,18 @@ func _parse_for() -> GateAST.ForStmt:
 	if not _match_kw("in"):
 		_err("expected 'in' in a for loop")
 	st.iterable = _parse_expr()
-	if st.iterable is GateAST.Call:
-		var c: GateAST.Call = st.iterable
-		if c.callee is GateAST.Ident and (c.callee as GateAST.Ident).name == "enumerate":
+	if st.iterable is GateAST._Call:
+		var c: GateAST._Call = st.iterable
+		if c.callee is GateAST._Ident and (c.callee as GateAST._Ident).name == "enumerate":
 			st.is_enumerate = true
 	_expect_op(":", "after the for header")
 	st.body = _parse_body_after_colon(kw)
 	return st
 
 
-func _parse_while() -> GateAST.WhileStmt:
-	var kw: GateLexer.Token = _advance()
-	var st: GateAST.WhileStmt = GateAST.WhileStmt.new()
+func _parse_while() -> GateAST._WhileStmt:
+	var kw: GateLexer._Token = _advance()
+	var st: GateAST._WhileStmt = GateAST._WhileStmt.new()
 	st.at(kw.line, kw.col)
 	st.cond = _parse_expr()
 	_expect_op(":", "after the condition")
@@ -986,16 +986,16 @@ func _parse_while() -> GateAST.WhileStmt:
 
 
 func _match_starts_a_statement() -> bool:
-	var nxt: GateLexer.Token = _peek(1)
+	var nxt: GateLexer._Token = _peek(1)
 	if nxt.type == GateLexer.T.OP:
 		return not (nxt.value in [".", "?.", "?[", "=", ":=", ",", ")", "]", "}",
 			"+=", "-=", "*=", "/=", "%=", "**=", "&=", "|=", "^=", "<<=", ">>="])
 	return true
 
 
-func _parse_match() -> GateAST.MatchStmt:
-	var kw: GateLexer.Token = _advance()
-	var st: GateAST.MatchStmt = GateAST.MatchStmt.new()
+func _parse_match() -> GateAST._MatchStmt:
+	var kw: GateLexer._Token = _advance()
+	var st: GateAST._MatchStmt = GateAST._MatchStmt.new()
 	st.at(kw.line, kw.col)
 	st.subject = _parse_expr()
 	_expect_op(":", "after the match subject")
@@ -1016,27 +1016,27 @@ func _parse_match() -> GateAST.MatchStmt:
 				break
 			if _check(GateLexer.T.NEWLINE) or _cur().col <= kw.col:
 				break
-		var arm_kw: GateLexer.Token = _cur()
+		var arm_kw: GateLexer._Token = _cur()
 		var patterns: Array = []
 		var type_tests: Array = []
 		patterns.append(_scan_arm_pattern(type_tests))
 		while _match_op(","):
 			patterns.append(_scan_arm_pattern(type_tests))
 		if not type_tests.is_empty() and patterns.size() > 1:
-			var tt: GateAST.IsExpr = type_tests[0]
+			var tt: GateAST._IsExpr = type_tests[0]
 			diagnostics.error(
 				"a type pattern binds a name, and GDScript does not allow bindings in an arm with several patterns",
 				tt.line, tt.col,
 				"give each type its own arm, or bind with `var %s when ...` and test the type in the guard"
-					% (tt.operand as GateAST.Ident).name)
-		var guard: GateAST.Expr = null
+					% (tt.operand as GateAST._Ident).name)
+		var guard: GateAST._Expr = null
 		if _match_kw("when"):
 			guard = _parse_expr()
 		if not type_tests.is_empty():
 			if guard == null:
 				guard = type_tests[0]
 			else:
-				var both: GateAST.Binary = GateAST.Binary.new()
+				var both: GateAST._Binary = GateAST._Binary.new()
 				both.at(guard.line, guard.col)
 				both.op = "and"
 				both.left = type_tests[0]
@@ -1052,31 +1052,31 @@ func _parse_match() -> GateAST.MatchStmt:
 
 
 ## `Circle c` becomes `var c`, and `c is Circle` goes into the arm's guard.
-func _scan_arm_pattern(type_tests: Array) -> GateAST.Expr:
+func _scan_arm_pattern(type_tests: Array) -> GateAST._Expr:
 	if not _type_pattern_ahead():
 		return _scan_pattern()
-	var start: GateLexer.Token = _cur()
+	var start: GateLexer._Token = _cur()
 	var saw_nullable: bool = _saw_nullable
-	var tr: GateAST.TypeRef = _parse_type()
+	var tr: GateAST._TypeRef = _parse_type()
 	_saw_nullable = saw_nullable
 	if not tr.generic_args.is_empty():
 		_generic_uses.append(tr)
-	var name_tok: GateLexer.Token = _advance()
+	var name_tok: GateLexer._Token = _advance()
 	if tr.nullable:
 		diagnostics.error("a type pattern never matches null, so it cannot be nullable",
 			start.line, start.col,
 			"write `%s %s:`, and give null its own arm if it needs one"
 				% [tr.describe().trim_suffix("?"), name_tok.value])
 		tr.nullable = false
-	var pat: GateAST.TypePattern = GateAST.TypePattern.new()
+	var pat: GateAST._TypePattern = GateAST._TypePattern.new()
 	pat.at(start.line, start.col)
 	pat.text = "var " + name_tok.value
 	pat.bind_name = name_tok.value
 	pat.type = tr
-	var id: GateAST.Ident = GateAST.Ident.new()
+	var id: GateAST._Ident = GateAST._Ident.new()
 	id.at(name_tok.line, name_tok.col)
 	id.name = name_tok.value
-	var test: GateAST.IsExpr = GateAST.IsExpr.new()
+	var test: GateAST._IsExpr = GateAST._IsExpr.new()
 	test.at(start.line, start.col)
 	test.operand = id
 	test.type = tr
@@ -1094,10 +1094,10 @@ func _type_pattern_ahead() -> bool:
 		return false
 	if j + 1 >= n:
 		return false
-	var name_tok: GateLexer.Token = _toks[j]
+	var name_tok: GateLexer._Token = _toks[j]
 	if not _is_name_token(name_tok) or name_tok.is_kw("when"):
 		return false
-	var after: GateLexer.Token = _toks[j + 1]
+	var after: GateLexer._Token = _toks[j + 1]
 	return after.is_op(":") or after.is_op(",") or after.is_kw("when")
 
 
@@ -1105,13 +1105,13 @@ func _pattern_type_end(from: int) -> int:
 	var n: int = _toks.size()
 	if from >= n:
 		return -1
-	var t: GateLexer.Token = _toks[from]
+	var t: GateLexer._Token = _toks[from]
 	var j: int = from + 1
 	if t.is_op("{"):
 		var db: int = 0
 		j = from
 		while j < n:
-			var bt: GateLexer.Token = _toks[j]
+			var bt: GateLexer._Token = _toks[j]
 			if bt.type == GateLexer.T.OP:
 				if bt.value == "{":
 					db += 1
@@ -1136,7 +1136,7 @@ func _pattern_type_end(from: int) -> int:
 		var dp: int = 0
 		j = from + 1
 		while j < n:
-			var pt: GateLexer.Token = _toks[j]
+			var pt: GateLexer._Token = _toks[j]
 			if pt.type == GateLexer.T.NEWLINE or pt.type == GateLexer.T.EOF:
 				return -1
 			if pt.is_op("("):
@@ -1164,7 +1164,7 @@ func _pattern_type_end(from: int) -> int:
 	while j < n and (_toks[j].is_op("[") or _toks[j].is_op("?[")):
 		var d2: int = 0
 		while j < n:
-			var b: GateLexer.Token = _toks[j]
+			var b: GateLexer._Token = _toks[j]
 			if b.type == GateLexer.T.OP:
 				if b.value == "[" or b.value == "?[":
 					d2 += 1
@@ -1185,13 +1185,13 @@ func _pattern_type_end(from: int) -> int:
 	return j
 
 
-func _scan_pattern() -> GateAST.Expr:
-	var start: GateLexer.Token = _cur()
+func _scan_pattern() -> GateAST._Expr:
+	var start: GateLexer._Token = _cur()
 	var depth: int = 0
-	var prev: GateLexer.Token = null
+	var prev: GateLexer._Token = null
 	while not _at_end():
-		var t: GateLexer.Token = _cur()
-		var before: GateLexer.Token = prev
+		var t: GateLexer._Token = _cur()
+		var before: GateLexer._Token = prev
 		if depth > 0 and prev != null and t.type == GateLexer.T.IDENT \
 			and (prev.type == GateLexer.T.IDENT or prev.is_op(">") or prev.is_op("]")
 				or prev.is_op("?")):
@@ -1214,23 +1214,23 @@ func _scan_pattern() -> GateAST.Expr:
 		elif t.type == GateLexer.T.NEWLINE and depth <= 0:
 			break
 		_advance()
-	var r: GateAST.RawExpr = GateAST.RawExpr.new()
+	var r: GateAST._RawExpr = GateAST._RawExpr.new()
 	r.at(start.line, start.col)
 	r.text = _span_text(start, _cur())
 	return r
 
 
-func _parse_destructure() -> GateAST.Stmt:
-	var kw: GateLexer.Token = _advance()  # var/const
-	var st: GateAST.MultiAssign = GateAST.MultiAssign.new()
+func _parse_destructure() -> GateAST._Stmt:
+	var kw: GateLexer._Token = _advance()  # var/const
+	var st: GateAST._MultiAssign = GateAST._MultiAssign.new()
 	st.at(kw.line, kw.col)
 	st.declares = true
 	st.destructure = true
 	_expect_op("[", "to open the destructuring pattern")
 	while not _at_end() and not _check_op("]"):
 		if _check(GateLexer.T.IDENT):
-			var id: GateAST.Ident = GateAST.Ident.new()
-			var t: GateLexer.Token = _advance()
+			var id: GateAST._Ident = GateAST._Ident.new()
+			var t: GateLexer._Token = _advance()
 			id.name = t.value
 			id.at(t.line, t.col)
 			st.targets.append(id)
@@ -1246,7 +1246,7 @@ func _comma_starts_multi_assign() -> bool:
 	var depth: int = 0
 	var i: int = _i
 	while i < _toks.size():
-		var t: GateLexer.Token = _toks[i]
+		var t: GateLexer._Token = _toks[i]
 		if t.type == GateLexer.T.NEWLINE or t.type == GateLexer.T.EOF or t.type == GateLexer.T.DEDENT:
 			return false
 		if t.type == GateLexer.T.OP:
@@ -1268,7 +1268,7 @@ func _comma_is_enclosed() -> bool:
 	var depth: int = 0
 	var i: int = _i
 	while i < _toks.size():
-		var t: GateLexer.Token = _toks[i]
+		var t: GateLexer._Token = _toks[i]
 		if t.type == GateLexer.T.NEWLINE or t.type == GateLexer.T.EOF or t.type == GateLexer.T.DEDENT:
 			return false
 		if t.type == GateLexer.T.OP:
@@ -1282,10 +1282,10 @@ func _comma_is_enclosed() -> bool:
 	return false
 
 
-func _parse_expression_statement(start_line: int) -> GateAST.Stmt:
-	var first: GateAST.Expr = _parse_expr()
+func _parse_expression_statement(start_line: int) -> GateAST._Stmt:
+	var first: GateAST._Expr = _parse_expr()
 	if first == null:
-		var raw: GateAST.RawStmt = _raw_from(start_line, _cur().line)
+		var raw: GateAST._RawStmt = _raw_from(start_line, _cur().line)
 		_skip_to_statement_end()
 		return raw
 
@@ -1295,7 +1295,7 @@ func _parse_expression_statement(start_line: int) -> GateAST.Stmt:
 			while _match_op(","):
 				targets.append(_parse_expr())
 			if _match_op("="):
-				var st: GateAST.MultiAssign = GateAST.MultiAssign.new()
+				var st: GateAST._MultiAssign = GateAST._MultiAssign.new()
 				st.at(first.line, first.col)
 				st.targets = targets
 				st.values.append(_parse_expr())
@@ -1303,21 +1303,21 @@ func _parse_expression_statement(start_line: int) -> GateAST.Stmt:
 					st.values.append(_parse_expr())
 				return st
 		elif not _comma_is_enclosed():
-			var raw2: GateAST.RawStmt = _raw_from(start_line, _cur().line)
+			var raw2: GateAST._RawStmt = _raw_from(start_line, _cur().line)
 			_skip_to_statement_end()
 			return raw2
 
 	const ASSIGN_OPS := ["=", "+=", "-=", "*=", "/=", "%=", "**=", "&=", "|=", "^=", "<<=", ">>="]
 	if _check(GateLexer.T.OP) and _cur().value in ASSIGN_OPS:
 		var op: String = _advance().value
-		var a: GateAST.AssignStmt = GateAST.AssignStmt.new()
+		var a: GateAST._AssignStmt = GateAST._AssignStmt.new()
 		a.at(first.line, first.col)
 		a.target = first
 		a.op = op
 		a.value = _parse_expr()
 		return a
 
-	var es: GateAST.ExprStmt = GateAST.ExprStmt.new()
+	var es: GateAST._ExprStmt = GateAST._ExprStmt.new()
 	es.at(first.line, first.col)
 	es.expr = first
 	return es

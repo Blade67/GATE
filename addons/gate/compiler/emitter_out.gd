@@ -113,7 +113,7 @@ var _var_types: Dictionary = {}
 var _var_depths: Dictionary = {}
 
 var _struct_ops: Dictionary = {}
-var _class_op_fds: Dictionary = {}   ## class name -> {operator symbol: FuncDecl}, for a class's operators
+var _class_op_fds: Dictionary = {}   ## class name -> {operator symbol: _FuncDecl}, for a class's operators
 
 var _soa: Dictionary = {}
 
@@ -123,10 +123,10 @@ var _stmt_expr = null   ## the expression being emitted as a whole statement
 
 var _external_structs: Dictionary = {}
 
-var _generics: Dictionary = {}          ## name -> ClassDecl with generic_params
+var _generics: Dictionary = {}          ## name -> _ClassDecl with generic_params
 
 var _mono_template: Dictionary = {}   ## monomorphised class name -> its template's name
-var _instantiations: Dictionary = {}    ## mangled name -> [ClassDecl, {param: argname}]
+var _instantiations: Dictionary = {}    ## mangled name -> [_ClassDecl, {param: argname}]
 
 var _subst: Dictionary = {}
 var _subst_depth: Dictionary = {}
@@ -183,12 +183,12 @@ var _fn_locals: Dictionary = {}
 var _tmp_names: Dictionary = {}
 var _plain_fields: Dictionary = {}
 
-var _class_decls: Dictionary = {}       ## key -> ClassDecl (null for ".")
+var _class_decls: Dictionary = {}       ## key -> _ClassDecl (null for ".")
 var _class_parent: Dictionary = {}      ## key -> enclosing key
-var _class_base: Dictionary = {}        ## key -> extends TypeRef, or null
-var _class_funcs: Dictionary = {}       ## key -> {name: [FuncDecl]}
+var _class_base: Dictionary = {}        ## key -> extends _TypeRef, or null
+var _class_funcs: Dictionary = {}       ## key -> {name: [_FuncDecl]}
 var _class_fields: Dictionary = {}      ## key -> {field: true}, constants excluded
-var _class_field_types: Dictionary = {} ## "key#field" -> TypeRef
+var _class_field_types: Dictionary = {} ## "key#field" -> _TypeRef
 var _class_inits: Dictionary = {}       ## key -> _init parameter count, -1 if none
 var _class_priv: Dictionary = {}        ## key -> {name: true} for `priv` members
 var _observable_fields: Dictionary = {} ## "key#field" -> the @observable field's type name

@@ -42,42 +42,42 @@ static func child_names(o: Object) -> PackedStringArray:
 	return out
 
 
-class ASTNode extends RefCounted:
+class _ASTNode extends RefCounted:
 	var line: int = 0
 	var col: int = 0
-	func at(l: int, c: int) -> ASTNode:
+	func at(l: int, c: int) -> _ASTNode:
 		line = l
 		col = c
 		return self
 
 
-class TypeShape extends RefCounted:
+class _TypeShape extends RefCounted:
 	var union_members: Array = []      ## `<int | str>` -> [int, str]
 	var tuple_elems: Array = []        ## `<int, str>` -> [int, str]
 	var is_func_type: bool = false
 	var sig_known: bool = false
-	var callable_params: Array = []    ## Array[TypeRef]; null for an untyped parameter
+	var callable_params: Array = []    ## Array[_TypeRef]; null for an untyped parameter
 	var callable_optional: int = 0     ## trailing parameters that have defaults
 	var callable_rest: bool = false
 
 
-class TypeRef extends ASTNode:
+class _TypeRef extends _ASTNode:
 	var name: String = ""              ## canonical or shorthand base name
 	var array_depth: int = 0           ## `int[][]` -> 2
-	var dict_key: TypeRef = null       ## `{str, int}` -> key/value set
-	var dict_value: TypeRef = null
-	var set_elem: TypeRef = null       ## `{T}` reserved
+	var dict_key: _TypeRef = null      ## `{str, int}` -> key/value set
+	var dict_value: _TypeRef = null
+	var set_elem: _TypeRef = null      ## `{T}` reserved
 	var nullable: bool = false
 	var strict: bool = false
 	var is_path_literal: bool = false
 	var elem_nullable: bool = false
-	var generic_args: Array = []       ## Array[TypeRef]
-	var callable_return: TypeRef = null
-	var shape: TypeShape = null        ## null for every plain type
+	var generic_args: Array = []       ## Array[_TypeRef]
+	var callable_return: _TypeRef = null
+	var shape: _TypeShape = null       ## null for every plain type
 
-	func shaped() -> TypeShape:
+	func shaped() -> _TypeShape:
 		if shape == null:
-			shape = TypeShape.new()
+			shape = _TypeShape.new()
 		return shape
 
 	var union_members:
@@ -161,175 +161,175 @@ class TypeRef extends ASTNode:
 		return s
 
 
-class Expr extends ASTNode:
-	var flow_type: TypeRef = null
+class _Expr extends _ASTNode:
+	var flow_type: _TypeRef = null
 	var narrowed_vector: String = ""   ## an untyped value `is` narrowed to a vector type, for swizzles
 
 
-class Literal extends Expr:
+class _Literal extends _Expr:
 	var raw: String = ""
 	var kind: String = ""              ## "number" | "string" | "bool" | "null"
 
 
-class Ident extends Expr:
+class _Ident extends _Expr:
 	var generic_base: String = ""
-	var generic_type: TypeRef = null   ## `Box<T>` in `Box<T>.new()`, re-mangled per instantiation
+	var generic_type: _TypeRef = null  ## `Box<T>` in `Box<T>.new()`, re-mangled per instantiation
 	var name: String = ""
 
 
-class NodePathExpr extends Expr:
+class _NodePathExpr extends _Expr:
 	var raw: String = ""
 
 
-class SelfExpr extends Expr:
+class _SelfExpr extends _Expr:
 	pass
 
 
-class Unary extends Expr:
+class _Unary extends _Expr:
 	var tight: bool = false
 	var op: String = ""
-	var operand: Expr = null
+	var operand: _Expr = null
 
 
-class Binary extends Expr:
+class _Binary extends _Expr:
 	var op: String = ""
-	var left: Expr = null
-	var right: Expr = null
+	var left: _Expr = null
+	var right: _Expr = null
 
 
-class NullCoalesce extends Expr:
-	var left: Expr = null
-	var right: Expr = null
+class _NullCoalesce extends _Expr:
+	var left: _Expr = null
+	var right: _Expr = null
 
 
-class Ternary extends Expr:
-	var cond: Expr = null
-	var if_true: Expr = null
-	var if_false: Expr = null
+class _Ternary extends _Expr:
+	var cond: _Expr = null
+	var if_true: _Expr = null
+	var if_false: _Expr = null
 
 
-class Member extends Expr:
-	var target: Expr = null
+class _Member extends _Expr:
+	var target: _Expr = null
 	var name: String = ""
 	var safe: bool = false             ## `?.`
 	var member_class: String = ""      ## on a union or a join: the class whose name every type prints
 
 
-class Index extends Expr:
-	var target: Expr = null
-	var index: Expr = null
+class _Index extends _Expr:
+	var target: _Expr = null
+	var index: _Expr = null
 	var safe: bool = false             ## `?[`
 
 
-class Call extends Expr:
-	var callee: Expr = null
-	var args: Array = []               ## Array[Expr]
+class _Call extends _Expr:
+	var callee: _Expr = null
+	var args: Array = []               ## Array[_Expr]
 
 
-class Widen extends Call:
+class _Widen extends _Call:
 	var guards: Array = []
 
 
-class ArrayLit extends Expr:
-	var elements: Array = []           ## Array[Expr]
+class _ArrayLit extends _Expr:
+	var elements: Array = []           ## Array[_Expr]
 
 
-class DictLit extends Expr:
-	var keys: Array = []               ## Array[Expr]
-	var values: Array = []             ## Array[Expr]
+class _DictLit extends _Expr:
+	var keys: Array = []               ## Array[_Expr]
+	var values: Array = []             ## Array[_Expr]
 	var lua_keys: Array = []           ## Array[bool]
 
 
-class Lambda extends Expr:
+class _Lambda extends _Expr:
 	var name: String = ""
-	var params: Array = []             ## Array[Param]
-	var return_type: TypeRef = null
+	var params: Array = []             ## Array[_Param]
+	var return_type: _TypeRef = null
 	var body: Array = []               ## Array[Node] (statements)
 	var is_expression_body: bool = false
-	var expr_body: Expr = null
+	var expr_body: _Expr = null
 	var block_body: bool = false
 
 
-class AwaitExpr extends Expr:
-	var operand: Expr = null
+class _AwaitExpr extends _Expr:
+	var operand: _Expr = null
 
 
-class CastExpr extends Expr:
-	var operand: Expr = null
-	var type: TypeRef = null
+class _CastExpr extends _Expr:
+	var operand: _Expr = null
+	var type: _TypeRef = null
 
 
-class IsExpr extends Expr:
-	var operand: Expr = null
-	var type: TypeRef = null
+class _IsExpr extends _Expr:
+	var operand: _Expr = null
+	var type: _TypeRef = null
 	var negated: bool = false
 
 
-class FString extends Expr:
-	var parts: Array = []              ## alternating: String literals and Expr
+class _FString extends _Expr:
+	var parts: Array = []              ## alternating: String literals and _Expr
 	var quote: String = "\""
 
 
-class ObjectInit extends Expr:
-	var type: TypeRef = null
+class _ObjectInit extends _Expr:
+	var type: _TypeRef = null
 	var keys: Array = []               ## Array[String]
-	var values: Array = []             ## Array[Expr]
+	var values: Array = []             ## Array[_Expr]
 
 
-class RawExpr extends Expr:
+class _RawExpr extends _Expr:
 	var text: String = ""
 
 
-class TypePattern extends RawExpr:
+class _TypePattern extends _RawExpr:
 	var bind_name: String = ""
-	var type: TypeRef = null
+	var type: _TypeRef = null
 
 
-class Stmt extends ASTNode:
+class _Stmt extends _ASTNode:
 	var injected: bool = false         ## generated by GateInject, not written by the user
 
 
-class Param extends ASTNode:
+class _Param extends _ASTNode:
 	var name: String = ""
-	var type: TypeRef = null
-	var default: Expr = null
+	var type: _TypeRef = null
+	var default: _Expr = null
 	var is_rest: bool = false
 	var inferred: bool = false        ## declared with `:=`
 
 
-class VarDecl extends Stmt:
+class _VarDecl extends _Stmt:
 	var name: String = ""
-	var type: TypeRef = null
-	var value: Expr = null
+	var type: _TypeRef = null
+	var value: _Expr = null
 	var is_const: bool = false
 	var is_static: bool = false
 	var is_onready: bool = false
 	var inferred: bool = false         ## declared with `:=`
 	var visibility: String = ""        ## "" | "pub" | "priv"
-	var annotations: Array = []        ## Array[Annotation]
+	var annotations: Array = []        ## Array[_Annotation]
 	var setter: String = ""
 	var setter_line: int = 0
 	var inline_accessors: String = ""
 	var getter: String = ""
 	var accessor_requirement: Array = []
 	var notify_line: int = 0
-	var set_ast: FuncDecl = null
+	var set_ast: _FuncDecl = null
 	var set_span: Array = []
-	var get_ast: FuncDecl = null       ## a `get:` block, parsed as a function body
+	var get_ast: _FuncDecl = null      ## a `get:` block, parsed as a function body
 	var get_span: Array = []
 	var set_forced: bool = false       ## the setter was changed (a notification), so it is compiled
 
 
-class Annotation extends ASTNode:
+class _Annotation extends _ASTNode:
 	var name: String = ""              ## without the '@'
-	var args: Array = []               ## Array[Expr]
+	var args: Array = []               ## Array[_Expr]
 
 
-class FuncDecl extends Stmt:
+class _FuncDecl extends _Stmt:
 	var name: String = ""
-	var params: Array = []             ## Array[Param]
-	var return_type: TypeRef = null
-	var body: Array = []               ## Array[Stmt]
+	var params: Array = []             ## Array[_Param]
+	var return_type: _TypeRef = null
+	var body: Array = []               ## Array[_Stmt]
 	var is_static: bool = false
 	var is_abstract: bool = false
 	var is_virtual: bool = false
@@ -343,33 +343,33 @@ class FuncDecl extends Stmt:
 	var accessor: bool = false         ## a property's get/set block, printed inside the property
 
 
-class TypeAliasDecl extends Stmt:
+class _TypeAliasDecl extends _Stmt:
 	var name: String = ""
-	var target: TypeRef = null
+	var target: _TypeRef = null
 
 
-class SignalDecl extends Stmt:
+class _SignalDecl extends _Stmt:
 	var name: String = ""
 	var params: Array = []
 	var annotations: Array = []
 
 
-class EnumDecl extends Stmt:
+class _EnumDecl extends _Stmt:
 	var name: String = ""
 	var keys: Array = []               ## Array[String]
-	var values: Array = []             ## Array[Expr] (may hold nulls)
+	var values: Array = []             ## Array[_Expr] (may hold nulls)
 	var annotations: Array = []
 
 
-class ClassDecl extends Stmt:
+class _ClassDecl extends _Stmt:
 	var form: String = "class"
 	var name: String = ""
-	var extends_type: TypeRef = null
+	var extends_type: _TypeRef = null
 	var implements: Array = []         ## Array[String]
 	var traits: Array = []             ## Array[String]
 	var requires: Array = []           ## Array[String] (traits only)
 	var generic_params: Array = []     ## Array[String]
-	var members: Array = []            ## Array[Stmt]
+	var members: Array = []            ## Array[_Stmt]
 	var is_abstract: bool = false
 	var annotations: Array = []
 	var lowering: String = ""          ## structs: "vector"|"soa"|"scalar"|"class"
@@ -377,81 +377,81 @@ class ClassDecl extends Stmt:
 	var interface_names: Array = []    ## flattened
 
 
-class IfStmt extends Stmt:
-	var cond: Expr = null
+class _IfStmt extends _Stmt:
+	var cond: _Expr = null
 	var then_body: Array = []
-	var elifs: Array = []              ## Array[[Expr, Array]]
+	var elifs: Array = []              ## Array[[_Expr, Array]]
 	var else_body: Array = []
 	var else_line: int = 0                 ## the `else` keyword's own line
 
 
-class ForStmt extends Stmt:
+class _ForStmt extends _Stmt:
 	var var_names: Array = []          ## 1 = normal, 2 = `for k, v in dict`
-	var var_type: TypeRef = null
-	var iterable: Expr = null
+	var var_type: _TypeRef = null
+	var iterable: _Expr = null
 	var body: Array = []
 	var is_enumerate: bool = false     ## `for i, x in enumerate(y)`
 
 
-class WhileStmt extends Stmt:
-	var cond: Expr = null
+class _WhileStmt extends _Stmt:
+	var cond: _Expr = null
 	var body: Array = []
 
 
-class MatchStmt extends Stmt:
-	var subject: Expr = null
-	var branches: Array = []           ## Array[[Array patterns, Expr guard, Array body]]
+class _MatchStmt extends _Stmt:
+	var subject: _Expr = null
+	var branches: Array = []           ## Array[[Array patterns, _Expr guard, Array body]]
 
 
-class AnnotatedStmt extends Stmt:
-	var annotations: Array = []        ## Array[Annotation]
-	var stmt: Stmt = null
+class _AnnotatedStmt extends _Stmt:
+	var annotations: Array = []        ## Array[_Annotation]
+	var stmt: _Stmt = null
 
 
-class ReturnStmt extends Stmt:
-	var value: Expr = null
+class _ReturnStmt extends _Stmt:
+	var value: _Expr = null
 
 
-class SimpleStmt extends Stmt:
+class _SimpleStmt extends _Stmt:
 	var keyword: String = ""           ## "pass" | "break" | "continue" | "breakpoint"
 
 
-class ExprStmt extends Stmt:
-	var expr: Expr = null
+class _ExprStmt extends _Stmt:
+	var expr: _Expr = null
 
 
-class AssignStmt extends Stmt:
-	var target: Expr = null
+class _AssignStmt extends _Stmt:
+	var target: _Expr = null
 	var op: String = "="               ## "=", "+=", ...
-	var value: Expr = null
+	var value: _Expr = null
 
 
-class MultiAssign extends Stmt:
-	var targets: Array = []            ## Array[Expr] or names when declaring
-	var values: Array = []             ## Array[Expr]; single value = destructure
+class _MultiAssign extends _Stmt:
+	var targets: Array = []            ## Array[_Expr] or names when declaring
+	var values: Array = []             ## Array[_Expr]; single value = destructure
 	var declares: bool = false
 	var destructure: bool = false
 
 
-class RawStmt extends Stmt:
+class _RawStmt extends _Stmt:
 	var text: String = ""
 
 
-class CommentStmt extends Stmt:
+class _CommentStmt extends _Stmt:
 	var text: String = ""
 
 
-class Module extends ASTNode:
+class _Module extends _ASTNode:
 	var path: String = ""
 	var class_name_decl: String = ""
 	var class_name_line: int = 1
 	var extends_line: int = 1
-	var extends_type: TypeRef = null
+	var extends_type: _TypeRef = null
 	var icon: String = ""
 	var is_tool: bool = false
-	var members: Array = []            ## Array[Stmt]
+	var members: Array = []            ## Array[_Stmt]
 	var header_annotations: Array = []
 	var uses_nullable: bool = false
-	var generic_uses: Array = []       ## Array[TypeRef]
+	var generic_uses: Array = []       ## Array[_TypeRef]
 	var has_aliases: bool = false      ## any `type X = ...`, at any depth
 	var uses_gate_types: bool = false  ## any union, tuple or `func(...)` type

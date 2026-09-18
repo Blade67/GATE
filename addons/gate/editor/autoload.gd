@@ -47,14 +47,14 @@ static func source_of(path: String) -> String:
 	return path if FileAccess.file_exists(path) else ""
 
 
-static func module(path: String, reg: RefCounted) -> GateAST.Module:
+static func module(path: String, reg: RefCounted) -> GateAST._Module:
 	if not FileAccess.file_exists(path):
 		return null
 	var text: String = FileAccess.get_file_as_string(path)
 	var hit: Array = _parsed.get(path, [])
 	if not hit.is_empty() and int(hit[0]) == reg.get_instance_id() and String(hit[1]) == text:
 		return hit[2]
-	var parsed: GateAST.Module = Index.module_for(text, path, reg)
+	var parsed: GateAST._Module = Index.module_for(text, path, reg)
 	_parsed[path] = [reg.get_instance_id(), text, parsed]
 	return parsed
 

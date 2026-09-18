@@ -3,7 +3,7 @@ class_name GateCompiler
 extends RefCounted
 
 
-class Result extends RefCounted:
+class _Result extends RefCounted:
 	var ok: bool = false
 	var source: String = ""
 	var map: Array[int] = []
@@ -109,7 +109,7 @@ static func lines_inside_strings(text: String) -> Dictionary:
 const MAX_TREE_DEPTH := 180
 
 
-static func too_deep(members: Array, limit: int) -> GateAST.ASTNode:
+static func too_deep(members: Array, limit: int) -> GateAST._ASTNode:
 	var items: Array = [members]
 	var depths: PackedInt32Array = PackedInt32Array([0])
 	var roots: Array = [null]
@@ -127,9 +127,9 @@ static func too_deep(members: Array, limit: int) -> GateAST.ASTNode:
 				depths.append(d)
 				roots.append(root)
 			continue
-		if not (n is GateAST.ASTNode) or n is GateAST.TypeRef:
+		if not (n is GateAST._ASTNode) or n is GateAST._TypeRef:
 			continue
-		if root == null and n is GateAST.Expr:
+		if root == null and n is GateAST._Expr:
 			root = n
 		if root != null:
 			d += 1
@@ -144,41 +144,41 @@ static func too_deep(members: Array, limit: int) -> GateAST.ASTNode:
 	return null
 
 
-static func _expression_start(e: GateAST.Expr) -> GateAST.Expr:
-	var cur: GateAST.Expr = e
+static func _expression_start(e: GateAST._Expr) -> GateAST._Expr:
+	var cur: GateAST._Expr = e
 	while true:
-		var nxt: GateAST.Expr = null
-		if cur is GateAST.Binary:
-			nxt = (cur as GateAST.Binary).left
-		elif cur is GateAST.NullCoalesce:
-			nxt = (cur as GateAST.NullCoalesce).left
-		elif cur is GateAST.Ternary:
-			nxt = (cur as GateAST.Ternary).if_true
-		elif cur is GateAST.Member:
-			nxt = (cur as GateAST.Member).target
-		elif cur is GateAST.Index:
-			nxt = (cur as GateAST.Index).target
-		elif cur is GateAST.Call:
-			nxt = (cur as GateAST.Call).callee
-		elif cur is GateAST.CastExpr:
-			nxt = (cur as GateAST.CastExpr).operand
+		var nxt: GateAST._Expr = null
+		if cur is GateAST._Binary:
+			nxt = (cur as GateAST._Binary).left
+		elif cur is GateAST._NullCoalesce:
+			nxt = (cur as GateAST._NullCoalesce).left
+		elif cur is GateAST._Ternary:
+			nxt = (cur as GateAST._Ternary).if_true
+		elif cur is GateAST._Member:
+			nxt = (cur as GateAST._Member).target
+		elif cur is GateAST._Index:
+			nxt = (cur as GateAST._Index).target
+		elif cur is GateAST._Call:
+			nxt = (cur as GateAST._Call).callee
+		elif cur is GateAST._CastExpr:
+			nxt = (cur as GateAST._CastExpr).operand
 		if nxt == null:
 			return cur
 		cur = nxt
 	return cur
 
 
-func compile(src_in: String, path: String, registry = null) -> Result:
+func compile(src_in: String, path: String, registry = null) -> _Result:
 	# Normalise line endings once, before anything reads the text. Constructs
 	# re-emitted as raw source would otherwise carry a bare CR into the output.
 	var src: String = src_in.replace("\r\n", "\n").replace("\r", "\n")
-	var res: Result = Result.new()
+	var res: _Result = _Result.new()
 	var diags: GateDiagnostics = GateDiagnostics.new()
 	diags.file = path
 	res.diagnostics = diags
 
 	var lexer: GateLexer = GateLexer.new()
-	var tokens: Array[GateLexer.Token] = lexer.tokenize(src, diags)
+	var tokens: Array[GateLexer._Token] = lexer.tokenize(src, diags)
 	GateTypes.shadow_declared(tokens, registry.script_class_names if registry != null else {})
 
 	var parser: GateParser = GateParser.new()
@@ -188,10 +188,10 @@ func compile(src_in: String, path: String, registry = null) -> Result:
 		if "aliases" in registry:
 			for aname in registry.aliases:
 				parser.known_aliases[aname] = true
-	var mod: GateAST.Module = parser.parse(tokens, src, diags)
+	var mod: GateAST._Module = parser.parse(tokens, src, diags)
 	mod.path = path
 	GateInject.expand_accessors(mod.members)
-	var deep: GateAST.ASTNode = too_deep(mod.members, MAX_TREE_DEPTH)
+	var deep: GateAST._ASTNode = too_deep(mod.members, MAX_TREE_DEPTH)
 	if deep != null:
 		diags.error("expression nests deeper than %d levels" % MAX_TREE_DEPTH, deep.line, deep.col,
 			"GATE's passes are written in GDScript and walk the tree once per level, so they "
@@ -245,13 +245,13 @@ func compile(src_in: String, path: String, registry = null) -> Result:
 	return res
 
 
-func _build_overload_map(mod: GateAST.Module) -> Dictionary:
+func _build_overload_map(mod: GateAST._Module) -> Dictionary:
 	var map: Dictionary = {}
 	_scan_overloads(mod.members, map, "")
 	return map
 
 
-func _build_overload_owners(mod: GateAST.Module) -> Dictionary:
+func _build_overload_owners(mod: GateAST._Module) -> Dictionary:
 	var owners: Dictionary = {}
 	_scan_overload_owners(mod.members, owners, "")
 	return owners
@@ -259,29 +259,29 @@ func _build_overload_owners(mod: GateAST.Module) -> Dictionary:
 
 func _scan_overload_owners(members: Array, owners: Dictionary, owner: String) -> void:
 	for m in members:
-		if m is GateAST.FuncDecl:
-			var fd: GateAST.FuncDecl = m
+		if m is GateAST._FuncDecl:
+			var fd: GateAST._FuncDecl = m
 			if fd.mangled_name != "":
 				if not owners.has(fd.name):
 					owners[fd.name] = {}
 				owners[fd.name][owner] = true
-		elif m is GateAST.ClassDecl:
-			var cd: GateAST.ClassDecl = m
+		elif m is GateAST._ClassDecl:
+			var cd: GateAST._ClassDecl = m
 			_scan_overload_owners(cd.members, owners, cd.name)
 
 
 func _scan_overloads(members: Array, map: Dictionary, _owner: String) -> void:
 	for m in members:
-		if m is GateAST.FuncDecl:
-			var fd: GateAST.FuncDecl = m
+		if m is GateAST._FuncDecl:
+			var fd: GateAST._FuncDecl = m
 			if fd.mangled_name != "":
 				if not map.has(fd.name):
 					map[fd.name] = {}
 				var rest: bool = (not fd.params.is_empty()
-					and (fd.params[fd.params.size() - 1] as GateAST.Param).is_rest)
+					and (fd.params[fd.params.size() - 1] as GateAST._Param).is_rest)
 				map[fd.name][GateChecker.REST_ARITY if rest else fd.params.size()] = fd.mangled_name
-		elif m is GateAST.ClassDecl:
-			_scan_overloads((m as GateAST.ClassDecl).members, map, (m as GateAST.ClassDecl).name)
+		elif m is GateAST._ClassDecl:
+			_scan_overloads((m as GateAST._ClassDecl).members, map, (m as GateAST._ClassDecl).name)
 
 
 static func _registry_overloads(registry, path: String, map: Dictionary, owners: Dictionary) -> void:
@@ -297,11 +297,11 @@ static func _registry_overloads(registry, path: String, map: Dictionary, owners:
 				else String(registry.script_class_names.get(cname, ""))
 			if origin == path:
 				continue
-			var named: Array = _mangle_overloads((table[cname] as GateAST.ClassDecl).members)
+			var named: Array = _mangle_overloads((table[cname] as GateAST._ClassDecl).members)
 			for pair in named:
-				var fd: GateAST.FuncDecl = pair[0]
+				var fd: GateAST._FuncDecl = pair[0]
 				var rest: bool = (not fd.params.is_empty()
-					and (fd.params[fd.params.size() - 1] as GateAST.Param).is_rest)
+					and (fd.params[fd.params.size() - 1] as GateAST._Param).is_rest)
 				if not map.has(fd.name):
 					map[fd.name] = {}
 				if not (map[fd.name] as Dictionary).has(GateChecker.REST_ARITY if rest else fd.params.size()):
@@ -315,8 +315,8 @@ static func _mangle_overloads(members: Array) -> Array:
 	var by_name: Dictionary = {}
 	var taken: Dictionary = {}
 	for m in members:
-		if m is GateAST.FuncDecl:
-			var fd: GateAST.FuncDecl = m
+		if m is GateAST._FuncDecl:
+			var fd: GateAST._FuncDecl = m
 			if not by_name.has(fd.name):
 				by_name[fd.name] = []
 			by_name[fd.name].append(fd)
@@ -328,9 +328,9 @@ static func _mangle_overloads(members: Array) -> Array:
 			continue
 		var by_arity: Dictionary = {}
 		for f in group:
-			var fd2: GateAST.FuncDecl = f
+			var fd2: GateAST._FuncDecl = f
 			var variadic: bool = (not fd2.params.is_empty()
-				and (fd2.params[fd2.params.size() - 1] as GateAST.Param).is_rest)
+				and (fd2.params[fd2.params.size() - 1] as GateAST._Param).is_rest)
 			var arity: int = GateChecker.REST_ARITY if variadic else fd2.params.size()
 			if by_arity.has(arity):
 				continue

@@ -26,7 +26,7 @@ const GODOT_CONVERTS := {
 }
 
 
-static func godot_converts(from_t: GateAST.TypeRef, to_t: GateAST.TypeRef) -> bool:
+static func godot_converts(from_t: GateAST._TypeRef, to_t: GateAST._TypeRef) -> bool:
 	if from_t == null or to_t == null or from_t.array_depth > 0 or to_t.array_depth > 0:
 		return false
 	var f: String = GateTypes.canonical(from_t.name)
@@ -49,34 +49,34 @@ const PACKED_ARRAYS := {
 }
 
 
-static func null_type() -> GateAST.TypeRef:
-	var t: GateAST.TypeRef = GateAST.TypeRef.new()
+static func null_type() -> GateAST._TypeRef:
+	var t: GateAST._TypeRef = GateAST._TypeRef.new()
 	t.name = "null"
 	return t
 
 
-static func tuple_of(elem_types: Array) -> GateAST.TypeRef:
-	var t: GateAST.TypeRef = GateAST.TypeRef.new()
+static func tuple_of(elem_types: Array) -> GateAST._TypeRef:
+	var t: GateAST._TypeRef = GateAST._TypeRef.new()
 	t.name = "Array"
 	for e in elem_types:
 		t.shaped().tuple_elems.append(e)
 	return t
 
 
-static func holds_null(t: GateAST.TypeRef, infer = null) -> bool:
+static func holds_null(t: GateAST._TypeRef, infer = null) -> bool:
 	if t == null or t.nullable:
 		return true
 	var cat: String = _category(t, infer)
 	return cat == "object" or cat == ""
 
 
-static func describe(t: GateAST.TypeRef) -> String:
+static func describe(t: GateAST._TypeRef) -> String:
 	if t == null:
 		return "Variant"
 	return t.describe()
 
 
-static func assignable(value_t: GateAST.TypeRef, target_t: GateAST.TypeRef, infer = null,
+static func assignable(value_t: GateAST._TypeRef, target_t: GateAST._TypeRef, infer = null,
 		convert: bool = true) -> int:
 	if value_t == null or target_t == null:
 		return UNKNOWN
@@ -106,8 +106,8 @@ static func assignable(value_t: GateAST.TypeRef, target_t: GateAST.TypeRef, infe
 	return _plain(value_t, target_t, infer, convert)
 
 
-static func _into_array(value_t: GateAST.TypeRef, target_t: GateAST.TypeRef, infer, convert: bool) -> int:
-	var te: GateAST.TypeRef = _element(target_t)
+static func _into_array(value_t: GateAST._TypeRef, target_t: GateAST._TypeRef, infer, convert: bool) -> int:
+	var te: GateAST._TypeRef = _element(target_t)
 	if value_t.is_tuple() and value_t.array_depth == 0:
 		var result: int = YES
 		for e in value_t.tuple_elems:
@@ -124,7 +124,7 @@ static func _into_array(value_t: GateAST.TypeRef, target_t: GateAST.TypeRef, inf
 
 
 ## The conversion to write in, if the value widens into exactly one member.
-static func widening(value_t: GateAST.TypeRef, target_t: GateAST.TypeRef, infer = null) -> String:
+static func widening(value_t: GateAST._TypeRef, target_t: GateAST._TypeRef, infer = null) -> String:
 	if value_t == null or target_t == null or value_t.array_depth > 0 or target_t.array_depth > 0:
 		return ""
 	if value_t.is_union() or value_t.is_tuple() or value_t.name == "null":
@@ -142,7 +142,7 @@ static func widening(value_t: GateAST.TypeRef, target_t: GateAST.TypeRef, infer 
 	return "?" if hits.size() > 1 else ""
 
 
-static func member_widenings(value_t: GateAST.TypeRef, target_t: GateAST.TypeRef, infer = null) -> Array:
+static func member_widenings(value_t: GateAST._TypeRef, target_t: GateAST._TypeRef, infer = null) -> Array:
 	var out: Array = []
 	for m in flat_members(value_t):
 		var to: String = widening(m, target_t, infer)
@@ -151,21 +151,21 @@ static func member_widenings(value_t: GateAST.TypeRef, target_t: GateAST.TypeRef
 	return out
 
 
-static func _widens(value_t: GateAST.TypeRef, target_t: GateAST.TypeRef) -> bool:
+static func _widens(value_t: GateAST._TypeRef, target_t: GateAST._TypeRef) -> bool:
 	if target_t.array_depth > 0 or target_t.is_union() or target_t.is_tuple() or target_t.is_dict():
 		return false
 	var vn: String = GateTypes.canonical(value_t.name)
 	return (IMPLICIT.get(vn, []) as Array).has(GateTypes.canonical(target_t.name))
 
 
-static func canonical_name(t: GateAST.TypeRef) -> String:
+static func canonical_name(t: GateAST._TypeRef) -> String:
 	return GateTypes.canonical(t.name)
 
 
-static func flat_members(t: GateAST.TypeRef) -> Array:
+static func flat_members(t: GateAST._TypeRef) -> Array:
 	var out: Array = []
 	for m in t.union_members:
-		var mt: GateAST.TypeRef = m
+		var mt: GateAST._TypeRef = m
 		if mt.is_union() and mt.array_depth == 0:
 			out.append_array(flat_members(mt))
 		else:
@@ -173,7 +173,7 @@ static func flat_members(t: GateAST.TypeRef) -> Array:
 	return out
 
 
-static func _into_func(value_t: GateAST.TypeRef, target_t: GateAST.TypeRef, infer) -> int:
+static func _into_func(value_t: GateAST._TypeRef, target_t: GateAST._TypeRef, infer) -> int:
 	if not (value_t.is_func_type or value_t.sig_known) \
 			or GateTypes.canonical(value_t.name) != "Callable":
 		if value_t.array_depth == 0 and GateTypes.canonical(value_t.name) == "Callable":
@@ -187,7 +187,7 @@ static func _into_func(value_t: GateAST.TypeRef, target_t: GateAST.TypeRef, infe
 		return NO
 	var result: int = YES
 	for i in mini(n, total):
-		var vp: GateAST.TypeRef = value_t.callable_params[i]
+		var vp: GateAST._TypeRef = value_t.callable_params[i]
 		if vp == null:
 			continue   # an untyped parameter takes anything
 		var r: int = assignable(target_t.callable_params[i], vp, infer)
@@ -195,8 +195,8 @@ static func _into_func(value_t: GateAST.TypeRef, target_t: GateAST.TypeRef, infe
 			return NO
 		if r == UNKNOWN:
 			result = UNKNOWN
-	var tr: GateAST.TypeRef = target_t.callable_return
-	var vr: GateAST.TypeRef = value_t.callable_return
+	var tr: GateAST._TypeRef = target_t.callable_return
+	var vr: GateAST._TypeRef = value_t.callable_return
 	if tr == null or GateTypes.canonical(tr.name) == "void":
 		return result
 	if vr == null:
@@ -209,7 +209,7 @@ static func _into_func(value_t: GateAST.TypeRef, target_t: GateAST.TypeRef, infe
 	return UNKNOWN if rr == UNKNOWN else result
 
 
-static func _into_union(value_t: GateAST.TypeRef, target_t: GateAST.TypeRef, infer, convert: bool) -> int:
+static func _into_union(value_t: GateAST._TypeRef, target_t: GateAST._TypeRef, infer, convert: bool) -> int:
 	var any_unknown: bool = false
 	for m in target_t.union_members:
 		var r: int = assignable(value_t, m, infer, convert)
@@ -220,7 +220,7 @@ static func _into_union(value_t: GateAST.TypeRef, target_t: GateAST.TypeRef, inf
 	return UNKNOWN if any_unknown else NO
 
 
-static func _into_tuple(value_t: GateAST.TypeRef, target_t: GateAST.TypeRef, infer, convert: bool) -> int:
+static func _into_tuple(value_t: GateAST._TypeRef, target_t: GateAST._TypeRef, infer, convert: bool) -> int:
 	var cat: String = _category(value_t, infer)
 	if value_t.array_depth != target_t.array_depth:
 		return NO if cat != "" and cat != "array" else UNKNOWN
@@ -238,7 +238,7 @@ static func _into_tuple(value_t: GateAST.TypeRef, target_t: GateAST.TypeRef, inf
 	return result
 
 
-static func _plain(value_t: GateAST.TypeRef, target_t: GateAST.TypeRef, infer, convert: bool = true) -> int:
+static func _plain(value_t: GateAST._TypeRef, target_t: GateAST._TypeRef, infer, convert: bool = true) -> int:
 	var vc: String = _category(value_t, infer)
 	var tc: String = _category(target_t, infer)
 	if vc == "" or tc == "":
@@ -256,8 +256,8 @@ static func _plain(value_t: GateAST.TypeRef, target_t: GateAST.TypeRef, infer, c
 			return NO
 		"array":
 			if value_t.array_depth > 0 and target_t.array_depth > 0:
-				var ve: GateAST.TypeRef = _element(value_t)
-				var te: GateAST.TypeRef = _element(target_t)
+				var ve: GateAST._TypeRef = _element(value_t)
+				var te: GateAST._TypeRef = _element(target_t)
 				var r: int = assignable(ve, te, infer)
 				return YES if r == YES and vn == tn else UNKNOWN
 			return YES if vn == tn and value_t.array_depth == target_t.array_depth \
@@ -267,8 +267,8 @@ static func _plain(value_t: GateAST.TypeRef, target_t: GateAST.TypeRef, infer, c
 	return UNKNOWN
 
 
-static func _element(t: GateAST.TypeRef) -> GateAST.TypeRef:
-	var e: GateAST.TypeRef = GateChecker.copy_type(t)
+static func _element(t: GateAST._TypeRef) -> GateAST._TypeRef:
+	var e: GateAST._TypeRef = GateChecker.copy_type(t)
 	e.array_depth = t.array_depth - 1
 	e.nullable = t.elem_nullable and t.array_depth == 1
 	return e
@@ -321,7 +321,7 @@ static func _chain(cls: String, infer) -> Array:
 	return []
 
 
-static func _category(t: GateAST.TypeRef, infer = null) -> String:
+static func _category(t: GateAST._TypeRef, infer = null) -> String:
 	if t.is_tuple() or t.array_depth > 0:
 		return "array"
 	if t.is_dict():
@@ -355,7 +355,7 @@ static func release_statics() -> void:
 	_object_sample = null
 
 
-static func operator_problem(op: String, left_t: GateAST.TypeRef, right_t: GateAST.TypeRef,
+static func operator_problem(op: String, left_t: GateAST._TypeRef, right_t: GateAST._TypeRef,
 		unary: bool, infer = null) -> String:
 	var ls: Array = _alternatives(left_t)
 	var rs: Array = [null] if unary else _alternatives(right_t)
@@ -368,13 +368,13 @@ static func operator_problem(op: String, left_t: GateAST.TypeRef, right_t: GateA
 	return ""
 
 
-static func _alternatives(t: GateAST.TypeRef) -> Array:
+static func _alternatives(t: GateAST._TypeRef) -> Array:
 	if t != null and t.is_union() and t.array_depth == 0:
 		return flat_members(t)
 	return [t]
 
 
-static func _defined(op: String, l: GateAST.TypeRef, r: GateAST.TypeRef, unary: bool, infer) -> int:
+static func _defined(op: String, l: GateAST._TypeRef, r: GateAST._TypeRef, unary: bool, infer) -> int:
 	var ls: Array = _sample(l, infer)
 	if ls.is_empty():
 		return UNKNOWN
@@ -405,7 +405,7 @@ static func _evaluates(src: String, values: Array) -> bool:
 	return ok
 
 
-static func _sample(t: GateAST.TypeRef, infer) -> Array:
+static func _sample(t: GateAST._TypeRef, infer) -> Array:
 	if t == null:
 		return []
 	if t.array_depth > 0 or t.is_tuple():
@@ -473,6 +473,6 @@ static func _packed_sample(n: String) -> Variant:
 	return PackedInt32Array([1])
 
 
-static func _is_variant(t: GateAST.TypeRef) -> bool:
+static func _is_variant(t: GateAST._TypeRef) -> bool:
 	return t.array_depth == 0 and not t.is_dict() and not t.is_union() and not t.is_tuple() \
 		and (t.name == "" or GateTypes.canonical(t.name) == "Variant")

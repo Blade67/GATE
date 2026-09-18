@@ -7,7 +7,7 @@ extends RefCounted
 enum Level { ERROR, WARNING, INFO }
 
 
-class Diag extends RefCounted:
+class _Diag extends RefCounted:
 	var level: int
 	var message: String
 	var hint: String
@@ -30,7 +30,7 @@ class Diag extends RefCounted:
 			s += "\n    hint: " + hint
 		return s
 
-var items: Array[Diag] = []
+var items: Array[_Diag] = []
 var file: String = "<unknown>"
 var _seen: Dictionary = {}
 
@@ -40,7 +40,7 @@ func _record(level: int, msg: String, line: int, col: int, hint: String) -> void
 	if _seen.has(key):
 		return
 	_seen[key] = true
-	items.append(Diag.new(level, msg, file, line, col, hint))
+	items.append(_Diag.new(level, msg, file, line, col, hint))
 
 var sealed: bool = false
 
@@ -87,7 +87,7 @@ func warning_count() -> int:
 
 
 func sort_by_position() -> void:
-	items.sort_custom(func(a: Diag, b: Diag) -> bool:
+	items.sort_custom(func(a: _Diag, b: _Diag) -> bool:
 		if a.line != b.line:
 			return a.line < b.line
 		if a.col != b.col:

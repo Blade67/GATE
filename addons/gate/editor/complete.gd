@@ -91,7 +91,7 @@ const ANNOTATIONS: Array[String] = [
 ## "the text is identical": see `_same_declarations`.
 static var _cached_text: String = ""
 static var _cached_path: String = ""
-static var _cached_module: GateAST.Module = null
+static var _cached_module: GateAST._Module = null
 
 static var _editing: String = ""
 
@@ -121,7 +121,7 @@ static func complete(code: String, path: String, owner: Object) -> Dictionary:
 	if reg == null:
 		return NOTHING
 	editing(path)
-	var module: GateAST.Module = _module(text, path, reg)
+	var module: GateAST._Module = _module(text, path, reg)
 
 	# `@` starts an annotation and nothing else can follow it.
 	var annotation: int = head.rfind("@")
@@ -143,7 +143,7 @@ static func complete(code: String, path: String, owner: Object) -> Dictionary:
 	return _wrap(_in_scope(module, reg, row + 1))
 
 
-static func _module(text: String, path: String, reg: RefCounted) -> GateAST.Module:
+static func _module(text: String, path: String, reg: RefCounted) -> GateAST._Module:
 	if _cached_path == path and _cached_module != null 			and (_cached_text == text or _same_declarations(_cached_text, text)):
 		return _cached_module
 	_cached_module = Index.module_for(text, path, reg)
@@ -336,7 +336,7 @@ static func _is_word(character: String) -> bool:
 # ───────────────────────── resolving a type ─────────────────────────
 
 ## The type name the chain ends on, or "".
-static func _resolve_chain(chain: Array, module: GateAST.Module, reg: RefCounted,
+static func _resolve_chain(chain: Array, module: GateAST._Module, reg: RefCounted,
 		line: int) -> String:
 	if _resolving > MAX_CHAIN:
 		return ""
@@ -358,7 +358,7 @@ static var _resolving: int = 0
 
 ## What the first name in a chain stands for: a type used statically, or a value
 ## whose declared type is known.
-static func _base_type(name: String, module: GateAST.Module, reg: RefCounted,
+static func _base_type(name: String, module: GateAST._Module, reg: RefCounted,
 		line: int) -> String:
 	if name == "self":
 		if module != null and module.class_name_decl != "":
@@ -398,27 +398,27 @@ static func _is_file(type_name: String) -> bool:
 	return type_name.begins_with("res://")
 
 
-static func _file_module(type_name: String, module: GateAST.Module,
-		reg: RefCounted) -> GateAST.Module:
+static func _file_module(type_name: String, module: GateAST._Module,
+		reg: RefCounted) -> GateAST._Module:
 	return module if type_name == THIS_FILE else Autoload.module(type_name, reg)
 
 
 static func _declared_type(members: Array, name: String, line: int,
-		module: GateAST.Module, reg: RefCounted) -> String:
+		module: GateAST._Module, reg: RefCounted) -> String:
 	var best: String = ""
 	var best_line: int = -1
 	for member in members:
-		if member is GateAST.VarDecl:
-			var vd: GateAST.VarDecl = member
+		if member is GateAST._VarDecl:
+			var vd: GateAST._VarDecl = member
 			if vd.name == name and vd.line <= line and vd.line > best_line:
 				var fixed: String = _var_type(vd, module, _editing, reg)
 				if fixed != "":
 					best = fixed
 					best_line = vd.line
-		elif member is GateAST.FuncDecl:
-			var decl: GateAST.FuncDecl = member
+		elif member is GateAST._FuncDecl:
+			var decl: GateAST._FuncDecl = member
 			for parameter in decl.params:
-				var p: GateAST.Param = parameter
+				var p: GateAST._Param = parameter
 				if p.name == name and p.type != null and decl.line <= line:
 					best = _type_name(p.type)
 					best_line = decl.line
@@ -426,13 +426,13 @@ static func _declared_type(members: Array, name: String, line: int,
 			if inner != "":
 				best = inner
 				best_line = line
-		elif member is GateAST.ClassDecl:
+		elif member is GateAST._ClassDecl:
 			var nested: String = _declared_type(
-				(member as GateAST.ClassDecl).members, name, line, module, reg)
+				(member as GateAST._ClassDecl).members, name, line, module, reg)
 			if nested != "" and best == "":
 				best = nested
-		elif member is GateAST.ForStmt:
-			var loop: GateAST.ForStmt = member
+		elif member is GateAST._ForStmt:
+			var loop: GateAST._ForStmt = member
 			var at: int = loop.var_names.find(name)
 			if at >= 0 and loop.line <= line and loop.line > best_line:
 				best = _loop_type(loop, at, module, reg)
@@ -441,14 +441,14 @@ static func _declared_type(members: Array, name: String, line: int,
 			if within != "":
 				best = within
 				best_line = line
-		elif member is GateAST.ASTNode and "body" in member:
+		elif member is GateAST._ASTNode and "body" in member:
 			var deeper: String = _declared_type(member.get("body"), name, line, module, reg)
 			if deeper != "" and best == "":
 				best = deeper
 	return best
 
 
-static func _loop_type(loop: GateAST.ForStmt, index: int, module: GateAST.Module,
+static func _loop_type(loop: GateAST._ForStmt, index: int, module: GateAST._Module,
 		reg: RefCounted) -> String:
 	var count: int = loop.var_names.size()
 	if loop.var_type != null and index == count - 1:
@@ -457,7 +457,7 @@ static func _loop_type(loop: GateAST.ForStmt, index: int, module: GateAST.Module
 	if loop.is_enumerate:
 		if index == 0:
 			return "int"
-		var call: GateAST.Call = iterable
+		var call: GateAST._Call = iterable
 		if call.args.is_empty():
 			return ""
 		iterable = call.args[0]
@@ -472,38 +472,38 @@ static func _loop_type(loop: GateAST.ForStmt, index: int, module: GateAST.Module
 
 
 static func _expr_chain(expr: Variant) -> Array:
-	if expr is GateAST.Ident:
-		return [(expr as GateAST.Ident).name]
-	if expr is GateAST.SelfExpr:
+	if expr is GateAST._Ident:
+		return [(expr as GateAST._Ident).name]
+	if expr is GateAST._SelfExpr:
 		return ["self"]
-	if expr is GateAST.FString:
+	if expr is GateAST._FString:
 		return ["@String"]
-	if expr is GateAST.Literal:
-		var literal: GateAST.Literal = expr
+	if expr is GateAST._Literal:
+		var literal: GateAST._Literal = expr
 		if literal.kind == "string":
 			return ["@String"]
 		if literal.kind == "number":
 			return ["@float"] if literal.raw.contains(".") else ["@int"]
 		return []
-	if expr is GateAST.Member:
-		var through: Array = _expr_chain((expr as GateAST.Member).target)
+	if expr is GateAST._Member:
+		var through: Array = _expr_chain((expr as GateAST._Member).target)
 		if not through.is_empty():
-			through.append((expr as GateAST.Member).name)
+			through.append((expr as GateAST._Member).name)
 		return through
-	if expr is GateAST.Index:
-		var indexed: Array = _expr_chain((expr as GateAST.Index).target)
+	if expr is GateAST._Index:
+		var indexed: Array = _expr_chain((expr as GateAST._Index).target)
 		if not indexed.is_empty():
 			indexed.append("[]")
 		return indexed
-	if expr is GateAST.Call:
-		var callee: Variant = (expr as GateAST.Call).callee
-		if callee is GateAST.Ident and (callee as GateAST.Ident).name == "range":
+	if expr is GateAST._Call:
+		var callee: Variant = (expr as GateAST._Call).callee
+		if callee is GateAST._Ident and (callee as GateAST._Ident).name == "range":
 			return ["@int"]
 		return _expr_chain(callee)
 	return []
 
 
-static func _var_type(vd: GateAST.VarDecl, file: GateAST.Module, source: String,
+static func _var_type(vd: GateAST._VarDecl, file: GateAST._Module, source: String,
 		reg: RefCounted) -> String:
 	if vd.type != null:
 		return _type_name(vd.type, _is_packed(vd))
@@ -512,9 +512,9 @@ static func _var_type(vd: GateAST.VarDecl, file: GateAST.Module, source: String,
 	var loaded: String = _preloaded(vd.value, source, reg)
 	if loaded != "":
 		return loaded
-	var self_type: GateAST.TypeRef = GateAST.TypeRef.new()
+	var self_type: GateAST._TypeRef = GateAST._TypeRef.new()
 	self_type.name = file.class_name_decl if file.class_name_decl != "" else GateInfer.MODULE_CLASS
-	var found: GateAST.TypeRef = _infer_for(file, reg).type_of(vd.value, {"self": self_type})
+	var found: GateAST._TypeRef = _infer_for(file, reg).type_of(vd.value, {"self": self_type})
 	var text: String = _type_name(found) if found != null else ""
 	if text != "" and _is_known(text, reg):
 		return text
@@ -536,13 +536,13 @@ static func _is_known(type_name: String, reg: RefCounted) -> bool:
 
 
 static func _preloaded(value: Variant, source: String, reg: RefCounted) -> String:
-	if not (value is GateAST.Call):
+	if not (value is GateAST._Call):
 		return ""
-	var call: GateAST.Call = value
-	if not (call.callee is GateAST.Ident) or (call.callee as GateAST.Ident).name != "preload" \
-			or call.args.size() != 1 or not (call.args[0] is GateAST.Literal):
+	var call: GateAST._Call = value
+	if not (call.callee is GateAST._Ident) or (call.callee as GateAST._Ident).name != "preload" \
+			or call.args.size() != 1 or not (call.args[0] is GateAST._Literal):
 		return ""
-	var raw: String = (call.args[0] as GateAST.Literal).raw
+	var raw: String = (call.args[0] as GateAST._Literal).raw
 	var path: String = raw.substr(1, raw.length() - 2)
 	if path.begins_with("uid://"):
 		path = Autoload._path(path)
@@ -564,7 +564,7 @@ static func _preloaded(value: Variant, source: String, reg: RefCounted) -> Strin
 static var _inferers: Array = []
 
 
-static func _infer_for(file: GateAST.Module, reg: RefCounted) -> GateInfer:
+static func _infer_for(file: GateAST._Module, reg: RefCounted) -> GateInfer:
 	for entry in _inferers:
 		if is_same(entry[0], file.members) and int(entry[1]) == reg.get_instance_id():
 			return entry[2]
@@ -576,13 +576,13 @@ static func _infer_for(file: GateAST.Module, reg: RefCounted) -> GateInfer:
 	return made
 
 
-static func _declaring(owner: String, declared: GateAST.ClassDecl, module: GateAST.Module,
+static func _declaring(owner: String, declared: GateAST._ClassDecl, module: GateAST._Module,
 		reg: RefCounted) -> Array:
 	if owner == THIS_FILE:
 		return [module, _editing]
 	if _is_file(owner):
 		return [_file_module(owner, module, reg), owner]
-	var file: GateAST.Module = GateAST.Module.new()
+	var file: GateAST._Module = GateAST._Module.new()
 	file.members = declared.members
 	file.extends_type = declared.extends_type
 	if reg.script_class_decls.has(owner):
@@ -595,7 +595,7 @@ static func _bare(name: String) -> String:
 	return name.trim_suffix("?").replace("[]", "").strip_edges()
 
 
-static func _type_name(type: GateAST.TypeRef, packed: bool = false) -> String:
+static func _type_name(type: GateAST._TypeRef, packed: bool = false) -> String:
 	if type == null:
 		return ""
 	var text: String = ""
@@ -619,9 +619,9 @@ static func _type_name(type: GateAST.TypeRef, packed: bool = false) -> String:
 	return text
 
 
-static func _is_packed(declared: GateAST.VarDecl) -> bool:
+static func _is_packed(declared: GateAST._VarDecl) -> bool:
 	for annotation in declared.annotations:
-		if (annotation as GateAST.Annotation).name == "packed":
+		if (annotation as GateAST._Annotation).name == "packed":
 			return true
 	return false
 
@@ -730,7 +730,7 @@ static func _from_builtin(type_name: String, out: Array, taken: Dictionary) -> v
 		_take(out, taken, option(KIND_ENUM, name, name, FAR))
 
 
-static func _declaration_of(name: String, reg: RefCounted) -> GateAST.ClassDecl:
+static func _declaration_of(name: String, reg: RefCounted) -> GateAST._ClassDecl:
 	for table in ["structs", "classes", "interfaces", "traits", "namespaces", "generics"]:
 		var declarations: Dictionary = reg.get(table)
 		if declarations.has(name):
@@ -749,13 +749,13 @@ static func _global_class(name: String) -> String:
 
 ## The type of `owner.member`, or "".
 static func _member_type(owner: String, member: String, reg: RefCounted,
-		module: GateAST.Module = null) -> String:
+		module: GateAST._Module = null) -> String:
 	if not _builtin(owner).is_empty():
 		return _builtin_member_type(owner, member)
 	var seen: Dictionary = {}
 	while owner != "" and not seen.has(owner):
 		seen[owner] = true
-		var declared: GateAST.ClassDecl = null
+		var declared: GateAST._ClassDecl = null
 		if owner == THIS_FILE or _is_file(owner):
 			declared = _as_decl(_file_module(owner, module, reg))
 			if declared == null:
@@ -764,11 +764,11 @@ static func _member_type(owner: String, member: String, reg: RefCounted,
 			declared = _declaration_of(owner, reg)
 		if declared != null:
 			for entry in declared.members:
-				if entry is GateAST.VarDecl and (entry as GateAST.VarDecl).name == member:
+				if entry is GateAST._VarDecl and (entry as GateAST._VarDecl).name == member:
 					var where: Array = _declaring(owner, declared, module, reg)
 					return _var_type(entry, where[0], String(where[1]), reg)
-				if entry is GateAST.FuncDecl and (entry as GateAST.FuncDecl).name == member:
-					var fd: GateAST.FuncDecl = entry
+				if entry is GateAST._FuncDecl and (entry as GateAST._FuncDecl).name == member:
+					var fd: GateAST._FuncDecl = entry
 					return _type_name(fd.return_type)
 			owner = _base_of(owner, reg, module)
 			continue
@@ -824,7 +824,7 @@ static func _return_type_of(method: Dictionary) -> String:
 ## chain of bases finally reaches. Nothing is left out on the way: a list that
 ## stops at the first base GATE did not compile would look complete and be half.
 static func _members_of(type_name: String, reg: RefCounted,
-		module: GateAST.Module = null, outside: bool = false) -> Array:
+		module: GateAST._Module = null, outside: bool = false) -> Array:
 	var out: Array = []
 	var taken: Dictionary = {}
 	if not _builtin(type_name).is_empty():
@@ -838,7 +838,7 @@ static func _members_of(type_name: String, reg: RefCounted,
 		seen[current] = true
 		var location: int = HERE if depth == 0 else PARENT
 		depth += 1
-		var declared: GateAST.ClassDecl = null
+		var declared: GateAST._ClassDecl = null
 		if current == THIS_FILE or _is_file(current):
 			declared = _as_decl(_file_module(current, module, reg))
 			if declared == null:
@@ -865,18 +865,18 @@ static func _members_of(type_name: String, reg: RefCounted,
 
 
 ## The file being edited, as a class the rest of this can walk.
-static func _as_decl(module: GateAST.Module) -> GateAST.ClassDecl:
+static func _as_decl(module: GateAST._Module) -> GateAST._ClassDecl:
 	if module == null:
 		return null
-	var here: GateAST.ClassDecl = GateAST.ClassDecl.new()
+	var here: GateAST._ClassDecl = GateAST._ClassDecl.new()
 	here.members = module.members
 	here.extends_type = module.extends_type
 	return here
 
 
-static func _base_of(type_name: String, reg: RefCounted, module: GateAST.Module = null) -> String:
+static func _base_of(type_name: String, reg: RefCounted, module: GateAST._Module = null) -> String:
 	if type_name == THIS_FILE or _is_file(type_name):
-		var file: GateAST.Module = _file_module(type_name, module, reg)
+		var file: GateAST._Module = _file_module(type_name, module, reg)
 		if file == null or file.extends_type == null:
 			return ""
 		var from: String = _editing if type_name == THIS_FILE else type_name
@@ -904,7 +904,7 @@ static func _script_type(path: String, reg: RefCounted) -> String:
 	var source: String = Autoload.source_of(path)
 	if source == "":
 		return ""
-	var file: GateAST.Module = Autoload.module(source, reg)
+	var file: GateAST._Module = Autoload.module(source, reg)
 	if file == null:
 		return ""
 	var own_class: String = file.class_name_decl
@@ -928,29 +928,29 @@ static func _script_class_name(script: Script, reg: RefCounted) -> String:
 	return ""
 
 
-static func _from_decl(declared: GateAST.ClassDecl, out: Array, taken: Dictionary,
+static func _from_decl(declared: GateAST._ClassDecl, out: Array, taken: Dictionary,
 		location: int, outside: bool = false) -> void:
 	for member in declared.members:
-		if member is GateAST.FuncDecl:
-			var fd: GateAST.FuncDecl = member
+		if member is GateAST._FuncDecl:
+			var fd: GateAST._FuncDecl = member
 			if fd.accessor or fd.name.begins_with("__") or (outside and fd.name.begins_with("_")):
 				continue
 			_take(out, taken, option(KIND_FUNCTION, fd.name + "(", fd.name + "(", location))
-		elif member is GateAST.VarDecl:
-			var vd: GateAST.VarDecl = member
+		elif member is GateAST._VarDecl:
+			var vd: GateAST._VarDecl = member
 			_take(out, taken, option(KIND_CONSTANT if vd.is_const else KIND_MEMBER,
 				vd.name, vd.name, location))
-		elif member is GateAST.SignalDecl:
-			var sd: GateAST.SignalDecl = member
+		elif member is GateAST._SignalDecl:
+			var sd: GateAST._SignalDecl = member
 			_take(out, taken, option(KIND_SIGNAL, sd.name, sd.name, location))
-		elif member is GateAST.EnumDecl:
-			var ed: GateAST.EnumDecl = member
+		elif member is GateAST._EnumDecl:
+			var ed: GateAST._EnumDecl = member
 			if ed.name != "":
 				_take(out, taken, option(KIND_ENUM, ed.name, ed.name, location))
 			for key in ed.keys:
 				_take(out, taken, option(KIND_CONSTANT, String(key), String(key), location))
-		elif member is GateAST.ClassDecl:
-			var cd: GateAST.ClassDecl = member
+		elif member is GateAST._ClassDecl:
+			var cd: GateAST._ClassDecl = member
 			_take(out, taken, option(KIND_CLASS, cd.name, cd.name, location))
 
 
@@ -1000,7 +1000,7 @@ static func _take(out: Array, taken: Dictionary, entry: Dictionary) -> void:
 
 # ───────────────────────── a bare identifier ─────────────────────────
 
-static func _in_scope(module: GateAST.Module, reg: RefCounted, line: int) -> Array:
+static func _in_scope(module: GateAST._Module, reg: RefCounted, line: int) -> Array:
 	var out: Array = []
 	var taken: Dictionary = {}
 
@@ -1040,14 +1040,14 @@ static func _in_scope(module: GateAST.Module, reg: RefCounted, line: int) -> Arr
 ## Locals and parameters visible at `line`, as name -> line.
 static func _locals(members: Array, line: int, out: Dictionary) -> void:
 	for member in members:
-		if member is GateAST.FuncDecl:
-			var decl: GateAST.FuncDecl = member
+		if member is GateAST._FuncDecl:
+			var decl: GateAST._FuncDecl = member
 			for parameter in decl.params:
-				out[(parameter as GateAST.Param).name] = decl.line
+				out[(parameter as GateAST._Param).name] = decl.line
 			_locals(decl.body, line, out)
-		elif member is GateAST.VarDecl and (member as GateAST.VarDecl).line <= line:
-			out[(member as GateAST.VarDecl).name] = (member as GateAST.VarDecl).line
-		elif member is GateAST.ClassDecl:
-			_locals((member as GateAST.ClassDecl).members, line, out)
-		elif member is GateAST.ASTNode and "body" in member:
+		elif member is GateAST._VarDecl and (member as GateAST._VarDecl).line <= line:
+			out[(member as GateAST._VarDecl).name] = (member as GateAST._VarDecl).line
+		elif member is GateAST._ClassDecl:
+			_locals((member as GateAST._ClassDecl).members, line, out)
+		elif member is GateAST._ASTNode and "body" in member:
 			_locals(member.get("body"), line, out)

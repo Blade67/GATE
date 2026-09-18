@@ -6,14 +6,14 @@ extends RefCounted
 ## another.
 
 
-class Registry extends RefCounted:
-	var interfaces: Dictionary = {}   ## name -> ClassDecl
-	var traits: Dictionary = {}       ## name -> ClassDecl
-	var structs: Dictionary = {}      ## name -> ClassDecl
-	var classes: Dictionary = {}      ## name -> ClassDecl
-	var namespaces: Dictionary = {}   ## name -> ClassDecl
-	var generics: Dictionary = {}     ## name -> ClassDecl (the template)
-	var generic_uses: Array = []   ## Array[TypeRef]
+class _Registry extends RefCounted:
+	var interfaces: Dictionary = {}   ## name -> _ClassDecl
+	var traits: Dictionary = {}       ## name -> _ClassDecl
+	var structs: Dictionary = {}      ## name -> _ClassDecl
+	var classes: Dictionary = {}      ## name -> _ClassDecl
+	var namespaces: Dictionary = {}   ## name -> _ClassDecl
+	var generics: Dictionary = {}     ## name -> _ClassDecl (the template)
+	var generic_uses: Array = []   ## Array[_TypeRef]
 	var script_class_names: Dictionary = {}
 	var gd_class_names: Dictionary = {}   ## class_name -> the plain .gd declaring it
 	var class_name_declared_in: Dictionary = {}   ## class_name -> every .gate declaring it
@@ -23,8 +23,8 @@ class Registry extends RefCounted:
 	var gd_bases: Dictionary = {}
 	var gd_chain: Dictionary = {}     ## .gate path -> the hand-written .gd bases it extends, hashed
 	var trait_text: Dictionary = {}   ## trait name -> hash of its source lines
-	var aliases: Dictionary = {}      ## name -> TypeRef, fully resolved
-	var alias_decls: Dictionary = {}  ## name -> TypeAliasDecl, as written
+	var aliases: Dictionary = {}      ## name -> _TypeRef, fully resolved
+	var alias_decls: Dictionary = {}  ## name -> _TypeAliasDecl, as written
 	var alias_files: Dictionary = {}  ## name -> every file declaring an alias of that name
 	var alias_cycles: Dictionary = {} ## name -> the cycle it is part of, as "X -> Y -> X"
 	var kind_files: Dictionary = {}   ## "<kind>|<name>" -> every file declaring it that way
@@ -40,8 +40,8 @@ class Registry extends RefCounted:
 	func describe(name: String) -> String:
 		return origin.get(name, "<unknown file>")
 
-	func without(names: Dictionary) -> Registry:
-		var r: Registry = Registry.new()
+	func without(names: Dictionary) -> _Registry:
+		var r: _Registry = _Registry.new()
 		for p in get_property_list():
 			if (int(p["usage"]) & PROPERTY_USAGE_SCRIPT_VARIABLE) != 0:
 				r.set(p["name"], get(p["name"]))
@@ -70,7 +70,7 @@ class Registry extends RefCounted:
 			var names: Array = table.keys()
 			names.sort()
 			for n in names:
-				var cd: GateAST.ClassDecl = table[n]
+				var cd: GateAST._ClassDecl = table[n]
 				parts.append("%s|%s|%s|%s|%s|%s|%s" % [table_name, n,
 					origin.get(n, ""), top_level.has(n), cd.lowering,
 					cd.vector_type,
@@ -89,7 +89,7 @@ class Registry extends RefCounted:
 		var scnames: Array = script_class_decls.keys()
 		scnames.sort()
 		for sc in scnames:
-			var scd: GateAST.ClassDecl = script_class_decls[sc]
+			var scd: GateAST._ClassDecl = script_class_decls[sc]
 			parts.append("SC|%s|%s" % [sc, scd.extends_type.name if scd.extends_type != null else ""])
 			_member_sigs(parts, scd.members)
 		if injects:
@@ -124,7 +124,7 @@ class Registry extends RefCounted:
 			for k in keys:
 				var v = (label[1] as Dictionary)[k]
 				parts.append("%s:%s:%s" % [label[0], k,
-					_type_sig(v) if v is GateAST.TypeRef else String(v)])
+					_type_sig(v) if v is GateAST._TypeRef else String(v)])
 		var mkeys: Array = methods.keys()
 		mkeys.sort()
 		for k2 in mkeys:
@@ -138,14 +138,14 @@ class Registry extends RefCounted:
 
 	static func _member_sigs(parts: PackedStringArray, members: Array) -> void:
 		for m in members:
-			if m is GateAST.VarDecl:
-				var vd: GateAST.VarDecl = m
+			if m is GateAST._VarDecl:
+				var vd: GateAST._VarDecl = m
 				parts.append(" v:%s:%s" % [vd.name, _type_sig(vd.type)])
-			elif m is GateAST.FuncDecl:
-				var fdm: GateAST.FuncDecl = m
+			elif m is GateAST._FuncDecl:
+				var fdm: GateAST._FuncDecl = m
 				var ps: PackedStringArray = PackedStringArray()
 				for pp in fdm.params:
-					var par: GateAST.Param = pp
+					var par: GateAST._Param = pp
 					ps.append("%s%s%s" % [_type_sig(par.type), "=" if par.default != null else "",
 						"..." if par.is_rest else ""])
 				parts.append(" f:%s/%d(%s):%s" % [fdm.name, ps.size(), ",".join(ps),
@@ -155,9 +155,9 @@ class Registry extends RefCounted:
 			parts.append(" w:" + ",".join(PackedStringArray(writes)))
 
 	static func _type_sig(t) -> String:
-		if not (t is GateAST.TypeRef):
+		if not (t is GateAST._TypeRef):
 			return ""
-		var tr: GateAST.TypeRef = t
+		var tr: GateAST._TypeRef = t
 		if tr.is_union() or tr.is_tuple() or tr.is_func_type:
 			return tr.describe()
 		var g: PackedStringArray = PackedStringArray()
@@ -170,11 +170,11 @@ const IGNORE_DIRS := ["addons", ".godot", ".git", ".import"]
 
 const SYNTHESISED := ["_ready", "_validate_property"]
 
-var registry: Registry = Registry.new()
+var registry: _Registry = _Registry.new()
 
 
-func index(root: String = "res://") -> Registry:
-	registry = Registry.new()
+func index(root: String = "res://") -> _Registry:
+	registry = _Registry.new()
 	_file_names = {}
 	_generic_use_paths = []
 	var lexed: Array = []
@@ -221,7 +221,7 @@ func _index_gd_bases() -> void:
 	for p in registry.script_modules:
 		_add_chain(String(p), _follow_gd(String(registry.script_modules[p]["extends"]), String(p), globals, 0))
 	for cname in registry.classes:
-		var cd: GateAST.ClassDecl = registry.classes[cname]
+		var cd: GateAST._ClassDecl = registry.classes[cname]
 		if cd.extends_type != null:
 			var origin: String = String(registry.origin.get(cname, ""))
 			_add_chain(origin, _follow_gd(cd.extends_type.name, origin, globals, 0))
@@ -374,7 +374,7 @@ static func _lexed(path: String, src: String, sum: String, diags: GateDiagnostic
 	var kept: Array = _lexed_memo.get(path, [])
 	if not kept.is_empty() and String(kept[0]) == sum and kept.size() > 5:
 		return kept
-	var tokens: Array[GateLexer.Token] = []
+	var tokens: Array[GateLexer._Token] = []
 	if not kept.is_empty() and String(kept[0]) == sum:
 		tokens = kept[1]
 	else:
@@ -411,7 +411,7 @@ static func _tokens_hash(tokens: Array) -> String:
 	var parts: PackedStringArray = PackedStringArray()
 	var last: int = -1
 	for t in tokens:
-		var tk: GateLexer.Token = t
+		var tk: GateLexer._Token = t
 		if tk.type == GateLexer.T.COMMENT or (tk.type == GateLexer.T.NEWLINE and last == GateLexer.T.NEWLINE):
 			continue
 		last = tk.type
@@ -433,8 +433,8 @@ func _scope_for(path: String) -> Dictionary:
 static func _scan_declared_names(tokens: Array, generics: Dictionary, aliases: Dictionary) -> void:
 	var n: int = tokens.size()
 	for i in n - 2:
-		var t: GateLexer.Token = tokens[i]
-		var nx: GateLexer.Token = tokens[i + 1]
+		var t: GateLexer._Token = tokens[i]
+		var nx: GateLexer._Token = tokens[i + 1]
 		if nx.type != GateLexer.T.IDENT:
 			continue
 		if (t.is_kw("class") or t.is_kw("struct")) and tokens[i + 2].is_op("<"):
@@ -460,11 +460,11 @@ func _resolve_aliases() -> void:
 	for cyc in registry.alias_cycles:
 		registry.aliases.erase(cyc)
 	for aname2 in registry.aliases:
-		var target: GateAST.TypeRef = registry.aliases[aname2]
+		var target: GateAST._TypeRef = registry.aliases[aname2]
 		if not target.generic_args.is_empty():
 			registry.generic_uses.append(GateChecker.copy_type(target))
 			_generic_use_paths.append("")
-	var walk: GateChecker.AliasWalk = GateChecker.AliasWalk.new()
+	var walk: GateChecker._AliasWalk = GateChecker._AliasWalk.new()
 	walk.inherited = {"*": true}
 	for table in [registry.classes, registry.structs, registry.namespaces, registry.generics,
 			registry.interfaces, registry.traits]:
@@ -478,14 +478,14 @@ func _resolve_aliases() -> void:
 		_compute_struct_lowering(registry.structs[sname])
 	for table2 in [registry.classes, registry.structs, registry.namespaces, registry.generics]:
 		for cname2 in table2:
-			var cd: GateAST.ClassDecl = table2[cname2]
+			var cd: GateAST._ClassDecl = table2[cname2]
 			if cd.extends_type != null:
 				registry.bases[cname2] = cd.extends_type.name
 
 
 func _index_file(path: String, src: String, tokens: Array, diags: GateDiagnostics,
 		generics: Dictionary, aliases: Dictionary, key: String = "") -> void:
-	var mod: GateAST.Module = null
+	var mod: GateAST._Module = null
 	var kept: Array = _parsed_memo.get(path, [])
 	if key != "" and not kept.is_empty() and String(kept[0]) == key:
 		mod = kept[1]
@@ -499,7 +499,7 @@ func _index_file(path: String, src: String, tokens: Array, diags: GateDiagnostic
 
 	if mod.class_name_decl != "":
 		registry.script_class_names[mod.class_name_decl] = path
-		var scd: GateAST.ClassDecl = GateAST.ClassDecl.new()
+		var scd: GateAST._ClassDecl = GateAST._ClassDecl.new()
 		scd.name = mod.class_name_decl
 		scd.form = "class"
 		scd.extends_type = mod.extends_type
@@ -508,20 +508,20 @@ func _index_file(path: String, src: String, tokens: Array, diags: GateDiagnostic
 		if scd.extends_type != null and not registry.bases.has(scd.name):
 			registry.bases[scd.name] = scd.extends_type.name
 		for sm in mod.members:
-			if sm is GateAST.FuncDecl:
-				var skey: String = "%s.%s" % [scd.name, (sm as GateAST.FuncDecl).name]
+			if sm is GateAST._FuncDecl:
+				var skey: String = "%s.%s" % [scd.name, (sm as GateAST._FuncDecl).name]
 				if not registry.methods.has(skey):
 					registry.methods[skey] = []
 				registry.methods[skey].append(sm)
-			elif sm is GateAST.VarDecl and (sm as GateAST.VarDecl).type != null:
-				registry.fields["%s.%s" % [scd.name, (sm as GateAST.VarDecl).name]] = (sm as GateAST.VarDecl).type
+			elif sm is GateAST._VarDecl and (sm as GateAST._VarDecl).type != null:
+				registry.fields["%s.%s" % [scd.name, (sm as GateAST._VarDecl).name]] = (sm as GateAST._VarDecl).type
 		if not registry.class_name_declared_in.has(mod.class_name_decl):
 			registry.class_name_declared_in[mod.class_name_decl] = []
 		registry.class_name_declared_in[mod.class_name_decl].append(path)
 	var defines: Array = []
 	for fm in mod.members:
-		if fm is GateAST.FuncDecl and SYNTHESISED.has((fm as GateAST.FuncDecl).name):
-			defines.append((fm as GateAST.FuncDecl).name)
+		if fm is GateAST._FuncDecl and SYNTHESISED.has((fm as GateAST._FuncDecl).name):
+			defines.append((fm as GateAST._FuncDecl).name)
 	for wn in GateInject.will_define(mod.members):
 		if not defines.has(wn):
 			defines.append(wn)
@@ -532,10 +532,10 @@ func _index_file(path: String, src: String, tokens: Array, diags: GateDiagnostic
 	if not registry.injects and _injects(mod.members):
 		registry.injects = true
 	for m in mod.members:
-		if m is GateAST.ClassDecl:
-			registry.top_level[(m as GateAST.ClassDecl).name] = true
-		elif m is GateAST.TypeAliasDecl:
-			var ad: GateAST.TypeAliasDecl = m
+		if m is GateAST._ClassDecl:
+			registry.top_level[(m as GateAST._ClassDecl).name] = true
+		elif m is GateAST._TypeAliasDecl:
+			var ad: GateAST._TypeAliasDecl = m
 			registry.alias_decls[ad.name] = ad
 			if not registry.alias_files.has(ad.name):
 				registry.alias_files[ad.name] = []
@@ -555,9 +555,9 @@ func _index_file(path: String, src: String, tokens: Array, diags: GateDiagnostic
 
 func _collect(members: Array, path: String) -> void:
 	for m in members:
-		if not (m is GateAST.ClassDecl):
+		if not (m is GateAST._ClassDecl):
 			continue
-		var cd: GateAST.ClassDecl = m
+		var cd: GateAST._ClassDecl = m
 		match cd.form:
 			"interface":
 				registry.interfaces[cd.name] = cd
@@ -590,13 +590,13 @@ func _collect(members: Array, path: String) -> void:
 		if cd.extends_type != null:
 			registry.bases[cd.name] = cd.extends_type.name
 		for mm in cd.members:
-			if mm is GateAST.FuncDecl:
-				var key: String = "%s.%s" % [cd.name, (mm as GateAST.FuncDecl).name]
+			if mm is GateAST._FuncDecl:
+				var key: String = "%s.%s" % [cd.name, (mm as GateAST._FuncDecl).name]
 				if not registry.methods.has(key):
 					registry.methods[key] = []
 				registry.methods[key].append(mm)
-			elif mm is GateAST.VarDecl:
-				var fvd: GateAST.VarDecl = mm
+			elif mm is GateAST._VarDecl:
+				var fvd: GateAST._VarDecl = mm
 				if fvd.type != null:
 					registry.fields["%s.%s" % [cd.name, fvd.name]] = fvd.type
 		_collect(cd.members, path)
@@ -604,9 +604,9 @@ func _collect(members: Array, path: String) -> void:
 
 func _index_trait_text(members: Array, lines: PackedStringArray, whole: String) -> void:
 	for i in members.size():
-		if not (members[i] is GateAST.ClassDecl):
+		if not (members[i] is GateAST._ClassDecl):
 			continue
-		var cd: GateAST.ClassDecl = members[i]
+		var cd: GateAST._ClassDecl = members[i]
 		if cd.form != "trait":
 			_index_trait_text_nested(cd.members, whole)
 			continue
@@ -622,8 +622,8 @@ func _index_trait_text(members: Array, lines: PackedStringArray, whole: String) 
 
 func _index_trait_text_nested(members: Array, whole: String) -> void:
 	for m in members:
-		if m is GateAST.ClassDecl:
-			var cd: GateAST.ClassDecl = m
+		if m is GateAST._ClassDecl:
+			var cd: GateAST._ClassDecl = m
 			if cd.form == "trait":
 				registry.trait_text[cd.name] = "%d:%d" % [whole.hash(), whole.length()]
 			_index_trait_text_nested(cd.members, whole)
@@ -631,20 +631,20 @@ func _index_trait_text_nested(members: Array, whole: String) -> void:
 
 static func _injects(members: Array) -> bool:
 	for m in members:
-		if m is GateAST.ClassDecl and _injects((m as GateAST.ClassDecl).members):
+		if m is GateAST._ClassDecl and _injects((m as GateAST._ClassDecl).members):
 			return true
-		if m is GateAST.VarDecl:
-			for a in (m as GateAST.VarDecl).annotations:
-				if (a as GateAST.Annotation).name in ["required", "export_if"]:
+		if m is GateAST._VarDecl:
+			for a in (m as GateAST._VarDecl).annotations:
+				if (a as GateAST._Annotation).name in ["required", "export_if"]:
 					return true
 	return false
 
 
-func _compute_struct_lowering(cd: GateAST.ClassDecl) -> void:
+func _compute_struct_lowering(cd: GateAST._ClassDecl) -> void:
 	var field_types: Array = []
 	var has_methods: bool = GateChecker.struct_needs_class(cd)
 	for f in GateChecker.struct_fields(cd):
-		var vd: GateAST.VarDecl = f
+		var vd: GateAST._VarDecl = f
 		field_types.append(GateTypes.struct_field_kind(vd.type))
 	var low: Dictionary = GateTypes.struct_lowering(field_types)
 	if low["kind"] == "vector" and not has_methods:
