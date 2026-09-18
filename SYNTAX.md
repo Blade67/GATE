@@ -81,6 +81,12 @@ conversion and no wrapper - `str label = "player"` emits `var label: String = "p
 and the value is the same `String` every Godot API takes and returns. Write `String` if you
 prefer it; both compile to the same line.
 
+**The type-first form replaces nothing.** `var hp: int = 100` keeps its meaning, and an
+annotation carries GATE's own types as well, so `var target: Node2D? = null`,
+`var scores: int[] = []` and `var id: <int | str> = 7` all work and mean what the
+type-first spellings mean. Every feature in this document is reachable without writing a
+single type-first declaration.
+
 ### Collections
 
 ```gdscript

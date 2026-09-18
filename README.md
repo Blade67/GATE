@@ -137,6 +137,23 @@ The short names are spellings, not new types. `str` **is** `String`, `vec2` is `
 with no wrapper and no conversion. Write `String` instead if you prefer - both compile to
 the same line.
 
+**This form replaces nothing.** `var hp: int = 100` means what it always did, and GATE's
+own types work in that position too, so nothing here is behind the type-first spelling:
+
+```gdscript
+var target: Node2D? = null      # tracked nullable
+var scores: int[] = [1, 2]      # Array[int]
+var id: <int | str> = 7         # union, emitted as Variant
+```
+
+Use the null tracking, structs, generics and the rest without writing a single type-first
+declaration if that suits you better. Type-first is there because the type is the thing
+worth reading first in a block of fields, and because it is shorter. That is the whole
+reason; there is no technical one. Parameters keep GDScript's own `name: Type` form, which
+is an inconsistency on purpose: making them type-first is a spelling change that costs the
+parser more lookahead than the rest of the grammar, so it sits in [ROADMAP.md](ROADMAP.md)
+rather than half-built here.
+
 ### Null safety
 
 `T?` is a tracked nullable type. A flow-sensitive pass follows guards, early exits and
