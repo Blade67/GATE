@@ -9,7 +9,7 @@ while compiling down to plain GDScript.
 Valid GDScript is valid GATE. Rename a `.gd` to `.gate` and it compiles with no errors,
 loads, and behaves identically. Recompiling GATE's own output gives back the same bytes.
 
-## Table of Content
+## Table of Contents
 - [Install](#install)
 - [Usage](#usage)
 - [Features](#features)
@@ -28,6 +28,7 @@ loads, and behaves identically. Recompiling GATE's own output gives back the sam
 - [Performance](#performance)
 - [Known limitations](#known-limitations)
 - [Verification](#verification)
+- [Documentation](#documentation)
 
 The full syntax is in [SYNTAX.md](SYNTAX.md).
 
@@ -423,23 +424,58 @@ allocation and no copy - **13.5x** on a 300k-iteration loop. An array of structs
 into a Vector is **9.9x** faster than the idiomatic `Array[SomeClass]`.
 
 `@soa` is the one to be careful with: it is about 2.4x slower to build and 1.9x faster to
-iterate, so it pays off only if you make more than about one pass per rebuild.
+iterate, so it pays off only if you make more than about 1.3 passes per rebuild.
 
 ## Known limitations
 
 - **Comments are dropped**, including `##` doc comments. Renaming a documented `.gd` to
   `.gate` strips the documentation Godot's class reference is built from.
-- **The debugger points at the generated `.gd`.** A `.gd.map` is written beside every file,
-  but nothing consumes it yet.
-- **`as` is trusted.** `x as T` yields null when the cast fails, so it is really `T?`, but
-  the common shape is `if x is T: (x as T).field` where it cannot. GATE has no type
-  narrowing to tell them apart, so the declared type is taken at face value. This is the
-  one knowingly unsound spot in the null analysis.
-- **Aliasing is invisible** to the null analysis. `var d = c` then `d.next = null` does not
-  invalidate a narrowing on `c.next`.
-- **Expression nesting stops at 48 levels.** The parser is recursive descent written in
-  GDScript, so it runs out of stack long before Godot's own parser does. Past the cap it
-  reports one clear error.
+- **Godot's debugger panels name the generated `.gd`.** The game runs the `.gd`, so the
+  Stack Frames list and a runtime error point at it; a toast names the `.gate` line each
+  came from. Breakpoints and stepping are shown in the `.gate`. A stop on a generated line
+  with no `.gate` line behind it - a helper GATE wrote - is left showing the `.gd`,
+  deliberately, rather than pointing at a `.gate` line that is not the one running.
+- **`as` is only checked in GATE's own declarations.** `x as T` is null when the cast
+  fails. Inside a function, `Foo f = x as Foo` is an error unless an `if x is Foo:` or an
+  early exit proved it, or you declare it `Foo?`. Everywhere else, `(x as Foo).field`,
+  `var y = x as Foo`, arguments and field initialisers, the cast is trusted, so plain
+  GDScript keeps its meaning. That is a known unsound spot in the null analysis.
+- **Aliasing is judged by type.** A write to `d.next` clears what GATE knew about `next`
+  on every reference that may be the same object: the same or a related class, or an
+  unknown type. Three gaps remain. A call GATE cannot see into, like an engine method,
+  clears what is under the references it is given but not their aliases. What it returns
+  is taken to be a new object. And a function that writes through an array or dictionary
+  holding a parameter (`var arr = [c]` then `arr[0].next = null`) is not seen by its
+  callers to write to `c`.
+- **Static fields are tracked only where GATE indexed them.** The null analysis follows a
+  static field the file itself declares, under every spelling a function reaches it by, and a
+  call that writes one clears it for the caller. A static field declared in another file is
+  not tracked at all. A path below one reached through the class name, `Reg.cached.next`,
+  falls back to the aliasing rule above rather than to the field itself. And a static function
+  of a subclass does not track a static field it inherits from its base.
+- **`is` narrows locals, parameters and typed instance fields.** An untyped field, a static
+  var or an autoload can be rebound by a call GATE cannot trace, so a check on one does not
+  narrow it at all. Copy it to a local and test that.
+- **A struct field read through an untyped container is left as written.** `arr[0].c` maps
+  to the Vector component when GATE knows what the container holds - a declared `S[]`, a
+  parameter, a loop variable or a literal of one struct. From an untyped local grown with
+  `append`, or an untyped parameter, there is no element type, and the read fails at run
+  time.
+- **Structs are only guarded where structs are used.** In a file that uses class-lowered
+  structs, a value of unknown type is copied at run time if it turns out to be a struct. A
+  plain file is left as it is, so a struct it reads out of an untyped array or dictionary is
+  the stored one, not a copy.
+- **An expression may nest at most 180 levels**, counting one level for every operator, call
+  and member: a flat chain of 180 terms, or 90 steps of `a()[0]`. Every pass after the parser
+  walks the tree once per level and GDScript stops at 1024 calls, so deeper than that the
+  passes ran out of stack and handed back answers that were quietly cut short. A file that
+  nests deeper is refused with one error naming where the expression starts. This is a place
+  where valid GDScript is refused: Godot's own parser takes it. Deep member chains also cost
+  time quadratic in their depth, which only shows well past a depth real code reaches.
+- **Parentheses nest at most 48 levels.** A separate cap, in the parser, which is recursive
+  descent written in GDScript. Reaching it is itself expensive, about twenty calls a level,
+  so `not (not (...))` past 46 levels exhausts the stack before the cap can report it, and
+  what GATE writes for such a file does not recompile to itself.
 - **A file that references a `class_name` declared by another file in the same build** is
   written with a warning and validated once that class is registered, usually by the next
   build. Godot resolves global class names from the editor's class list, which only updates
@@ -447,30 +483,63 @@ iterate, so it pays off only if you make more than about one pass per rebuild.
 - **Interfaces do not fall back to structural checks.** `x is SomeInterface` is false for a
   class GATE did not compile.
 - **Namespaced classes cannot be attached to nodes** as their script.
+- **Saving a `.gate` in the editor rewrites its indentation** to whatever
+  *Text Editor -> Behavior -> Indent* says, as Godot does for a `.gd`. GATE reads tabs
+  and spaces alike, so the output is unchanged either way.
+- **Changing a declaration in a file most of the project reaches rebuilds all of it.**
+  Adding a method, or changing a signature, a struct field default, a signal's parameter
+  types or what a function may set to null, rebuilds every file that reaches the edited
+  one. On Pixelorama, where almost everything goes through one autoload, adding a method
+  to a file that autoload reaches measured about 35 s; a comment or a body edit in the
+  same file measured about 2 s.
+- **Completion re-reads the file when a declaration changes.** That costs about
+  16 ms in a 130-line file, 100 ms at 900 lines and half a second at 4,200. Typing
+  an expression - which is what a completion request usually follows - reuses the
+  last reading and stays around 3 ms at any size.
+- **Completion's first request in a session can take several seconds.** After the editor
+  opens, GATE reads the project in the background, a few files per frame. A request made
+  before that has finished reads the rest at once: about 7 s on Pixelorama, measured, where
+  one made afterwards takes a fraction of a second.
+- **A `.gate` opened before GATE 1.1.0 keeps "Plain Text" highlighting.** The choice is
+  remembered per file in `.godot/editor/script_editor_cache.cfg`; pick GATE once from the
+  highlighter menu and it sticks.
 - **No game has shipped with it.**
 
 ## Verification
 
-GATE is developed against a 22-stage test suite: differential execution against Godot
-itself, a real-world superset corpus, build-pipeline scenarios, sourcemap fidelity,
-byte-exact output comparison and randomised input. That suite is not part of this
-repository; what ships here is the addon.
+GATE is developed against a 24-stage test suite: differential execution against Godot
+itself, a real-world superset corpus, build-pipeline scenarios across editor restarts,
+live editor sessions, sourcemap fidelity, byte-exact output comparison and randomised
+input. That suite is not
+part of this repository; what ships here is the addon.
 
-What it established at `v1.0.0`:
+What it established at `v1.1.0`:
 
-- **186 real Godot project roots** swept from their own directories - the official demo,
-  tutorial and benchmark repositories plus ten shipped applications and games. 1,093 files,
-  100,574 lines: zero compile errors, zero outputs that fail to load, zero fixed-point
-  breaks.
-- **7,567 real `.gd` files** compiled and then recompiled from their own output, with zero
-  fixed-point breaks. The 23 compile errors are all Godot 3 syntax that Godot 4 rejects too.
-- Two shipped projects, **beehave** and **GodSVG**, converted wholesale - every non-addon
-  `.gd` renamed to `.gate` and built through the plugin - with zero files where only GATE's
-  output fails to load.
+- **196 real Godot project roots** swept from their own directories - the official demo,
+  tutorial and benchmark repositories plus ten shipped applications and games. Every file
+  Godot itself loads there, 1,552 files and 176,219 lines: zero compile errors, zero outputs
+  that fail to load, zero fixed-point breaks. Eight more roots, the OpenXR demos, never finish
+  a headless run and are not counted.
+- **3,291 real `.gd` files**, every one in both corpora that is not a copy of GATE itself,
+  compiled and then recompiled from their own output, with zero outputs that fail to load and
+  zero fixed-point breaks. The 17 that do not compile are Godot 3 syntax or mix tabs and
+  spaces for indentation, and Godot 4 rejects every one of them too.
+- **GodSVG** converted wholesale - all 191 non-addon files renamed to `.gate` and built
+  through the plugin, then again after each of three editor restarts - with zero failed files,
+  and every output loads.
 
 The differential harness is the one that matters. It does not ask whether GATE accepted the
 file, it asks whether Godot's answer equals GATE's answer. Every silent-wrong-value defect
 in this project was found that way and none were found any other way.
+
+## Documentation
+
+The documentation in this repository, meaning this README, `SYNTAX.md` and
+`CHANGELOG.md`, was written by AI and then checked by me before it shipped. Every
+claim about behaviour is one I verified against the test suite or the compiler
+itself, and every number quoted is one that came out of a run rather than an
+estimate. Where it is still wrong, that is a mistake I missed, so please open an
+issue and I will fix it.
 
 ## License
 

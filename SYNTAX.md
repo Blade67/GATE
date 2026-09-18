@@ -1,12 +1,12 @@
 # GATE syntax reference
 
-GATE 1.0.0, targeting Godot 4.7.
+GATE 1.1.0, targeting Godot 4.7.
 
 Valid GDScript is valid GATE. Everything below is additional syntax, and a `.gate` file may
 use as much or as little of it as you want. Each section shows what the construct compiles
 down to.
 
-## Table of Content
+## Table of Contents
 - [Type names](#type-names)
 - [Declarations](#declarations)
 - [Statements and lines](#statements-and-lines)
@@ -95,7 +95,8 @@ int[] scores            # Array[int]
 form.
 
 The bracket you declare with is the bracket you initialise with: `T[]` takes `[]`,
-`{K, V}` takes `{}`. `{T}` with a single parameter is reserved and not accepted.
+`{K, V}` takes `{}`. `{T}` with a single parameter is reserved: GATE warns and emits an
+untyped `Dictionary`.
 
 ### Nested collections
 
@@ -402,14 +403,18 @@ namespace Combat:
 		pass
 
 class Enemy extends CharacterBody2D implements Damageable with Poolable:
-	pass
+	int health = 100
+
+	func take_damage(amount: int) -> void:
+		health -= amount
 ```
 
 - **Interfaces** declare methods and property requirements. Conformance is checked at
   compile time, and `x is Damageable` works at runtime for classes GATE compiled.
 - **Traits** inline their members into the implementor. A conflict between two traits is a
   compile error.
-- **`requires`** in a class header names members the class must provide.
+- **`requires`** in a trait header, `trait Mover requires speed:`, names members every class
+  using the trait must provide.
 - **Namespaces** lower to inner classes. A namespaced class cannot be attached to a node as
   its script.
 

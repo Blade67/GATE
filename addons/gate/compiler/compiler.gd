@@ -2,8 +2,6 @@
 class_name GateCompiler
 extends RefCounted
 
-## Pipeline driver: lex -> parse -> check -> emit.
-
 
 class Result extends RefCounted:
 	var ok: bool = false
