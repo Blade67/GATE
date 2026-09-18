@@ -29,6 +29,7 @@ loads, and behaves identically. Recompiling GATE's own output gives back the sam
 - [Known limitations](#known-limitations)
 - [Verification](#verification)
 - [Documentation](#documentation)
+- [Roadmap](ROADMAP.md)
 
 The full syntax is in [SYNTAX.md](SYNTAX.md).
 
