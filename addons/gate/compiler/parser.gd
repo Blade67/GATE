@@ -75,6 +75,9 @@ func _parse_module_member(mod: GateAST._Module) -> GateAST._Stmt:
 			mod.header_annotations.append(fa)
 			if fa.name == "tool":
 				mod.is_tool = true
+		if _check_kw("class_name") or _check_kw("extends") \
+				or (_check(GateLexer._T.ANNOTATION) and _annotation_is_file_level()):
+			return _parse_module_member(mod)   # `@tool @icon(...) class_name X extends Y` on one line
 		_skip_newlines()
 		return null
 
@@ -717,8 +720,6 @@ func _expect_stmt_end(errors_before: int) -> void:
 		j -= 1
 	if j < 0 or _toks[j].line < _cur().line:
 		return   # the statement ran to the end of its line; a block took the NEWLINE
-	if not _starts_a_second_statement(_i):
-		return   # a construct GATE does not model, such as Godot 3's `setget`: passed through
 	_err("expected the end of the statement, found '%s'" % _cur().value,
 		"GDScript takes one statement per line; separate two with `;` or a line break. "
 		+ "A missing operator or comma reads as a second statement here.")
@@ -1283,6 +1284,13 @@ func _comma_is_enclosed() -> bool:
 
 
 func _parse_expression_statement(start_line: int) -> GateAST._Stmt:
+	if _check_kw("assert") and not _peek(1).is_op("("):
+		# Godot 3's bare `assert <expr>`, no parentheses: GATE does not model it,
+		# so the whole line passes through raw, the way `setget` already does.
+		var raw0: GateAST._RawStmt = _raw_from(start_line, _cur().line)
+		_skip_to_statement_end()
+		return raw0
+
 	var first: GateAST._Expr = _parse_expr()
 	if first == null:
 		var raw: GateAST._RawStmt = _raw_from(start_line, _cur().line)

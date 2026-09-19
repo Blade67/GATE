@@ -1937,9 +1937,11 @@ func _emit_call(c: GateAST._Call) -> String:
 			var owner: String = _static_type_of(mem.target)
 			if owner != "" and _overload_declared_by_chain(mem.name, owner):
 				return "%s.%s(%s)" % [mrecv, mangled2, ", ".join(args)]
-			if owner == "" and mem.target is GateAST._Ident:
-				var tn: String = (mem.target as GateAST._Ident).name
-				if _local_types.has(tn) or not _struct_of(tn).is_empty():
+			if owner == "" and (mem.target is GateAST._Ident or mem.target is GateAST._Member):
+				var cref: String = _class_ref_text(mem.target)
+				var tn: String = cref.get_slice(".", cref.get_slice_count(".") - 1)
+				if tn != "" and (_local_types.has(tn) or not _struct_of(tn).is_empty()
+						or _reg_classes.has(tn)):
 					owner = tn
 			if owner == "" and mem.target is GateAST._Ident and (mem.target as GateAST._Ident).name == "super":
 				owner = _cur_base

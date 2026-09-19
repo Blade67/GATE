@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **An overloaded method called through a class name from another file produced a call
+  that does not exist.** The declaring file emits `__compute_1` and `__compute_2` for two
+  arities of `compute`, but `DamageMath.compute(3)` in another file kept the plain name,
+  so Godot refused the caller with *Static function "compute()" not found in base
+  "DamageMath"*. GATE only warned, and the warning said the type of the receiver was
+  unknown when the receiver was the class itself. Both the flat case and a class nested
+  inside another, `Outer.Inner.pick(3)`, now emit the name the declaring file wrote.
+
 ## 1.1.1 - 2026-09-18
 
 A compatibility fix. GATE's own type names claimed ordinary words, so a project that
