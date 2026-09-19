@@ -9,6 +9,9 @@ while compiling down to plain GDScript.
 Valid GDScript is valid GATE. Rename a `.gd` to `.gate` and it compiles with no errors,
 loads, and behaves identically. Recompiling GATE's own output gives back the same bytes.
 
+Questions, or want to show what you built? [Discord](https://discord.gg/mzW5kY8Zj7).
+Bugs and feature requests go in [issues](https://github.com/Blade67/GATE/issues).
+
 ## Table of Contents
 - [Install](#install)
 - [Usage](#usage)
