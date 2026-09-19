@@ -190,6 +190,7 @@ func _parse_member() -> GateAST._Stmt:
 			vd3.annotations = annotations
 			vd3.visibility = visibility
 			vd3.is_static = is_static
+			_share_modifiers(vd3)
 		return vd3
 
 	if _check_kw("func") or _check_kw("operator"):
@@ -247,6 +248,7 @@ func _parse_member() -> GateAST._Stmt:
 			vd2.annotations = annotations
 			vd2.visibility = visibility
 			vd2.is_static = is_static
+			_share_modifiers(vd2)
 		return vd2
 
 	if _check_op("<") or _check_op("<<") or (_check(GateLexer._T.IDENT)
@@ -602,7 +604,15 @@ func _parse_typed_decl() -> GateAST._VarDecl:
 	var extra_names: Array = []
 	while _check_op(",") and _peek(1).type == GateLexer._T.IDENT:
 		_advance()
-		extra_names.append(_advance().value)
+		var nt: GateLexer._Token = _advance()
+		extra_names.append(nt.value)
+		if not (_check_op(",") or _check_op("=") or _check_op("{") or _check_op(";")
+				or _at_stmt_end()):
+			_err("expected ',' or '=' after '%s', found '%s'" % [nt.value, _cur().value],
+				"`T a, b` gives every name the one type. To give each name its own type, "
+				+ "destructure: `var [T a, U b] = value`.")
+			_skip_to_statement_end()
+			return null
 
 	if _check_op("{"):
 		_advance()
@@ -618,21 +628,39 @@ func _parse_typed_decl() -> GateAST._VarDecl:
 			if not _match_op(","):
 				break
 		_expect_op("}", "to close the property requirement")
+		_clone_names(vd, extra_names)
 		return vd
 
+	if _check_op("=") and not extra_names.is_empty():
+		_err("a value after several names is ambiguous: only '%s' would get it" % vd.name,
+			"put each name on its own line, or destructure: `var [T a, T b] = [x, y]`.")
+		_skip_to_statement_end()
+		return null
 	if _match_op("="):
 		vd.value = _parse_expr()
 	_parse_accessors(vd)
+	_clone_names(vd, extra_names)
+	return vd
 
-	for n in extra_names:
+
+func _clone_names(vd: GateAST._VarDecl, names: Array) -> void:
+	for n in names:
 		var clone: GateAST._VarDecl = GateAST._VarDecl.new()
 		clone.at(vd.line, vd.col)
 		clone.name = n
 		clone.type = vd.type
 		clone.is_static = vd.is_static
 		clone.visibility = vd.visibility
+		clone.accessor_requirement = vd.accessor_requirement.duplicate()
 		_extra_decls.append(clone)
-	return vd
+
+
+func _share_modifiers(vd: GateAST._VarDecl) -> void:
+	for x in _extra_decls:
+		var clone: GateAST._VarDecl = x
+		clone.annotations = vd.annotations.duplicate()
+		clone.visibility = vd.visibility
+		clone.is_static = vd.is_static
 
 const MAX_BLOCK_DEPTH := 48
 

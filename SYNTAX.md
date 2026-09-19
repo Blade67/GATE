@@ -70,10 +70,12 @@ float speed             # var speed: float = 0.0
 str label = "player"    # var label: String = "player"
 ```
 
-Without an initialiser the declaration takes the type's default value. Fields of the same
-type can share a line. Parameters keep GDScript's own form, `name: Type`; the type-first
-spelling is for declarations. A value of a known type that Godot would refuse for the declared type,
-such as `int hp = "full"`, is a compile error.
+Without an initialiser the declaration takes the type's default value. Names of the same
+type can share a line, `int a, b`, and the line's annotations and modifiers apply to every
+name. A value after several names, `int a, b = 3`, is an error, since only one of them
+would get it. Parameters keep GDScript's own form, `name: Type`; the type-first spelling
+is for declarations. A value of a known type that Godot would refuse for the declared
+type, such as `int hp = "full"`, is a compile error.
 
 **`str` is `String`.** Every name in the table above is a spelling, not a type: `str` is
 Godot's `String`, `vec2` is `Vector2`, `f64` is `float`. There is no GATE string type, no
@@ -143,11 +145,12 @@ f64[][] grid            # Array[PackedFloat64Array]
 GATE adds nothing here. It enforces what GDScript enforces, because a `.gate` file never
 reaches Godot's parser and a line GATE quietly threw away was a line nobody reported.
 
-A line holds one statement. `out += "x" "y"` and `a() b()` are errors: a missing operator or
-comma reads as a second statement, and the second half used to be dropped in silence.
-Separate two statements with `;` or a line break. What GATE deliberately does not model still
-passes through: Godot 3's `setget`, its parenthesis-free `assert`, and `@tool class_name X`
-on one line.
+A line holds one statement, and anything left on the line after it is an error:
+`out += "x" "y"`, `a() b()` and `total = base bonus` all are. A missing operator or comma
+used to split a line in two, and the second half was dropped or became a statement of its
+own, in silence. Separate two statements with `;` or a line break. What GATE deliberately
+does not model still passes through: Godot 3's `setget`, its parenthesis-free `assert`, and
+`@tool class_name X` on one line.
 
 An indented line must belong to a block. One that opens nothing, in a class body, is an error
 rather than raw text in the output.

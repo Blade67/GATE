@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Changed
+
+- **A token left over on a line is an error.** `total = base bonus` compiled to
+  `total = base` and then `bonus` on a line of its own, which Godot accepts. Only leftovers
+  that looked like a second statement were caught before.
+- **`int a, b = 3` is an error.** The value went to `a`, and `b` got 0. Put each name on
+  its own line, or destructure.
+
 ### Fixed
 
 - **An overloaded method called through a class name from another file produced a call
@@ -11,6 +19,14 @@
   "DamageMath"*. GATE only warned, and the warning said the type of the receiver was
   unknown when the receiver was the class itself. Both the flat case and a class nested
   inside another, `Outer.Inner.pick(3)`, now emit the name the declaring file wrote.
+- **Issue #9's line compiled wrong without a word.** In
+  `C_MoveIntent[] intents, C_MoveSpeed[] movespeeds = components`, GATE read `C_MoveSpeed`
+  as a second variable and the rest of the line as separate statements. With a member named
+  `movespeeds` in scope, Godot accepted the result, and it assigned the whole array to that
+  member. It is now an error that points at the destructuring form.
+- **Annotations and modifiers reached only the first name in `T a, b`.** `@export int a, b`
+  exported `a` alone, and `static` and `priv` did the same. They now apply to every name.
+- **`int a, b { get }` in an interface required only `a`.** Every name is required now.
 
 ## 1.1.1 - 2026-09-18
 
