@@ -250,6 +250,7 @@ func _check_func(fd: GateAST._FuncDecl, cls: String) -> void:
 	_destructured = {}
 	var saved_aliases: Dictionary = _typed_aliases
 	_typed_aliases = {}
+	_elem_reported = {}
 	var saved_env: Dictionary = _env
 	var saved_narrowed: Dictionary = _narrowed
 	var saved_fresh: Dictionary = _fresh
@@ -319,10 +320,17 @@ func _check_param_default(pp: GateAST._Param, owner: String) -> void:
 
 
 func _walk_block(body: Array) -> bool:
+	# a block is nullcheck's own scope boundary: a typed-destructured alias declared
+	# inside (if/elif/else, while, for, a match arm, a lambda body - every caller of
+	# this function) must not be visible once the block ends, even though `_locals`
+	# itself is flat and never un-declares a name.
+	var saved_aliases: Dictionary = _typed_aliases
+	_typed_aliases = _typed_aliases.duplicate()
 	var exits: bool = false
 	for s in body:
 		if _walk_stmt(s):
 			exits = true
+	_typed_aliases = saved_aliases
 	return exits
 
 
@@ -385,6 +393,8 @@ func _walk_stmt(s) -> bool:
 		if a.op == "=" and a.target is GateAST._Index:
 			_check_alias_element((a.target as GateAST._Index).target, a.value,
 				"an element of '%s'" % _shown((a.target as GateAST._Index).target), a.line, a.col)
+		elif a.op == "=" and a.target is GateAST._Ident:
+			_check_alias_whole_assign(a.target, a.value, a.line, a.col)
 		if a.op != "=":
 			_check_value_operand(a.target, a.op, a.line, a.col)
 			if _gate_types:
@@ -436,7 +446,18 @@ func _walk_stmt(s) -> bool:
 				else:
 					_env[path] = _S.MAYBE
 			elif a.op == "=" and not retype and not (a.target is GateAST._Index
-					and _tuple_slot(a.target as GateAST._Index, false) != null):
+					and _tuple_slot(a.target as GateAST._Index, false) != null) \
+					and not _alias_reassign_ok(a.target, a.value) \
+					and not (a.target is GateAST._Index
+						and (a.target as GateAST._Index).target is GateAST._Ident
+						and _typed_aliases.has(
+							((a.target as GateAST._Index).target as GateAST._Ident).name)):
+				# an alias index write was already reported, with the clearer message,
+				# by `_check_alias_element` above (minor 6); a whole-alias reassignment
+				# only skips the escape diagnostic when it is not a real escape either
+				# (I4/B: alias = alias of the same element type) - anything else (a
+				# literal, null, a real array of the wrong type, or an alias of a
+				# different element type) is checked exactly as it always was
 				a.value = _check_value_against(_type_of(a.target), a.value,
 					"'%s'" % path, a.line, a.col)
 		if not _accessor(a.target).is_empty():
@@ -594,6 +615,7 @@ func _declared_gate_shape(e) -> bool:
 
 var _destructured: Dictionary = {}
 var _typed_aliases: Dictionary = {}   ## destructured name -> its typed-container type
+var _elem_reported: Dictionary = {}   ## literal elements an alias check already reported
 
 
 func _adopt_callable_type(decl: GateAST._TypeRef, value) -> void:
@@ -629,12 +651,19 @@ func _walk_destructure(ma: GateAST._MultiAssign) -> void:
 		var name: String = (ma.targets[i] as GateAST._Ident).name
 		var slot: GateAST._TypeRef = vt.tuple_elems[i] if tuple and i < vt.tuple_elems.size() else null
 		var declared: GateAST._TypeRef = ma.declared_type(i)
-		if declared != null and slot != null and not _same_slot(declared, slot):
+		if declared != null and slot != null:
 			var at_line: int = declared.line if declared.line != 0 else ma.line
 			var at_col: int = declared.col if declared.line != 0 else ma.col
-			_err("'%s' is declared %s, but slot %d of %s is %s" % [name, declared.describe(), i,
-					vt.describe(), slot.describe()], at_line, at_col,
-				"leave the type off to take the slot's, or change the tuple's type")
+			if not _same_slot(declared, slot):
+				_err("'%s' is declared %s, but slot %d of %s is %s" % [name, declared.describe(), i,
+						vt.describe(), slot.describe()], at_line, at_col,
+					"leave the type off to take the slot's, or change the tuple's type")
+			elif slot.nullable and not declared.nullable and not _pattern_is_variant(declared):
+				var slot_path: String = _path_of(src)
+				var desc: String = "'%s[%d]'" % [slot_path, i] if slot_path != "" else "the value"
+				_err("%s may be null, but '%s' is not nullable" % [desc, name], at_line, at_col,
+					"declare it `%s?`, or guard the slot for null before destructuring"
+						% declared.describe())
 		var et: GateAST._TypeRef = declared if declared != null else slot
 		_declare_local(name, et, declared == null)
 		_destructured[name] = true
@@ -646,9 +675,132 @@ func _walk_destructure(ma: GateAST._MultiAssign) -> void:
 			_env[name] = _S.MAYBE
 
 
-func _same_slot(a: GateAST._TypeRef, b: GateAST._TypeRef) -> bool:
-	return GateTypeCompat.assignable(a, b, infer, false) == GateTypeCompat.YES \
-			and GateTypeCompat.assignable(b, a, infer, false) == GateTypeCompat.YES
+## `Variant` (or no type at all) takes any slot: nullable, container or not, no
+## conversion needed. A pattern name declared this way is never a typed container
+## itself, so `_walk_destructure` never tracks it in `_typed_aliases` either -
+## it is genuinely untyped, same as if the name had no declared type at all.
+func _pattern_is_variant(t: GateAST._TypeRef) -> bool:
+	return t.array_depth == 0 and not t.is_dict() \
+		and (t.name == "" or GateTypes.canonical(t.name) == "Variant")
+
+
+## Lossless widenings `GateTypeCompat.assignable` does not itself carry, because its
+## `IMPLICIT` table is shared with GATE's general union-widening and changing it there
+## would loosen unrelated conversions project-wide. Kept local to the slot rule instead.
+const SLOT_WIDENS := {
+	"bool": ["int"], "Vector2i": ["Vector2"], "Vector3i": ["Vector3"], "Vector4i": ["Vector4"],
+}
+
+
+func _is_enum_type(t: GateAST._TypeRef) -> bool:
+	var leaf: String = t.name.get_slice(".", t.name.get_slice_count(".") - 1)
+	return _enum_names.has(t.name) or _enum_names.has(leaf)
+
+
+func _slot_widens(slot: GateAST._TypeRef, declared: GateAST._TypeRef) -> bool:
+	var dn: String = GateTypes.canonical(declared.name)
+	if dn == "int" and _is_enum_type(slot):
+		return true
+	var sn: String = GateTypes.canonical(slot.name)
+	return (SLOT_WIDENS.get(sn, []) as Array).has(dn)
+
+
+## Structural equality by canonical name, recursively through a container's element
+## (or a dict's key and value) - `str` and `String` compare equal, `int[]` and
+## `Array[int]` compare equal, where `_same_type`'s `describe()` string compare does
+## not (a shorthand spelling is never canonicalised before being printed). Generic
+## arguments and callable signatures are compared too, and every nested type's
+## nullability; only the top-level `.nullable` is ignored, for the caller to judge.
+func _canon_shape(a: GateAST._TypeRef, b: GateAST._TypeRef) -> bool:
+	if a == null or b == null:
+		return a == b
+	var a_ct: bool = GateTypeCompat.typed_container(a)
+	var b_ct: bool = GateTypeCompat.typed_container(b)
+	if a_ct or b_ct:
+		if not (a_ct and b_ct):
+			return false
+		var a_dict: bool = a.is_dict() or GateTypes.canonical(a.name) == "Dictionary"
+		var b_dict: bool = b.is_dict() or GateTypes.canonical(b.name) == "Dictionary"
+		if a_dict != b_dict:
+			return false
+		if a_dict:
+			return _canon_eq(GateTypeCompat.container_elem(a, true), GateTypeCompat.container_elem(b, true)) \
+				and _canon_eq(GateTypeCompat.container_elem(a, false), GateTypeCompat.container_elem(b, false))
+		return _canon_eq(GateTypeCompat.container_elem(a), GateTypeCompat.container_elem(b))
+	if a.is_union() != b.is_union() or a.is_tuple() != b.is_tuple():
+		return false
+	if a.array_depth != b.array_depth or (a.array_depth > 0 and a.elem_nullable != b.elem_nullable):
+		return false
+	if a.is_union():
+		if a.union_members.size() != b.union_members.size():
+			return false
+		for i in a.union_members.size():
+			if not _canon_eq(a.union_members[i], b.union_members[i]):
+				return false
+		return true
+	if a.is_tuple():
+		if a.tuple_elems.size() != b.tuple_elems.size():
+			return false
+		for i in a.tuple_elems.size():
+			if not _canon_eq(a.tuple_elems[i], b.tuple_elems[i]):
+				return false
+		return true
+	var a_fn: bool = a.is_func_type or a.sig_known
+	var b_fn: bool = b.is_func_type or b.sig_known
+	if not a_fn and b_fn and GateTypes.canonical(a.name) == "Callable" and a.generic_args.is_empty():
+		return true
+	if a_fn != b_fn:
+		return false
+	if a_fn:
+		if a.callable_params.size() != b.callable_params.size() \
+				or a.callable_optional != b.callable_optional or a.callable_rest != b.callable_rest \
+				or not _canon_same(a.callable_return, b.callable_return):
+			return false
+		for i in a.callable_params.size():
+			if not _canon_same(a.callable_params[i], b.callable_params[i]):
+				return false
+		return true
+	if GateTypes.canonical(a.name) != GateTypes.canonical(b.name) \
+			or a.generic_args.size() != b.generic_args.size():
+		return false
+	for i in a.generic_args.size():
+		if not _canon_eq(a.generic_args[i], b.generic_args[i]):
+			return false
+	return true
+
+
+## `_canon_shape` plus a strict top-level nullable match, for a caller (alias-to-alias
+## reassignment) that must tell `Move[]` and `Move[]?` apart rather than treat a
+## nullability difference as sameness.
+func _canon_eq(a: GateAST._TypeRef, b: GateAST._TypeRef) -> bool:
+	if a == null or b == null:
+		return a == b
+	return _canon_shape(a, b) and a.nullable == b.nullable
+
+
+## `_canon_eq` both ways round, for types that must match exactly.
+func _canon_same(a: GateAST._TypeRef, b: GateAST._TypeRef) -> bool:
+	return _canon_eq(a, b) and _canon_eq(b, a)
+
+
+## A pattern type conflicts with the tuple slot it names when it cannot hold the
+## slot's value without loss. A container stays invariant, but an identical one
+## passes - `assignable`'s own array branch can only ever answer NO or UNKNOWN, never
+## YES, so invariance is judged by canonical structural equality instead, which also
+## lets a nullable container (`T[]?`) take a non-null slot of the same shape: nothing
+## about *which* container it is changed, only whether the local itself can be null,
+## and that is `_walk_destructure`'s own separate nullability check below, not this
+## one. A scalar or object may widen one way - into Variant (any slot, handled
+## above), into a wider class, `int` into `float`, `bool` into `int`, an enum into
+## `int`, or `Vector*i` into `Vector*` - but never narrow, and never an unrelated type.
+## Nullability is judged separately by the caller: this ignores it, like `assignable` does.
+func _same_slot(declared: GateAST._TypeRef, slot: GateAST._TypeRef) -> bool:
+	if _pattern_is_variant(declared):
+		return true
+	if declared.array_depth > 0 or declared.is_dict() or slot.array_depth > 0 or slot.is_dict():
+		return _canon_shape(declared, slot)
+	return GateTypeCompat.assignable(slot, declared, infer, true) == GateTypeCompat.YES \
+			or _slot_widens(slot, declared)
 
 
 func _walk_if(st: GateAST._IfStmt) -> bool:
@@ -798,6 +950,10 @@ func _walk_for(f: GateAST._ForStmt) -> void:
 	var it: GateAST._TypeRef = _static_type_of(f.iterable)
 	var it_n: GateAST._TypeRef = _type_of(f.iterable)
 	var carried: Dictionary = {}
+	# same reason as `_check_lambda`: the loop variable is declared (and so erased
+	# from `_typed_aliases`) before `_walk_block` snapshots it
+	var saved_aliases: Dictionary = _typed_aliases
+	_typed_aliases = _typed_aliases.duplicate()
 	var outer: Array = _open_scope(f.var_names)
 	if f.var_names.size() == 2 and it != null and it.is_dict() and not f.is_enumerate:
 		_declare_local(f.var_names[0], it.dict_key, true)
@@ -833,6 +989,7 @@ func _walk_for(f: GateAST._ForStmt) -> void:
 	_break_envs.pop_back()
 	_continue_envs.pop_back()
 	_close_scope(f.var_names, outer)
+	_typed_aliases = saved_aliases
 
 
 func _open_scope(names: Array) -> Array:
@@ -902,6 +1059,10 @@ func _walk_match(mt: GateAST._MatchStmt) -> bool:
 		var bound: Array = _pattern_bindings(br[0])
 		var saved_names: Dictionary = _local_names.duplicate()
 		var outer: Array = _open_scope(bound)
+		# same reason as `_check_lambda`/`_walk_for`: a bound name is declared (and
+		# so erased from `_typed_aliases`) before `_walk_block` snapshots it
+		var saved_aliases: Dictionary = _typed_aliases
+		_typed_aliases = _typed_aliases.duplicate()
 		for bn in bound:
 			_declare_local(bn, null, true)
 			_kill_path(bn)
@@ -914,6 +1075,7 @@ func _walk_match(mt: GateAST._MatchStmt) -> bool:
 		var exits: bool = _walk_block(br[2])
 		_close_scope(bound, outer)
 		_local_names = saved_names
+		_typed_aliases = saved_aliases
 		if exits:
 			continue
 		joined = _state_copy() if joined == null else _join_state(joined, _state_copy())
@@ -1658,6 +1820,9 @@ func _check_literal_elements(decl: GateAST._TypeRef, value, what: String, line: 
 		if et == null:
 			return
 		for el in (value as GateAST._ArrayLit).elements:
+			if _elem_reported.has(el):
+				_elem_reported.erase(el)
+				continue
 			_check_known_plain(et, el, "an element of %s" % what, el.line, el.col)
 		return
 	var dl: GateAST._DictLit = value
@@ -1749,15 +1914,70 @@ static func _godot_accepts(from: String, to: String, literal: bool) -> bool:
 	return _accepts_cache[key]
 
 
+## `alias = other_alias` is not a real escape only when both hold the same declared
+## type - Move[] into Move[], not Move[] into Mark[] - since a mismatched pair still
+## needs to be caught, just not by the "holds a destructured array" message: with
+## the elements plainly incompatible, the normal check below reports it just as well.
+## A non-null alias may go into a nullable one; the reverse is a null problem.
+func _alias_reassign_ok(target, value) -> bool:
+	if not (target is GateAST._Ident) or not _typed_aliases.has((target as GateAST._Ident).name):
+		return false
+	if not (value is GateAST._Ident) or not _typed_aliases.has((value as GateAST._Ident).name):
+		return false
+	var t: GateAST._TypeRef = _typed_aliases[(target as GateAST._Ident).name]
+	var v: GateAST._TypeRef = _typed_aliases[(value as GateAST._Ident).name]
+	return _canon_shape(t, v) and (t.nullable or not v.nullable)
+
+
 func _check_alias_escape(decl: GateAST._TypeRef, value, what: String, line: int, col: int) -> bool:
 	if not GateTypeCompat.typed_container(decl) or not (value is GateAST._Ident) \
 			or not _typed_aliases.has((value as GateAST._Ident).name):
 		return false
 	var n: String = (value as GateAST._Ident).name
+	var vt: GateAST._TypeRef = _typed_aliases[n]
+	# a nullable alias into a non-null declaration of the same shape is reported by
+	# the null check at the call site
+	if _canon_shape(decl, vt) and vt.nullable and not decl.nullable:
+		return false
 	_err("'%s' holds a destructured array, which is whatever the source slot held, and %s needs a real %s"
 			% [n, what, decl.describe()], line, col,
 		"copy it into one: `%s typed = []`, then `typed.assign(%s)`" % [decl.describe(), n])
 	return true
+
+
+## Godot never checks a destructured alias, so a whole-value reassignment
+## (`moves = ...`) needs its own check, same as an element store already gets.
+## `_check_value_against`/`_check_alias_escape` cover a scalar, null, and a
+## different-element alias already; this covers what they cannot:
+## - an array literal, whose elements `_godot_known_type` cannot see through a
+##   `.new()` call (the general fix belongs to that function, not here - reuse the
+##   same element-by-element check `append_array`'s literal branch already does).
+## - a real, already-typed container (a plain `Array[Mark]`/`Mark[]` local, or field)
+##   of the wrong shape, which the coarse "Array accepts Array" Godot-probe never
+##   sees past either.
+func _check_alias_whole_assign(target, value, line, col) -> void:
+	if not (target is GateAST._Ident) or not _typed_aliases.has((target as GateAST._Ident).name):
+		return
+	if value is GateAST._Ident and _typed_aliases.has((value as GateAST._Ident).name):
+		return   # an alias value is `_alias_reassign_ok`'s and `_check_alias_escape`'s job
+	var t: GateAST._TypeRef = _typed_aliases[(target as GateAST._Ident).name]
+	var what: String = "'%s'" % (target as GateAST._Ident).name
+	if value is GateAST._ArrayLit:
+		var want: GateAST._TypeRef = GateTypeCompat.container_elem(t)
+		if want == null:
+			return
+		for el in (value as GateAST._ArrayLit).elements:
+			var el_t: GateAST._TypeRef = _value_type(el)
+			if el_t != null and GateTypeCompat.assignable(el_t, want, infer) == GateTypeCompat.NO:
+				_err("an element of %s is %s, and %s cannot be stored there" % [what, want.describe(),
+						GateTypeCompat.describe(el_t)], line, col,
+					"Godot does not check a destructured array, so GATE does")
+				_elem_reported[el] = true
+		return
+	var vt: GateAST._TypeRef = _value_type(value)
+	if vt != null and GateTypeCompat.typed_container(vt) and not _canon_shape(t, vt):
+		_err("%s is %s, and %s cannot be stored there" % [what, t.describe(), vt.describe()],
+			line, col, "Godot does not check a destructured array, so GATE does")
 
 
 func _check_gate_source(decl: GateAST._TypeRef, value, what: String, line: int, col: int) -> void:
@@ -2091,10 +2311,21 @@ func _check_array_store_call(c: GateAST._Call) -> void:
 	if m.target is GateAST._Ident and _typed_aliases.has((m.target as GateAST._Ident).name):
 		var what: String = "an element of '%s'" % (m.target as GateAST._Ident).name
 		if m.name == "append_array" and c.args.size() == 1:
-			var at_t: GateAST._TypeRef = _value_type(c.args[0])
-			var at_e: GateAST._TypeRef = GateTypeCompat.container_elem(at_t)
 			var want: GateAST._TypeRef = GateTypeCompat.container_elem(
 				_typed_aliases[(m.target as GateAST._Ident).name])
+			if want != null and c.args[0] is GateAST._ArrayLit:
+				# an array literal reads as a tuple to `_value_type`, so it never
+				# reaches the general array-vs-array check below; check element by
+				# element instead, same as a single-value store
+				for el in (c.args[0] as GateAST._ArrayLit).elements:
+					var el_t: GateAST._TypeRef = _value_type(el)
+					if el_t != null and GateTypeCompat.assignable(el_t, want, infer) == GateTypeCompat.NO:
+						_err("%s is %s, and %s cannot be stored there" % [what, want.describe(),
+								GateTypeCompat.describe(el_t)], c.line, c.col,
+							"Godot does not check a destructured array, so GATE does")
+				return
+			var at_t: GateAST._TypeRef = _value_type(c.args[0])
+			var at_e: GateAST._TypeRef = GateTypeCompat.container_elem(at_t)
 			if at_e != null and want != null \
 					and GateTypeCompat.assignable(at_e, want, infer) == GateTypeCompat.NO:
 				_err("%s is %s, and %s holds %s" % [what, want.describe(),
@@ -2520,6 +2751,11 @@ func _check_lambda(lam: GateAST._Lambda) -> void:
 	var saved_locals: Dictionary = _locals.duplicate()
 	var saved_names: Dictionary = _local_names.duplicate()
 	var saved_ret: GateAST._TypeRef = _ret
+	# a parameter is declared (and so erased from `_typed_aliases`) before
+	# `_walk_block` takes its own snapshot; take this one first, or a parameter
+	# reusing an outer alias's name erases that alias for good
+	var saved_aliases: Dictionary = _typed_aliases
+	_typed_aliases = _typed_aliases.duplicate()
 	var carried: Dictionary = {}
 	for k in _env:
 		if _captured_by_value(String(k)):
@@ -2557,6 +2793,7 @@ func _check_lambda(lam: GateAST._Lambda) -> void:
 	_locals = saved_locals
 	_local_names = saved_names
 	_ret = saved_ret
+	_typed_aliases = saved_aliases
 
 
 func _captured_by_value(key: String) -> bool:
@@ -3103,7 +3340,9 @@ func _check_store_call(c: GateAST._Call) -> void:
 		else:
 			fd = _pick_arity(infer.method_candidates(n, "_init"), c.args.size())
 			if fd == null:
-				_check_field_init(c, n, infer.struct_names.get(n, null))
+				var sd_new: GateAST._ClassDecl = infer.struct_names.get(n, null)
+				if not _check_field_init(c, n, sd_new) and sd_new != null:
+					_check_struct_args(c, sd_new)
 				return
 	elif c.callee is GateAST._Ident:
 		var sn: String = (c.callee as GateAST._Ident).name
