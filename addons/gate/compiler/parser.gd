@@ -1257,18 +1257,47 @@ func _parse_destructure() -> GateAST._Stmt:
 	st.destructure = true
 	_expect_op("[", "to open the destructuring pattern")
 	while not _at_end() and not _check_op("]"):
-		if _check(GateLexer._T.IDENT):
-			var id: GateAST._Ident = GateAST._Ident.new()
-			var t: GateLexer._Token = _advance()
-			id.name = t.value
-			id.at(t.line, t.col)
-			st.targets.append(id)
+		if not _parse_pattern_name(st):
+			_skip_to_statement_end()
+			return null
 		if not _match_op(","):
 			break
 	_expect_op("]", "to close the destructuring pattern")
 	_expect_op("=", "in a destructuring assignment")
 	st.values.append(_parse_expr())
 	return st
+
+
+func _parse_pattern_name(st: GateAST._MultiAssign) -> bool:
+	var tt: GateAST._TypeRef = null
+	if _check(GateLexer._T.IDENT) and (_peek(1).is_op(",") or _peek(1).is_op("]")
+			or _peek(1).is_op(":")):
+		var t: GateLexer._Token = _advance()
+		if _match_op(":"):
+			tt = _parse_type()
+		_add_pattern_name(st, t, tt)
+		return true
+	if not (_check(GateLexer._T.IDENT) or _check_op("<") or _check_op("{") or _check_op("(")):
+		_err("expected a name in the destructuring pattern, found '%s'" % _cur().value,
+			"write `name`, `name: Type` or `Type name`, separated by commas.")
+		return false
+	tt = _parse_type()
+	if tt == null or not _at_name():
+		_err("expected a name after the type in the destructuring pattern, found '%s'"
+			% _cur().value, "write `Type name` or `name: Type`.")
+		return false
+	_add_pattern_name(st, _advance(), tt)
+	return true
+
+
+func _add_pattern_name(st: GateAST._MultiAssign, t: GateLexer._Token, tt: GateAST._TypeRef) -> void:
+	var id: GateAST._Ident = GateAST._Ident.new()
+	id.name = t.value
+	id.at(t.line, t.col)
+	st.targets.append(id)
+	if tt != null:
+		tt.strict = true
+	st.target_types.append(tt)
 
 
 func _comma_starts_multi_assign() -> bool:

@@ -274,6 +274,27 @@ static func _element(t: GateAST._TypeRef) -> GateAST._TypeRef:
 	return e
 
 
+static func typed_container(t: GateAST._TypeRef) -> bool:
+	if t == null or t.is_tuple() or t.is_union():
+		return false
+	if t.array_depth > 0 or t.is_dict():
+		return true
+	var c: String = GateTypes.canonical(t.name)
+	return (c == "Array" or c == "Dictionary") and not t.generic_args.is_empty()
+
+
+static func container_elem(t: GateAST._TypeRef, key: bool = false) -> GateAST._TypeRef:
+	if not typed_container(t):
+		return null
+	if t.is_dict():
+		return t.dict_key if key else t.dict_value
+	if t.array_depth > 0:
+		return null if key else _element(t)
+	if GateTypes.canonical(t.name) == "Dictionary":
+		return t.generic_args[0 if key else 1] if t.generic_args.size() == 2 else null
+	return null if key else t.generic_args[0]
+
+
 static func _object(vn: String, tn: String, infer) -> int:
 	if vn == tn:
 		return YES

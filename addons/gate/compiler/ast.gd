@@ -431,6 +431,10 @@ class _MultiAssign extends _Stmt:
 	var values: Array = []             ## Array[_Expr]; single value = destructure
 	var declares: bool = false
 	var destructure: bool = false
+	var target_types: Array = []       ## a destructuring pattern's _TypeRef per name, null if none
+
+	func declared_type(i: int) -> _TypeRef:
+		return target_types[i] if i < target_types.size() else null
 
 
 class _RawStmt extends _Stmt:

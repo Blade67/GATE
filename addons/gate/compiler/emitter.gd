@@ -785,6 +785,7 @@ func _emit_func(fd: GateAST._FuncDecl) -> void:
 func _emit_fn_body(fd: GateAST._FuncDecl) -> void:
 	var saved: Dictionary = _var_types.duplicate()
 	var saved_depths: Dictionary = _var_depths.duplicate()
+	var saved_aliases: Dictionary = _typed_aliases.duplicate()
 	var saved_locals: Dictionary = _fn_locals
 	var saved_dict_values: Dictionary = _var_dict_values.duplicate()
 	var saved_assigned = _assigned_names
@@ -841,6 +842,7 @@ func _emit_fn_body(fd: GateAST._FuncDecl) -> void:
 		_scalar_names = saved_names
 	_var_types = saved
 	_var_depths = saved_depths
+	_typed_aliases = saved_aliases
 	_var_dict_values = saved_dict_values
 	_fn_locals = saved_locals
 	_assigned_names = saved_assigned
@@ -1608,7 +1610,10 @@ func _emit_statement(s) -> void:
 	elif s is GateAST._RawStmt:
 		_emit_raw(s)
 	elif s is GateAST._VarDecl:
+		_type_alias_read(s)
+		_type_alias_infer(s)
 		_emit_var(s)
+		_note_alias_copy(s)
 	elif s is GateAST._FuncDecl:
 		_emit_func(s)
 	elif s is GateAST._ClassDecl:
@@ -2145,22 +2150,32 @@ func _emit_multi_assign(m: GateAST._MultiAssign) -> void:
 	if m.destructure:
 		var src: String = _expr(m.values[0])
 		_flush_pending(m.line)
-		var tmp: String = _new_tmp()
-		_line("var %s = %s" % [tmp, src], m.line)
+		var holder: String = src
+		if not _reads_in_place(m, src):
+			holder = _new_tmp()
+			_line("var %s = %s" % [holder, src], m.line)
 		var st_t: GateAST._TypeRef = (m.values[0] as GateAST._Expr).flow_type \
 			if m.values[0] is GateAST._Expr else null
 		var elems: Array = st_t.tuple_elems if st_t != null and st_t.is_tuple() else []
-		var etrs: Array = []
-		for i in m.targets.size():
-			var et: GateAST._TypeRef = _elem_tref_of(m.values[0], i)
-			if et == null and i < elems.size():
-				et = elems[i]
-			etrs.append(et)
 		for i in m.targets.size():
 			var name: String = (m.targets[i] as GateAST._Ident).name
-			_line("var %s = %s" % [name, _copied("%s[%d]" % [tmp, i], etrs[i])], m.line)
-			_bind_elem(name, etrs[i])
-			if etrs[i] == null and m.values.size() == 1 and m.values[0] is GateAST._ArrayLit \
+			var et: GateAST._TypeRef = m.declared_type(i)
+			if et == null:
+				et = _elem_tref_of(m.values[0], i)
+			if et == null and i < elems.size():
+				et = elems[i]
+			var read: String = "%s[%d]" % [holder, i]
+			if GateTypeCompat.typed_container(et):
+				_line("var %s = %s" % [name, read], m.line)
+				_bind_elem(name, et)
+				_typed_aliases[name] = et
+				continue
+			var head: String = name
+			if _annotatable(et):
+				head = "%s: %s" % [name, _map_type(et)]
+			_line("var %s = %s" % [head, _copied(read, et)], m.line)
+			_bind_elem(name, et)
+			if et == null and m.values[0] is GateAST._ArrayLit \
 					and i < (m.values[0] as GateAST._ArrayLit).elements.size():
 				var lit_t: String = _static_type_of((m.values[0] as GateAST._ArrayLit).elements[i])
 				if lit_t != "":
@@ -2241,6 +2256,7 @@ func _emit_body(body: Array, src_line: int) -> void:
 	var saved_types: Dictionary = _var_types.duplicate()
 	var saved_depths: Dictionary = _var_depths.duplicate()
 	var saved_dicts: Dictionary = _var_dict_values.duplicate()
+	var saved_aliases: Dictionary = _typed_aliases.duplicate()
 	if body.is_empty():
 		_line("pass", src_line)
 	else:
@@ -2250,6 +2266,7 @@ func _emit_body(body: Array, src_line: int) -> void:
 	_var_types = saved_types
 	_var_depths = saved_depths
 	_var_dict_values = saved_dicts
+	_typed_aliases = saved_aliases
 	_indent -= 1
 
 
@@ -2258,27 +2275,105 @@ func _emit_for(st: GateAST._ForStmt) -> void:
 	var saved_types: Dictionary = _var_types.duplicate()
 	var saved_depths: Dictionary = _var_depths.duplicate()
 	var saved_dicts: Dictionary = _var_dict_values.duplicate()
+	var saved_aliases: Dictionary = _typed_aliases.duplicate()
 	_emit_for_inner(st)
 	_fn_locals = saved_locals
 	_var_types = saved_types
 	_var_depths = saved_depths
 	_var_dict_values = saved_dicts
+	_typed_aliases = saved_aliases
 
 
 func _loop_vars_in_scope(st: GateAST._ForStmt, shadow: bool = true, first: Dictionary = {}) -> void:
 	for i in st.var_names.size():
 		var vn: String = String(st.var_names[i])
 		_fn_locals[vn] = first if i == 0 else {}
+		_typed_aliases.erase(vn)
 		if shadow:
 			_shadow_name(vn)
 
 
 func _bind_elem(name: String, etr: GateAST._TypeRef) -> void:
+	_typed_aliases.erase(name)
 	_fn_locals[name] = _decl_info(_scope_class, etr) if etr != null else {}
 	_shadow_name(name)
 	if etr != null and etr.array_depth == 0 and not etr.is_union() and not etr.is_tuple():
 		_var_types[name] = etr.name
 		_var_depths[name] = 0
+
+
+func _reads_in_place(m: GateAST._MultiAssign, src: String) -> bool:
+	if not (m.values[0] is GateAST._Ident) or src != (m.values[0] as GateAST._Ident).name:
+		return false
+	if not _fn_locals.has(src):
+		return false
+	for t in m.targets:
+		if (t as GateAST._Ident).name == src:
+			return false
+	return true
+
+
+func _annotatable(t: GateAST._TypeRef) -> bool:
+	if t == null or t.is_union() or t.is_tuple() or GateTypeCompat.typed_container(t):
+		return false
+	if t.nullable and GateTypes.BUILTIN.has(GateTypes.canonical(t.name)):
+		return false
+	var mapped: String = _map_type(t)
+	return mapped != "" and mapped != "Variant"
+
+
+func _alias_loop_type(it) -> GateAST._TypeRef:
+	if not (it is GateAST._Ident) or not _typed_aliases.has((it as GateAST._Ident).name):
+		return null
+	var t: GateAST._TypeRef = _typed_aliases[(it as GateAST._Ident).name]
+	var el: GateAST._TypeRef = GateTypeCompat.container_elem(t, t.is_dict()
+		or GateTypes.canonical(t.name) == "Dictionary")
+	return el if _annotatable(el) else null
+
+
+func _type_alias_read(vd: GateAST._VarDecl) -> void:
+	if not _in_func_body or vd.type != null or not (vd.value is GateAST._Index):
+		return
+	var ix: GateAST._Index = vd.value
+	if not (ix.target is GateAST._Ident) or not _typed_aliases.has((ix.target as GateAST._Ident).name):
+		return
+	var el: GateAST._TypeRef = GateTypeCompat.container_elem(_typed_aliases[(ix.target as GateAST._Ident).name])
+	if not _annotatable(el):
+		return
+	vd.type = GateChecker.copy_type(el)
+	vd.inferred = false
+
+
+func _type_alias_infer(vd: GateAST._VarDecl) -> void:
+	if not _in_func_body or not vd.inferred or vd.type != null or vd.is_const or vd.value == null:
+		return
+	var refs: Dictionary = {}
+	GateChecker.idents_in(vd.value, refs, true)
+	var touches_alias: bool = false
+	for n in refs:
+		if _typed_aliases.has(n):
+			touches_alias = true
+			break
+	if not touches_alias:
+		return
+	var st: String = _static_type_of(vd.value)
+	if st != "":
+		var t: GateAST._TypeRef = GateAST._TypeRef.new()
+		t.name = st
+		if _annotatable(t):
+			vd.type = t
+	vd.inferred = false
+
+
+func _note_alias_copy(vd: GateAST._VarDecl) -> void:
+	if not _in_func_body:
+		return
+	_typed_aliases.erase(vd.name)
+	if vd.type == null and vd.value is GateAST._Ident \
+			and _typed_aliases.has((vd.value as GateAST._Ident).name):
+		var t: GateAST._TypeRef = _typed_aliases[(vd.value as GateAST._Ident).name]
+		_typed_aliases[vd.name] = t
+		_fn_locals[vd.name] = _decl_info(_scope_class, t)
 
 
 func _loop_var_info(st: GateAST._ForStmt) -> Dictionary:
@@ -2374,8 +2469,9 @@ func _emit_for_inner(st: GateAST._ForStmt) -> void:
 		var held: String = _new_tmp()   # asked twice, so read once
 		_line("var %s = %s" % [held, it2], st.line)
 		it2 = held
-	if st.var_type != null:
-		_line("for %s: %s in %s:" % [vn, _map_type(st.var_type), it2], st.line)
+	var loop_t: GateAST._TypeRef = st.var_type if st.var_type != null else _alias_loop_type(st.iterable)
+	if loop_t != null:
+		_line("for %s: %s in %s:" % [vn, _map_type(loop_t), it2], st.line)
 	else:
 		_line("for %s in %s:" % [vn, it2], st.line)
 	if asks:
@@ -2458,6 +2554,7 @@ func _emit_match(st: GateAST._MatchStmt) -> void:
 		var saved_depths: Dictionary = _var_depths.duplicate()
 		var saved_locals: Dictionary = _fn_locals.duplicate()
 		var saved_dicts: Dictionary = _var_dict_values.duplicate()
+		var saved_aliases: Dictionary = _typed_aliases.duplicate()
 		var parts: PackedStringArray = PackedStringArray()
 		var bind_copies: PackedStringArray = PackedStringArray()
 		var bind_renames: Dictionary = {}
@@ -2515,6 +2612,7 @@ func _emit_match(st: GateAST._MatchStmt) -> void:
 		_var_types = saved_types
 		_var_depths = saved_depths
 		_var_dict_values = saved_dicts
+		_typed_aliases = saved_aliases
 	_indent -= 1
 
 

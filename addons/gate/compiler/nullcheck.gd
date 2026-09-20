@@ -208,6 +208,7 @@ func _fields_of(cls: String) -> Dictionary:
 
 
 func _declare_local(name: String, t, inferred: bool = false) -> void:
+	_typed_aliases.erase(name)
 	_local_names[name] = true
 	_inferred.erase(JOINED + name)
 	if t != null:
@@ -247,6 +248,8 @@ func _follows_assignments(name: String) -> bool:
 func _check_func(fd: GateAST._FuncDecl, cls: String) -> void:
 	var saved_destructured: Dictionary = _destructured
 	_destructured = {}
+	var saved_aliases: Dictionary = _typed_aliases
+	_typed_aliases = {}
 	var saved_env: Dictionary = _env
 	var saved_narrowed: Dictionary = _narrowed
 	var saved_fresh: Dictionary = _fresh
@@ -299,6 +302,7 @@ func _check_func(fd: GateAST._FuncDecl, cls: String) -> void:
 	_ret = saved_ret
 	_in_static = saved_static
 	_destructured = saved_destructured
+	_typed_aliases = saved_aliases
 
 
 func _check_param_default(pp: GateAST._Param, owner: String) -> void:
@@ -359,6 +363,9 @@ func _walk_stmt(s) -> bool:
 			_note_joined(vd.name, vd.value)
 		_kill_path(vd.name)
 		_kill_index_var(vd.name)
+		if vd.type == null and vd.value is GateAST._Ident \
+				and _typed_aliases.has((vd.value as GateAST._Ident).name):
+			_typed_aliases[vd.name] = _typed_aliases[(vd.value as GateAST._Ident).name]
 		if carried != null:
 			_narrowed[vd.name] = carried
 		if vd.type != null and vd.type.nullable:
@@ -375,6 +382,9 @@ func _walk_stmt(s) -> bool:
 			_adopt_callable_type(_type_of(a.target), a.value)
 		_check_expr(a.value)
 		_check_expr(a.target)
+		if a.op == "=" and a.target is GateAST._Index:
+			_check_alias_element((a.target as GateAST._Index).target, a.value,
+				"an element of '%s'" % _shown((a.target as GateAST._Index).target), a.line, a.col)
 		if a.op != "=":
 			_check_value_operand(a.target, a.op, a.line, a.col)
 			if _gate_types:
@@ -583,6 +593,7 @@ func _declared_gate_shape(e) -> bool:
 
 
 var _destructured: Dictionary = {}
+var _typed_aliases: Dictionary = {}   ## destructured name -> its typed-container type
 
 
 func _adopt_callable_type(decl: GateAST._TypeRef, value) -> void:
@@ -616,13 +627,28 @@ func _walk_destructure(ma: GateAST._MultiAssign) -> void:
 		if not (ma.targets[i] is GateAST._Ident):
 			continue
 		var name: String = (ma.targets[i] as GateAST._Ident).name
-		var et: GateAST._TypeRef = vt.tuple_elems[i] if tuple and i < vt.tuple_elems.size() else null
-		_declare_local(name, et, true)
+		var slot: GateAST._TypeRef = vt.tuple_elems[i] if tuple and i < vt.tuple_elems.size() else null
+		var declared: GateAST._TypeRef = ma.declared_type(i)
+		if declared != null and slot != null and not _same_slot(declared, slot):
+			var at_line: int = declared.line if declared.line != 0 else ma.line
+			var at_col: int = declared.col if declared.line != 0 else ma.col
+			_err("'%s' is declared %s, but slot %d of %s is %s" % [name, declared.describe(), i,
+					vt.describe(), slot.describe()], at_line, at_col,
+				"leave the type off to take the slot's, or change the tuple's type")
+		var et: GateAST._TypeRef = declared if declared != null else slot
+		_declare_local(name, et, declared == null)
 		_destructured[name] = true
 		_kill_path(name)
 		_kill_index_var(name)
+		if GateTypeCompat.typed_container(et):
+			_typed_aliases[name] = et
 		if et != null and et.nullable:
 			_env[name] = _S.MAYBE
+
+
+func _same_slot(a: GateAST._TypeRef, b: GateAST._TypeRef) -> bool:
+	return GateTypeCompat.assignable(a, b, infer, false) == GateTypeCompat.YES \
+			and GateTypeCompat.assignable(b, a, infer, false) == GateTypeCompat.YES
 
 
 func _walk_if(st: GateAST._IfStmt) -> bool:
@@ -1723,7 +1749,20 @@ static func _godot_accepts(from: String, to: String, literal: bool) -> bool:
 	return _accepts_cache[key]
 
 
+func _check_alias_escape(decl: GateAST._TypeRef, value, what: String, line: int, col: int) -> bool:
+	if not GateTypeCompat.typed_container(decl) or not (value is GateAST._Ident) \
+			or not _typed_aliases.has((value as GateAST._Ident).name):
+		return false
+	var n: String = (value as GateAST._Ident).name
+	_err("'%s' holds a destructured array, which is whatever the source slot held, and %s needs a real %s"
+			% [n, what, decl.describe()], line, col,
+		"copy it into one: `%s typed = []`, then `typed.assign(%s)`" % [decl.describe(), n])
+	return true
+
+
 func _check_gate_source(decl: GateAST._TypeRef, value, what: String, line: int, col: int) -> void:
+	if _check_alias_escape(decl, value, what, line, col):
+		return
 	if not _gate_types or decl == null or value == null or decl.name == "" \
 			or GateTypes.canonical(decl.name) == "Variant":
 		return
@@ -1735,6 +1774,8 @@ func _check_gate_source(decl: GateAST._TypeRef, value, what: String, line: int, 
 
 
 func _check_gate_value(decl: GateAST._TypeRef, value, what: String, line: int, col: int) -> GateAST._Expr:
+	if _check_alias_escape(decl, value, what, line, col):
+		return value
 	if not _check_compat(decl, value, what, line, col):
 		return value
 	var st: int = _S.NOTNULL if decl.nullable or _is_null_literal(value) else _nullness(value)
@@ -2027,10 +2068,43 @@ const TUPLE_REORDERS := {"reverse": true, "sort": true, "sort_custom": true, "sh
 const ARRAY_STORES := {"append": 0, "push_back": 0, "push_front": 0, "insert": 1, "fill": 0}
 
 
+func _check_alias_element(target, value, what: String, line: int, col: int) -> void:
+	if not (target is GateAST._Ident) or not _typed_aliases.has((target as GateAST._Ident).name):
+		return
+	var t: GateAST._TypeRef = _typed_aliases[(target as GateAST._Ident).name]
+	var et: GateAST._TypeRef = GateTypeCompat.container_elem(t)
+	if et == null or value == null:
+		return
+	var vt: GateAST._TypeRef = _value_type(value)
+	if vt != null and GateTypeCompat.assignable(vt, et, infer) == GateTypeCompat.NO:
+		_err("%s is %s, and %s cannot be stored there" % [what, et.describe(),
+				GateTypeCompat.describe(vt)], line, col,
+			"Godot does not check a destructured array, so GATE does")
+		return
+	_check_known_plain(et, value, what, line, col)
+
+
 func _check_array_store_call(c: GateAST._Call) -> void:
 	if not (c.callee is GateAST._Member):
 		return
 	var m: GateAST._Member = c.callee
+	if m.target is GateAST._Ident and _typed_aliases.has((m.target as GateAST._Ident).name):
+		var what: String = "an element of '%s'" % (m.target as GateAST._Ident).name
+		if m.name == "append_array" and c.args.size() == 1:
+			var at_t: GateAST._TypeRef = _value_type(c.args[0])
+			var at_e: GateAST._TypeRef = GateTypeCompat.container_elem(at_t)
+			var want: GateAST._TypeRef = GateTypeCompat.container_elem(
+				_typed_aliases[(m.target as GateAST._Ident).name])
+			if at_e != null and want != null \
+					and GateTypeCompat.assignable(at_e, want, infer) == GateTypeCompat.NO:
+				_err("%s is %s, and %s holds %s" % [what, want.describe(),
+						_shown(c.args[0]), at_e.describe()], c.line, c.col,
+					"Godot does not check a destructured array, so GATE does")
+			return
+		if ARRAY_STORES.has(m.name) and c.args.size() > int(ARRAY_STORES[m.name]):
+			_check_alias_element(m.target, c.args[int(ARRAY_STORES[m.name])], what,
+				c.line, c.col)
+			return
 	if not ARRAY_STORES.has(m.name) or c.args.size() <= int(ARRAY_STORES[m.name]):
 		return
 	var tt: GateAST._TypeRef = _type_of(m.target)
@@ -2320,7 +2394,7 @@ func _check_expr(e) -> void:
 		if _gate_types:
 			_check_typed_call(c)
 			_check_tuple_call(c)
-			_check_array_store_call(c)
+		_check_array_store_call(c)
 		var callee_name: String = (c.callee as GateAST._Member).name if c.callee is GateAST._Member \
 			else ((c.callee as GateAST._Ident).name if c.callee is GateAST._Ident else "")
 		if callee_name == "emit" or callee_name == "connect" or callee_name == "emit_signal":
@@ -3043,7 +3117,12 @@ func _check_store_call(c: GateAST._Call) -> void:
 		return
 	for i in mini(c.args.size(), fd.params.size()):
 		var param: GateAST._Param = fd.params[i]
-		if param.type != null and GateChecker.is_gate_only_type(param.type):
+		if param.type == null:
+			continue
+		if _check_alias_escape(param.type, c.args[i],
+				"'%s' parameter '%s'" % [fd.name, param.name], c.line, c.col):
+			continue
+		if GateChecker.is_gate_only_type(param.type):
 			c.args[i] = _check_gate_value(param.type, c.args[i],
 				"'%s' parameter '%s'" % [fd.name, param.name], c.line, c.col)
 
@@ -3057,6 +3136,8 @@ func _check_struct_args(c: GateAST._Call, sd: GateAST._ClassDecl) -> void:
 		var what: String = "'%s.%s'" % [sd.name, vd.name]
 		if at >= c.args.size():
 			_require_default(vd, what, c.line, c.col)
+		elif vd.type != null and _check_alias_escape(vd.type, c.args[at], what, c.line, c.col):
+			pass
 		elif vd.type != null and GateChecker.is_gate_only_type(vd.type):
 			c.args[at] = _check_gate_value(vd.type, c.args[at], what, c.line, c.col)
 		elif vd.type != null and vd.type.strict:
@@ -3138,7 +3219,7 @@ func _check_call_site(c: GateAST._Call) -> void:
 		cands = _candidates(c, true)
 		via_narrowing = true
 	if cands.is_empty():
-		if _gate_types:
+		if _gate_types or not _typed_aliases.is_empty():
 			_check_store_call(c)
 		elif c.callee is GateAST._Ident:
 			var sn: String = (c.callee as GateAST._Ident).name

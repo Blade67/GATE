@@ -744,6 +744,10 @@ func _deep_helper(st: Dictionary) -> String:
 func _copy_value(e) -> String:
 	if _in_gate_helper:
 		return _expr(e)
+	if e is GateAST._Index and (e as GateAST._Index).target is GateAST._Ident \
+			and _typed_aliases.has(((e as GateAST._Index).target as GateAST._Ident).name):
+		var alias_t: GateAST._TypeRef = _typed_aliases[((e as GateAST._Index).target as GateAST._Ident).name]
+		return _copied(_expr(e), GateTypeCompat.container_elem(alias_t))
 	var sft: GateAST._TypeRef = _soa_field_tref(e)
 	if sft != null:
 		return _copied(_expr(e), sft)
@@ -2841,6 +2845,7 @@ func _emit_lambda(l: GateAST._Lambda) -> String:
 	var saved_types: Dictionary = _var_types.duplicate()
 	var saved_depths: Dictionary = _var_depths.duplicate()
 	var saved_dicts: Dictionary = _var_dict_values.duplicate()
+	var saved_aliases: Dictionary = _typed_aliases.duplicate()
 	var saved_in_body: bool = _in_func_body
 	var saved_no_hoist: String = _no_hoist
 	var saved_renames: Dictionary = _ident_renames
@@ -2854,6 +2859,7 @@ func _emit_lambda(l: GateAST._Lambda) -> String:
 		if _ident_renames.has(pp.name):
 			_ident_renames = _ident_renames.duplicate()
 			_ident_renames.erase(pp.name)
+		_typed_aliases.erase(pp.name)
 		_fn_locals[pp.name] = _decl_info(_scope_class, pp.type)
 		_shadow_name(pp.name)
 		if pp.type != null:
@@ -2873,6 +2879,7 @@ func _emit_lambda(l: GateAST._Lambda) -> String:
 	_var_types = saved_types
 	_var_depths = saved_depths
 	_var_dict_values = saved_dicts
+	_typed_aliases = saved_aliases
 	return out
 
 

@@ -111,6 +111,7 @@ var _structs: Dictionary = {}
 
 var _var_types: Dictionary = {}
 var _var_depths: Dictionary = {}
+var _typed_aliases: Dictionary = {}   ## destructured name -> its typed-container _TypeRef
 
 var _struct_ops: Dictionary = {}
 var _class_op_fds: Dictionary = {}   ## class name -> {operator symbol: _FuncDecl}, for a class's operators

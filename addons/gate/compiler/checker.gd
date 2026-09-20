@@ -1116,6 +1116,8 @@ class _AliasWalk extends RefCounted:
 			if not ma.declares:
 				for t in ma.targets:
 					expr(t, scope, own, "value")
+			for tt in ma.target_types:
+				GateChecker.substitute_type(tt, scope)
 			for v in ma.values:
 				expr(v, scope, own, "value")
 
@@ -1262,6 +1264,8 @@ func _check_type_names(members: Array, known: Dictionary) -> void:
 		elif m is GateAST._AssignStmt:
 			_check_type_names_in_expr((m as GateAST._AssignStmt).value, known)
 		elif m is GateAST._MultiAssign:
+			for tt in (m as GateAST._MultiAssign).target_types:
+				_check_one_type(tt, known)
 			for v in (m as GateAST._MultiAssign).values:
 				_check_type_names_in_expr(v, known)
 
@@ -2515,9 +2519,9 @@ func _tp_stmt(s, scopes: Array) -> void:
 		for v in ma.values:
 			_tp_expr(v, scopes)
 		if ma.declares:
-			for t in ma.targets:
-				if t is GateAST._Ident:
-					here[(t as GateAST._Ident).name] = null
+			for i in ma.targets.size():
+				if ma.targets[i] is GateAST._Ident:
+					here[(ma.targets[i] as GateAST._Ident).name] = ma.declared_type(i)
 	elif s is GateAST._ExprStmt:
 		_tp_expr((s as GateAST._ExprStmt).expr, scopes)
 	elif s is GateAST._ReturnStmt:
