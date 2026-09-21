@@ -22,6 +22,13 @@ var _in_inline_lambda: int = 0
 
 var _extra_decls: Array = []
 
+## A declaration moved out of a one-line class body by a leading `static` or
+## `@annotation` (see `_parse_class_body_after_colon`). Unlike `_extra_decls`,
+## this is drained only at a real multi-line block or the file level, so it
+## passes straight through any number of nested one-line class headers on
+## its way to the nearest scope that actually collects it.
+var _hoisted_decls: Array = []
+
 var _generic_uses: Array = []
 
 var _saw_nullable: bool = false

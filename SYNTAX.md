@@ -160,6 +160,21 @@ own, in silence. Separate two statements with `;` or a line break. What GATE del
 does not model still passes through: Godot 3's `setget` and its parenthesis-free `assert`.
 Several file annotations and `class_name` or `extends` on one line are read as one header.
 
+A `class`, `struct`, `interface`, `trait` or `namespace` header can carry its whole body as
+the one statement after the colon: `class Inner extends RefCounted: var z = 1`. That one
+member is the entire body, as it is in Godot. After the colon, a `;`, a `static` or an
+`@annotation` all end a one-line body rather than adding to it, and the declaration that
+follows then belongs to the nearest ENCLOSING multi-line scope - a real indented block, or
+the file itself - not to the header it sat next to: `class A: var z = 1; var w = 2`
+compiles, but `w` is not a field of `A`; and `class A: static var s = 3` / `class A: @export
+var e = 4` leave `A` empty and put `s`/`e` there instead. This passes through any number of
+nested one-line headers on the way out: `class A: class B: @export var e = 1` puts `e` on
+whatever encloses `A`, not on `A` or `B`. An `@annotation` stays on the moved declaration
+(`@export` keeps exporting it; a `static` written after the annotation survives too), but a
+bare leading `static` does not - Godot drops it, so the moved declaration is a plain
+instance member. Give each member its own line, or a real indented block, to avoid the
+surprise.
+
 An indented line must belong to a block. One that opens nothing, in a class body, is an error
 rather than raw text in the output.
 

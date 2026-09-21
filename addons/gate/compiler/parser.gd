@@ -32,6 +32,7 @@ func parse(tokens: Array, source: String, diags: GateDiagnostics) -> GateAST._Mo
 		if m != null:
 			mod.members.append(m)
 		_drain_extras(mod.members)
+		_drain_hoisted(mod.members)
 		_expect_stmt_end(before)
 		while _match_op(";"):
 			if _at_stmt_end():
@@ -41,6 +42,7 @@ func parse(tokens: Array, source: String, diags: GateDiagnostics) -> GateAST._Mo
 			if m2 != null:
 				mod.members.append(m2)
 			_drain_extras(mod.members)
+			_drain_hoisted(mod.members)
 			_expect_stmt_end(before2)
 		_skip_newlines()
 	mod.generic_uses = _generic_uses
@@ -217,6 +219,13 @@ func _parse_member() -> GateAST._Stmt:
 			(ed as GateAST._EnumDecl).annotations = annotations
 		return ed
 
+	if _check_kw("pass"):
+		var ss: GateAST._SimpleStmt = GateAST._SimpleStmt.new()
+		var pt: GateLexer._Token = _advance()
+		ss.at(pt.line, pt.col)
+		ss.keyword = "pass"
+		return ss
+
 	if _check_kw("var") or _check_kw("const"):
 		_leftover = -1
 		var vd: GateAST._VarDecl = _parse_var_decl(true)
@@ -379,8 +388,72 @@ func _parse_class_like() -> GateAST._ClassDecl:
 			break
 
 	_expect_op(":", "after the class header")
-	cd.members = _parse_block(true)
+	cd.members = _parse_class_body_after_colon()
 	return cd
+
+
+## Godot accepts a class body of exactly one statement on the header line
+## (`class A: var z = 1`). A `;` after it closes that body rather than chaining a second
+## member into the class, so this reads at most one member and never loops on `;`.
+##
+## `static ...` or `@annotation ...` right after the colon is not a legal one-line body
+## at all: Godot leaves the class empty and moves the declaration out to the nearest
+## enclosing multi-line scope, passing through any number of further one-line headers.
+## An annotation survives the move; a bare leading `static` is dropped. The move goes
+## through `_hoisted_decls`, which only a real block or the file level drains.
+func _parse_class_body_after_colon() -> Array:
+	if _check(GateLexer._T.COMMENT):
+		_advance()
+	if _check(GateLexer._T.NEWLINE) or _at_end():
+		return _parse_block(true)
+	var hoist_static: bool = _check_kw("static")
+	var hoist: bool = hoist_static or _check(GateLexer._T.ANNOTATION)
+	var out: Array = []
+	if _block_depth >= MAX_BLOCK_DEPTH:
+		if not _depth_reported:
+			var bt: GateLexer._Token = _cur()
+			diagnostics.error(
+				"blocks nest more than %d levels deep" % MAX_BLOCK_DEPTH, bt.line, bt.col,
+				"GATE's parser is written in GDScript and recurses once per level, so it "
+				+ "runs out of stack well before Godot's own parser does. Extract the "
+				+ "inner blocks into functions.")
+			_depth_reported = true
+			_panic = true
+			diagnostics.seal()
+		return out
+	var stmt_line: int = _cur().line
+	var stmt_col: int = _cur().col
+	_block_depth += 1
+	var m: GateAST._Stmt = _parse_member()
+	_block_depth -= 1
+	if m is GateAST._RawStmt:
+		# `_parse_member`'s raw-text fallback grabs whole source lines by number, which here
+		# would take the class header too. A one-line body only holds a member GATE parsed.
+		diagnostics.error("a one-line class body holds one member", stmt_line, stmt_col,
+			"give the class a real indented body, or move just this line there, so GATE "
+			+ "can read it")
+		return out
+	if hoist:
+		if hoist_static:
+			if m is GateAST._VarDecl:
+				(m as GateAST._VarDecl).is_static = false
+			elif m is GateAST._FuncDecl:
+				(m as GateAST._FuncDecl).is_static = false
+		if m != null:
+			_hoisted_decls.append(m)
+		# `int a, b` clones the extra names onto `_extra_decls` in source order, and those
+		# clones must move with `m` - same channel, same order - or `b` is collected a scope
+		# too early, the very bug this hoist exists to avoid for `m` itself.
+		for extra in _extra_decls:
+			if hoist_static and extra is GateAST._VarDecl:
+				(extra as GateAST._VarDecl).is_static = false
+			_hoisted_decls.append(extra)
+		_extra_decls = []
+		return out
+	if m != null:
+		out.append(m)
+	_drain_extras(out)
+	return out
 
 
 func _parse_func() -> GateAST._FuncDecl:
@@ -700,6 +773,7 @@ func _parse_block_body(is_class_body: bool) -> Array:
 		if s != null:
 			out.append(s)
 		_drain_extras(out)
+		_drain_hoisted(out)
 		_expect_stmt_end(before)
 		while _match_op(";"):
 			if _at_stmt_end():
@@ -709,6 +783,7 @@ func _parse_block_body(is_class_body: bool) -> Array:
 			if s2 != null:
 				out.append(s2)
 			_drain_extras(out)
+			_drain_hoisted(out)
 			_expect_stmt_end(before2)
 		_skip_newlines()
 	if _check(GateLexer._T.DEDENT):
@@ -759,6 +834,16 @@ func _drain_extras(into: Array) -> void:
 		return
 	into.append_array(_extra_decls)
 	_extra_decls = []
+
+
+## Collects declarations a one-line class body pushed out. Call only where a member is
+## genuinely settled - a real block or the file level - never in
+## `_parse_class_body_after_colon`, or a chain of headers stops the hoist too early.
+func _drain_hoisted(into: Array) -> void:
+	if _hoisted_decls.is_empty():
+		return
+	into.append_array(_hoisted_decls)
+	_hoisted_decls = []
 
 
 func _parse_lambda_inline_body(limit_line: int = 0) -> Array:

@@ -44,6 +44,21 @@
 
 ### Fixed
 
+- **A one-line class body was refused.** `class Inner extends RefCounted: var z = 1`
+  is valid Godot GDScript - a class whose whole body is the one statement after the
+  colon - but GATE reported "expected the end of the statement" because `var` also
+  starts a second statement. `class`, `struct`, `interface`, `trait` and `namespace`
+  all take the same header, so all of them compile a one-line body now, the same as
+  Godot: `pass`, `func f(): return 1`, `const K = 1`, and so on. One member is the whole
+  body: after the colon, a `;`, a `static` or an `@annotation` all end the body rather
+  than adding to it, and the declaration then belongs to the nearest ENCLOSING
+  multi-line scope - a real indented block, or the file itself - matching Godot's own
+  surprising rule, not to `A`. This passes through any number of nested one-line
+  headers: `class A: class B: @export var e = 1` puts `e` on whatever encloses `A`, not
+  on `A` or `B`. An `@annotation` stays on the moved declaration (`@export` keeps
+  exporting it), but a bare leading `static` does not - Godot drops it, so
+  `class A: static var s = 3` puts a plain instance var `s` on the enclosing scope, not
+  a static one.
 - **An overloaded method called through a class name from another file produced a call
   that does not exist.** The declaring file emits `__compute_1` and `__compute_2` for two
   arities of `compute`, but `DamageMath.compute(3)` in another file kept the plain name,
