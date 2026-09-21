@@ -1949,7 +1949,7 @@ func _check_alias_escape(decl: GateAST._TypeRef, value, what: String, line: int,
 		_err("'%s' holds a destructured %s, which is whatever the source slot held, and %s needs a real %s"
 				% [n, "dictionary" if dict else "array", what, decl.describe()], line, col,
 			"copy it into one: `%s typed = %s`, then `typed.assign(%s)`"
-				% [decl.describe(), "{}" if dict else "[]", n])
+				% [decl.describe(), "{}" if _is_dict_alias(decl) else "[]", _expr_src(value)])
 		return true
 	return false
 
@@ -2252,6 +2252,35 @@ func _shown(e) -> String:
 		return (e as GateAST._Ident).name
 	var p: String = _path_of(e)
 	return p if p != "" else "the value"
+
+
+func _expr_src(e) -> String:
+	if e is GateAST._Call:
+		var c: GateAST._Call = e
+		var parts: PackedStringArray = PackedStringArray()
+		for a in c.args:
+			parts.append(_expr_src(a))
+		return "%s(%s)" % [_expr_src(c.callee), ", ".join(parts)]
+	if e is GateAST._Literal:
+		var l: GateAST._Literal = e
+		return "\"%s\"" % l.raw if l.kind == "string" else l.raw
+	if e is GateAST._Unary:
+		var u: GateAST._Unary = e
+		return u.op + _expr_src(u.operand)
+	if e is GateAST._Ternary:
+		var t: GateAST._Ternary = e
+		return "%s if %s else %s" % [_expr_src(t.if_true), _expr_src(t.cond), _expr_src(t.if_false)]
+	if e is GateAST._NullCoalesce:
+		var nc: GateAST._NullCoalesce = e
+		return "%s ?? %s" % [_expr_src(nc.left), _expr_src(nc.right)]
+	if e is GateAST._ArrayLit:
+		return "[]" if (e as GateAST._ArrayLit).elements.is_empty() else "..."
+	if e is GateAST._DictLit:
+		return "{}" if (e as GateAST._DictLit).keys.is_empty() else "..."
+	if e is GateAST._Lambda:
+		return "..."
+	var shown: String = _shown(e)
+	return shown if shown != "the value" else "..."
 
 
 const TUPLE_LENGTH_CHANGERS := {

@@ -515,11 +515,13 @@ own object, so `moves.append(m)` changes `components[0]`, typed or not. What is 
 it is typed as a typed array's would be: `for m in moves` declares `m` a `Move`, and so does
 `var first := moves[0]`.
 
-Because it is whatever the slot holds, it cannot go where a real typed array is required,
-a typed parameter, return, field or variable. That is a compile error, and the fix is a
-copy you write: `Move[] kept = []`, then `kept.assign(moves)`. A copy made from it with
-`duplicate()`, `slice()` or `filter()`, or a dictionary's `keys()` and `values()`, is
-untyped as well, and the rule holds through either side of a ternary or `??`. Storing a
+Because it is whatever the slot holds, a typed parameter, return, field or variable that
+GATE can see refuses it. That is a compile error, and the fix is a copy you write:
+`Move[] kept = []`, then `kept.assign(moves)`. A copy made from it with `duplicate()`,
+`slice()` or `filter()`, or a dictionary's `keys()` and `values()`, is untyped as well and
+is refused the same way, named as the call that made it; the rule holds through either
+side of a ternary or `??` too, named as the whole expression. A `for` loop variable, an
+`as` cast (trusted by design), and a call through a `Callable` are not checked. Storing a
 value of the wrong element type in it, by `append`, `insert`, `assign`, `+=`, an index or a
 whole assignment, is an error too; a store into an array nested inside it, such as
 `grid[0].append(x)` on an `int[][]`, is not checked. A type on a name must hold the tuple

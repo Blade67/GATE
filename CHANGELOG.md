@@ -9,10 +9,11 @@
   untyped names mix. A name typed as an array or a dictionary is the slot's own object, so
   an append through it reaches `components`, whether the arrays in it are typed or not.
   A loop over it is typed, and so is `var first := moves[0]`, as over a real typed array.
-  It cannot go where a real typed array is required, a typed parameter, return, field or
-  variable, directly, through a ternary or `??`, or as a `duplicate()` of it: that is a
-  compile error showing the copy to write. Storing a value of the wrong element type in
-  it, by `append`, `insert`, `assign`, `+=`, an index or a whole assignment, is a compile
+  A typed parameter, return, field or variable that GATE can see refuses it, directly,
+  through a ternary or `??`, or as a `duplicate()` of it: that is a compile error showing
+  the copy to write. A `for` loop variable, an `as` cast (trusted by design), and a call
+  through a `Callable` are not checked. Storing a value of the wrong element type in it,
+  by `append`, `insert`, `assign`, `+=`, an index or a whole assignment, is a compile
   error too.
 
 ### Changed
