@@ -202,6 +202,7 @@ var _assigned_names = null
 var _cur_fn_body = null
 
 var _swizzle_exempt = null
+var _bare_shorthand_exempt = null
 
 var _reg_classes: Dictionary = {}
 var _reg_whole = null         ## the registry, for another file's class_name
@@ -215,6 +216,7 @@ var _scope_names: Dictionary = {}       ## class key -> GateChecker.scope_names 
 var _engine_props: Dictionary = {}
 var _engine_prop_cache: Dictionary = {}
 var _func_reach: Dictionary = {}        ## "scope|name" -> whether a bare call reaches a function
+var _field_reach: Dictionary = {}       ## "scope|name" -> whether a bare name reaches a field
 
 var _init_helper_scopes: Dictionary = {}
 

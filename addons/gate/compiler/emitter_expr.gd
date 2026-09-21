@@ -24,6 +24,11 @@ func _expr(e) -> String:
 		return (e as GateAST._Literal).raw
 	if e is GateAST._Ident:
 		var iname: String = (e as GateAST._Ident).name
+		if iname != "str" and e != _bare_shorthand_exempt and _is_bare_shorthand(e as GateAST._Ident):
+			# A bare type name is never a value, mapping mode included: `Vector2` alone is no
+			# more valid GDScript than `vec2` is. `str` is excluded, being GDScript's own
+			# builtin function and usable as a value.
+			return _shorthand_value_error(e as GateAST._Ident, GateTypes.canonical(iname), false)
 		if _ident_renames.has(iname):
 			return _ident_renames[iname]
 		if _soa_cursors.has(iname):
@@ -150,6 +155,10 @@ func _expr(e) -> String:
 
 	if e is GateAST._Member:
 		var m: GateAST._Member = e
+		if m.target is GateAST._Ident and _is_bare_shorthand(m.target as GateAST._Ident) \
+				and not GateTypes.type_names_as_values():
+			var tid: GateAST._Ident = m.target
+			return _shorthand_value_error(tid, "%s.%s" % [GateTypes.canonical(tid.name), m.name])
 		if m.target is GateAST._Ident and _soa_cursors.has((m.target as GateAST._Ident).name):
 			var cur: Dictionary = _soa_cursors[(m.target as GateAST._Ident).name]
 			var cinfo: Dictionary = _soa[cur["soa"]]
@@ -1125,6 +1134,107 @@ func _may_be_value(id: GateAST._Ident) -> bool:
 	return _fn_locals.has(id.name) or _declares_value(_scope_class, id.name)
 
 
+## Canonical names in `GateTypes.SHORTHAND` that GDScript does not let you call as a
+## constructor at all - `any` -> `Variant` is the one today. Mapping mode cannot turn
+## `any(3)` into `Variant(3)`: that is not valid GDScript either, so this stays an
+## error in both modes, the same as a bare `vec2` used as a whole value.
+const NOT_CONSTRUCTIBLE := {"Variant": true}
+
+
+## A shorthand type name (`vec2`, `f64`...) sitting where a value is expected: the
+## receiver of a member access, or the callee of a call. False when the file's own
+## scope gives the name a different meaning (a local, param, field, or a method that
+## shadows it, including one declared in a base class from another file or an engine
+## class), or when an autoload takes the name for itself - `GateTypes.value_shadowed`
+## only affects value positions, unlike `GateTypes.shadowed` (folded into `is_
+## shorthand` itself), which also disables the name in type positions. This is the
+## superset guarantee.
+func _is_bare_shorthand(id: GateAST._Ident) -> bool:
+	return id.generic_base == "" and GateTypes.is_shorthand(id.name) \
+		and not GateTypes.value_shadowed.has(id.name) \
+		and not _shorthand_taken(id.name) and not _may_be_value(id) \
+		and not _shorthand_field_taken(id.name)
+
+
+## Reports that `id` is a type name used as a value. `canonical_text` is the same
+## expression spelled with the Godot name - offered as the fix, and (when `offer_
+## setting`) what mapping mode would emit instead. `offer_setting` is false for the
+## forms that are an error in both modes (a bare type name as a whole value, or a
+## conversion call whose canonical name is not itself constructible, like `any(...)`
+## -> `Variant(...)`) - turning the setting on would not fix those, so the hint must
+## not suggest it. Always returns "null" for the caller to use as the node's text; the
+## compile is rejected regardless of what that text is.
+func _shorthand_value_error(id: GateAST._Ident, canonical_text: String, offer_setting: bool = true) -> String:
+	var hint: String = "use `%s`" % canonical_text
+	if offer_setting:
+		hint += ", or turn on Project Settings > Gate > Compiler > Type Names As Values"
+	diagnostics.error("'%s' is a type name, not a value" % id.name, id.line, id.col, hint)
+	return "null"
+
+
+## A match pattern is captured as raw source text at parse time (`_scan_pattern`),
+## not an expression tree, so it never reaches `_expr` and a bare shorthand in one -
+## `vec2.ZERO:`, `vec2(1, 2):`, or a bare `vec2:` on its own - passed straight
+## through unmapped and unchecked. This re-tokenizes the pattern's own text
+## (`first_line` keeps line numbers absolute; a first-line column still needs
+## `base_col` added by hand, since a lexer given a substring always starts columns
+## at 1) and applies the same rules `_expr` and the Ident-callee constructor check
+## would: a member or constructible-call receiver maps or errors depending on the
+## mode; a bare whole-pattern value, or a call to a canonical name that is not
+## itself constructible (`any(3):` -> `Variant(3)`, not real GDScript), is always an
+## error, in both modes, the same as `_expr`'s own bare-Ident check and the
+## `NOT_CONSTRUCTIBLE` guard on the Ident-callee case.
+func _map_pattern_shorthand(text: String, base_line: int, base_col: int) -> String:
+	var toks: Array = GateLexer.new().tokenize(text, GateDiagnostics.new(), base_line)
+	var mapping: bool = GateTypes.type_names_as_values()
+	var line_starts: PackedInt32Array = PackedInt32Array()
+	var acc: int = 0
+	for l in text.split("\n"):
+		line_starts.append(acc)
+		acc += l.length() + 1
+	var out: String = ""
+	var cursor: int = 0
+	for i in toks.size():
+		var t: GateLexer._Token = toks[i]
+		if t.type != GateLexer._T.IDENT or not GateTypes.is_shorthand(t.value):
+			continue
+		var prev: GateLexer._Token = toks[i - 1] if i > 0 else null
+		if prev != null and (prev.is_op(".") or prev.is_kw("var")):
+			continue   # `foo.vec2` (someone else's member), or `var vec2` (a new binding)
+		var nxt: GateLexer._Token = toks[i + 1] if i + 1 < toks.size() else null
+		var is_receiver: bool = nxt != null and nxt.is_op(".")
+		var is_call: bool = nxt != null and nxt.is_op("(")
+		var synth: GateAST._Ident = GateAST._Ident.new()
+		synth.name = t.value
+		if not _is_bare_shorthand(synth):
+			continue
+		var real_col: int = t.col + (base_col - 1) if t.line == base_line else t.col
+		synth.at(t.line, real_col)
+		var canon: String = GateTypes.canonical(t.value)
+		# `str(...)` is GDScript's own builtin, never a shorthand constructor, so it has no
+		# canonical mapping either: `String(5)` is not valid GDScript.
+		var constructible: bool = not NOT_CONSTRUCTIBLE.has(canon) and t.value != "str"
+		var has_mapping: bool = is_receiver or (is_call and constructible)
+		if not has_mapping:
+			if t.value == "str" and not is_call:
+				continue   # a bare `str:` pattern is GDScript's own builtin, not a value use
+			# a bare `vec2:` whole pattern, `any(3):`, or `str(...):` - no canonical
+			# spelling fixes this in either mode, so the hint must not offer the setting
+			_shorthand_value_error(synth, canon, false)
+			continue
+		if not mapping:
+			var hint_text: String = canon
+			if is_receiver and i + 2 < toks.size() and toks[i + 2].type == GateLexer._T.IDENT:
+				hint_text = "%s.%s" % [canon, toks[i + 2].value]
+			_shorthand_value_error(synth, hint_text)
+			continue
+		var start_off: int = line_starts[t.line - base_line] + (t.col - 1)
+		out += text.substr(cursor, start_off - cursor) + canon
+		cursor = start_off + t.value.length()
+	out += text.substr(cursor)
+	return out
+
+
 func _declares_value(key: String, n: String) -> bool:
 	var q: String = key
 	var seen: Dictionary = {}
@@ -1498,7 +1608,15 @@ func _emit_postfix_spine(e) -> String:
 	return out
 
 
-func _postfix_base(e) -> String:
+## `as_receiver` is false only for the caller that invokes `e` directly rather than
+## reading a member off it (`str(5)`), where a bare shorthand must not be touched.
+func _postfix_base(e, as_receiver: bool = true) -> String:
+	if as_receiver and e is GateAST._Ident and _is_bare_shorthand(e as GateAST._Ident):
+		var id: GateAST._Ident = e
+		var canon: String = GateTypes.canonical(id.name)
+		if GateTypes.type_names_as_values():
+			return canon
+		return _shorthand_value_error(id, canon)
 	return _paren_below(e, PREC_ATOM)
 
 
@@ -1870,6 +1988,18 @@ func _emit_call(c: GateAST._Call) -> String:
 	var recv_node = null
 	if c.callee is GateAST._Member and _plain_callee(c.callee):
 		recv_node = (c.callee as GateAST._Member).target
+	if recv_node is GateAST._Ident and _is_bare_shorthand(recv_node as GateAST._Ident) \
+			and not GateTypes.type_names_as_values():
+		var rtid: GateAST._Ident = recv_node
+		var rcm: GateAST._Member = c.callee
+		var saved_pending2: PackedStringArray = _pending
+		_pending = PackedStringArray()
+		var rargs: PackedStringArray = PackedStringArray()
+		for ra in c.args:
+			rargs.append(_expr(ra))
+		_pending = saved_pending2
+		return _shorthand_value_error(rtid,
+			"%s.%s(%s)" % [GateTypes.canonical(rtid.name), rcm.name, ", ".join(rargs)])
 	var parts: Array = c.args.duplicate()
 	if recv_node != null:
 		parts.append(recv_node)
@@ -1880,8 +2010,13 @@ func _emit_call(c: GateAST._Call) -> String:
 
 	if c.callee is GateAST._Ident:
 		var n: String = (c.callee as GateAST._Ident).name
-		if CTOR_SHORTHAND.has(n) and not _shorthand_taken(n) and not GateTypes.shadowed.has(n):
-			return "%s(%s)" % [CTOR_SHORTHAND[n], ", ".join(args)]
+		if n != "str" and _is_bare_shorthand(c.callee as GateAST._Ident):
+			var ncanon: String = GateTypes.canonical(n)
+			var call_text: String = "%s(%s)" % [ncanon, ", ".join(args)]
+			if GateTypes.type_names_as_values() and not NOT_CONSTRUCTIBLE.has(ncanon):
+				return call_text
+			return _shorthand_value_error(c.callee as GateAST._Ident, call_text,
+				not NOT_CONSTRUCTIBLE.has(ncanon))
 		var st: Dictionary = _ctor_struct_of(n)
 		if not st.is_empty():
 			_check_struct_arity(n, st, c)
@@ -1969,8 +2104,10 @@ func _emit_call(c: GateAST._Call) -> String:
 		if not _struct_of(fname).is_empty() and _ctor_struct_of(fname).is_empty():
 			return "%s(%s)" % [fname, ", ".join(args)]   # a function, not the other file's struct
 	_swizzle_exempt = c.callee
-	var callee: String = _postfix_base(c.callee)
+	_bare_shorthand_exempt = c.callee
+	var callee: String = _postfix_base(c.callee, false)
 	_swizzle_exempt = null
+	_bare_shorthand_exempt = null
 	return "%s(%s)" % [callee, ", ".join(args)]
 
 

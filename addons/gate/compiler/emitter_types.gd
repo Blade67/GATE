@@ -761,6 +761,122 @@ func _shorthand_taken(n: String) -> bool:
 	return bool(_func_reach[key])
 
 
+## An unresolvable base in the chain counts as "might reach a field", not "does not" -
+## same as every other caller of `_class_has_property` acting only on its `0`.
+func _shorthand_field_taken(n: String) -> bool:
+	var key: String = "%s|%s" % [_scope_class, n]
+	if not _field_reach.has(key):
+		_field_reach[key] = _class_reaches_field(_scope_class, n)
+	return int(_field_reach[key]) != 0
+
+
+## True if any member of `members` declares `n` as a value: a field or const (any
+## `_VarDecl`), a signal, a named enum's own name, or an anonymous enum's member.
+static func _members_declare_value(members: Array, n: String) -> bool:
+	for m in members:
+		if m is GateAST._VarDecl and (m as GateAST._VarDecl).name == n:
+			return true
+		if m is GateAST._SignalDecl and (m as GateAST._SignalDecl).name == n:
+			return true
+		if m is GateAST._EnumDecl:
+			var ed: GateAST._EnumDecl = m
+			if ed.name == n or (ed.name == "" and (ed.keys as Array).has(n)):
+				return true
+	return false
+
+
+## The top-level module scope (".") is never in `_class_decls` (it is not a member of
+## anything); its members live in `_module_members` instead.
+func _members_of_key(key: String) -> Array:
+	if key == ".":
+		return _module_members
+	var cd = _class_decls.get(key)
+	return (cd as GateAST._ClassDecl).members if cd != null else []
+
+
+## 1 = `n` is declared somewhere up the chain, 0 = the whole chain resolved and none
+## of it declares `n`, -1 = the chain could not be fully resolved (unknown).
+func _class_reaches_field(scope: String, n: String) -> int:
+	var q: String = scope
+	var seen: Dictionary = {}
+	for _guard in 64:
+		if seen.has(q):
+			return 0
+		seen[q] = true
+		if _members_declare_value(_members_of_key(q), n):
+			return 1
+		var b: Dictionary = _base_of(q)
+		match String(b["kind"]):
+			"local":
+				q = String(b["key"])
+			"ext":
+				return _named_class_declares_value(String(b["name"]), n, 0)
+			"path":
+				var raw: String = (_class_base[q] as GateAST._TypeRef).name
+				var path: String = raw.strip_edges()
+				if path.begins_with("\"") or path.begins_with("'"):
+					path = path.substr(1, path.length() - 2)
+				if not path.begins_with("res://"):
+					path = source_path.get_base_dir().path_join(path).simplify_path()
+				return _script_declares_value(path, n, 0)
+			_:
+				return 1 if _engine_declares_value("RefCounted", n) else 0
+	return 0
+
+
+func _named_class_declares_value(cls: String, n: String, depth: int) -> int:
+	if depth > 32:
+		return -1
+	if _reg_classes.has(cls):
+		if _members_declare_value((_reg_classes[cls] as GateAST._ClassDecl).members, n):
+			return 1
+		var rb: String = String(_reg_bases.get(cls, ""))
+		if rb.begins_with("\"") or rb.begins_with("'") or rb.begins_with("res://"):
+			return _script_declares_value(rb, n, depth + 1)
+		if rb == "":
+			return 1 if _engine_declares_value("RefCounted", n) else 0
+		return _named_class_declares_value(rb, n, depth + 1)
+	if _reg_script_classes.has(cls):
+		return _script_declares_value(String(_reg_script_classes[cls]), n, depth + 1)
+	for c in ProjectSettings.get_global_class_list():
+		if String(c["class"]) == cls:
+			return _script_declares_value(String(c["path"]), n, depth + 1)
+	if ClassDB.class_exists(cls):
+		return 1 if _engine_declares_value(cls, n) else 0
+	return -1
+
+
+func _script_declares_value(ref: String, n: String, depth: int) -> int:
+	if depth > 32:
+		return -1
+	var path: String = ref.strip_edges()
+	if path.begins_with("\"") or path.begins_with("'"):
+		path = path.substr(1, path.length() - 2)
+	var smod: GateAST._Module = GateChecker.read_script(path)
+	if smod == null:
+		return -1
+	if _members_declare_value(smod.members, n):
+		return 1
+	var ext: String = smod.extends_type.name if smod.extends_type != null else "RefCounted"
+	if ext.begins_with("\"") or ext.begins_with("'"):
+		var split: Array = GateChecker.split_extends_path(ext)
+		if String(split[1]) != "":
+			return -1
+		var p: String = String(split[0])
+		if not p.begins_with("res://"):
+			p = smod.path.get_base_dir().path_join(p).simplify_path()
+		return _script_declares_value(p, n, depth + 1)
+	if ClassDB.class_exists(ext):
+		return 1 if _engine_declares_value(ext, n) else 0
+	var p2: String = GateChecker._global_script(ext, _reg_whole)
+	return _script_declares_value(p2, n, depth + 1) if p2 != "" else -1
+
+
+func _engine_declares_value(cls: String, n: String) -> bool:
+	return _engine_properties(cls).has(n) or ClassDB.class_has_signal(cls, n) \
+		or ClassDB.class_has_integer_constant(cls, n)
+
+
 func _class_reaches_func(scope: String, n: String) -> bool:
 	var q: String = scope
 	var seen: Dictionary = {}

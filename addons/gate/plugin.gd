@@ -21,6 +21,7 @@ var _told: Dictionary = {}
 
 
 func _enter_tree() -> void:
+	_register_settings()
 	# A build before the resource_path fix left probe files behind whenever a scene
 	# was saved. Swept again after the first scan, and after every build.
 	GateBuilder.remove_stale_probes("res://")
@@ -32,6 +33,18 @@ func _enter_tree() -> void:
 	_integration.attach(self)
 	add_tool_menu_item(RECOMPILE_ITEM, _recompile_all)
 	compile_all.call_deferred()
+
+
+## Not saved to project.godot unless the user changes it from the default - Godot
+## only writes a setting that differs from its initial value, and this never calls
+## ProjectSettings.save() itself.
+func _register_settings() -> void:
+	var key: String = GateTypes.SETTING_TYPE_NAMES_AS_VALUES
+	if not ProjectSettings.has_setting(key):
+		ProjectSettings.set_setting(key, false)
+	ProjectSettings.set_initial_value(key, false)
+	ProjectSettings.add_property_info({"name": key, "type": TYPE_BOOL})
+	ProjectSettings.set_as_basic(key, true)
 
 
 ## `.gate` tabs never stay in the saved layout, so a session without GATE cannot

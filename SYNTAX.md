@@ -41,6 +41,14 @@ Lowercase shorthands. Canonical names still work, and engine classes keep theirs
 | `color` `aabb` `plane` `basis` `proj` | `Color` `AABB` `Plane` `Basis` `Projection` |
 | `nodepath` `rid` `sname` `any` | `NodePath` `RID` `StringName` `Variant` |
 
+These are type names, not values: `vec2.ZERO` and `vec2(1, 2)` are a compile error
+("'vec2' is a type name, not a value") unless the project setting
+`Project Settings > Gate > Compiler > Type Names As Values` is on, in which case they mean
+the Godot type - `vec2.ZERO` is `Vector2.ZERO`, `vec2(1, 2)` is `Vector2(1, 2)`. `str(...)`
+called as a function is always GDScript's own builtin, never affected either way. `x is
+vec2` and `x as vec2` are unaffected in both modes, since a type name is exactly what they
+expect there.
+
 A class, enum or constant you declare with one of these names, or a `class_name` anywhere in
 the project, means your own type, as it does in GDScript.
 

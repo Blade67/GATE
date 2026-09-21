@@ -225,7 +225,11 @@ func build(root: String = "res://") -> Dictionary:
 	_dep_keys = _dependency_keys(gate_files, registry, root)
 
 	var sig: String = registry.signature()
-	var reg_sig: String = "%d:%d:%s" % [sig.hash(), sig.length(), _shadowing_globals(registry)]
+	# Folds in the type-names-as-values setting: flipping it changes every file's
+	# output, so it has to invalidate every file's cache entry the same way a
+	# registry change does.
+	var reg_sig: String = "%d:%d:%s:%s" % [sig.hash(), sig.length(), _shadowing_globals(registry),
+		"1" if GateTypes.type_names_as_values() else "0"]
 
 	var deferred: Dictionary = {}
 	_skipped_now = []
@@ -465,7 +469,7 @@ static func _settings_read() -> String:
 	var parts: PackedStringArray = PackedStringArray()
 	for prop in ProjectSettings.get_property_list():
 		var key: String = String(prop["name"])
-		if key.begins_with("autoload/") or key.begins_with("debug/gdscript/"):
+		if key.begins_with("autoload/") or key.begins_with("debug/gdscript/") or key.begins_with("gate/"):
 			parts.append("%s=%s" % [key, var_to_str(ProjectSettings.get_setting(key))])
 	parts.sort()
 	return "\n".join(parts).md5_text()

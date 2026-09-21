@@ -4,6 +4,10 @@
 
 ### Added
 
+- **`Project Settings > Gate > Compiler > Type Names As Values`.** Off by default. Turns a
+  shorthand type name used as a value (`vec2.ZERO`, `vec2(1, 2)`, `f64(3)`) back into the
+  canonical Godot name instead of a compile error - see the entry under Changed. Never
+  written to `project.godot` unless you change it yourself.
 - **Typed destructuring.** `var [Move[] moves, Mark[] marks] = components` gives each name
   its own type; `var [moves: Move[], marks: Mark[]] = components` works too, and typed and
   untyped names mix. A name typed as an array or a dictionary is the slot's own object, so
@@ -18,6 +22,16 @@
 
 ### Changed
 
+- **A shorthand type name used as a value is now an error, not silently accepted.**
+  `vec2(1, 2)` used to compile as the `Vector2` constructor; `vec2.ZERO`, `vec2i.ONE`,
+  `f64(3)`, `str.chr(65)` and every other shorthand used as a member receiver or a
+  conversion call compiled too, but Godot refused the output ("Identifier 'vec2' not
+  declared in the current scope") - GATE reported success and handed back code that did
+  not load. Every one of these is now a compile error, "'vec2' is a type name, not a
+  value", with a hint giving the fix. `vec2(1, 2)`, `vec2.ZERO` and the rest map to the
+  canonical name again if `Project Settings > Gate > Compiler > Type Names As Values` is
+  turned on (see Added). `str(5)` is unaffected either way - it is GDScript's own builtin,
+  not a shorthand - and so is a type position like `x is vec2` or `vec2 v`.
 - **A token left over on a line is an error.** `total = base bonus` compiled to
   `total = base` and then `bonus` on a line of its own, which Godot accepts. Only leftovers
   that looked like a second statement were caught before.

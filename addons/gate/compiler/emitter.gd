@@ -55,6 +55,7 @@ func emit(mod: GateAST._Module, diags: GateDiagnostics, path: String) -> Diction
 	_init_helper_scopes.clear()
 	_scope_class = "."
 	_swizzle_exempt = null
+	_bare_shorthand_exempt = null
 	_assigned_names = null
 	_no_hoist = ""
 	_cur_base = mod.extends_type.name if mod.extends_type != null else ""
@@ -2560,11 +2561,13 @@ func _emit_match(st: GateAST._MatchStmt) -> void:
 		var bind_renames: Dictionary = {}
 		for p in pats:
 			if p is GateAST._RawExpr:
-				var pc: Dictionary = _pattern_copies((p as GateAST._RawExpr).text, st.subject)
+				var raw: GateAST._RawExpr = p
+				var mapped_text: String = _map_pattern_shorthand(raw.text, raw.line, raw.col)
+				var pc: Dictionary = _pattern_copies(mapped_text, st.subject)
 				parts.append(String(pc["text"]))
 				bind_copies.append_array(pc["lines"])
 				bind_renames.merge(pc["renames"])
-				for bn in _pattern_binds((p as GateAST._RawExpr).text):
+				for bn in _pattern_binds(mapped_text):
 					_fn_locals[String(bn)] = {}
 					_shadow_name(String(bn))
 			else:

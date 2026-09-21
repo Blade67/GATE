@@ -663,6 +663,8 @@ func _build_fstring(t: GateLexer._Token) -> GateAST._Expr:
 	fs.at(t.line, t.col)
 	fs.quote = t.extra
 	var body: String = t.value
+	# "f" plus the opening quote(s): where body[0] sits in the real file.
+	var body_col: int = t.col + 1 + t.extra.length()
 	var buf: String = ""
 	var i: int = 0
 	while i < body.length():
@@ -681,12 +683,16 @@ func _build_fstring(t: GateLexer._Token) -> GateAST._Expr:
 					"write `{{` and `}}` for braces in the text. A quote of the same kind as the "
 					+ "f-string's own must be escaped inside a placeholder")
 				return fs
-			var inner: String = body.substr(i + 1, j - i - 1).strip_edges()
+			var raw_inner: String = body.substr(i + 1, j - i - 1)
+			var lstrip: int = raw_inner.length() - raw_inner.strip_edges(true, false).length()
+			var inner: String = raw_inner.strip_edges()
 			if inner == "":
 				diagnostics.error("this f-string placeholder has no expression", t.line, t.col,
 					"write `{{}}` for a literal pair of braces")
 			else:
-				fs.parts.append(_parse_subexpression(_unescape_quotes(inner, fs.quote), t.line))
+				var un: Dictionary = _unescape_quotes(inner, fs.quote)
+				fs.parts.append(_parse_subexpression(String(un["text"]),
+					body, i + 1 + lstrip, un["map"], t.line, body_col))
 			i = j + 1
 			continue
 		if c == "}" and i + 1 < body.length() and body[i + 1] == "}":
@@ -700,9 +706,29 @@ func _build_fstring(t: GateLexer._Token) -> GateAST._Expr:
 	return fs
 
 
-static func _unescape_quotes(src: String, quote: String) -> String:
+## The real file position of `body[idx]`, given `body[0]` sits at (base_line, base_col).
+static func _fstring_pos(body: String, idx: int, base_line: int, base_col: int) -> Array:
+	var line: int = base_line
+	var col: int = base_col
+	for k in idx:
+		if body[k] == "\n":
+			line += 1
+			col = 1
+		else:
+			col += 1
+	return [line, col]
+
+
+## Unescaping removes characters, which shifts every position after it. `map[k]` is the
+## index into `src` that output character `k` came from, so a position measured in the
+## unescaped text can be mapped back to where it really came from.
+static func _unescape_quotes(src: String, quote: String) -> Dictionary:
+	var map: PackedInt32Array = PackedInt32Array()
 	if not src.contains("\\"):
-		return src
+		for k in src.length():
+			map.append(k)
+		map.append(src.length())
+		return {"text": src, "map": map}
 	var q: String = quote.substr(0, 1)
 	var out: String = ""
 	var i: int = 0
@@ -710,12 +736,20 @@ static func _unescape_quotes(src: String, quote: String) -> String:
 		var c: String = src[i]
 		if c != "\\" or i + 1 >= src.length():
 			out += c
+			map.append(i)
 			i += 1
 			continue
 		var nxt: String = src[i + 1]
-		out += nxt if (nxt == q or nxt == "\\") else c + nxt
+		if nxt == q or nxt == "\\":
+			out += nxt
+			map.append(i + 1)
+		else:
+			out += c + nxt
+			map.append(i)
+			map.append(i + 1)
 		i += 2
-	return out
+	map.append(src.length())
+	return {"text": out, "map": map}
 
 
 static func _placeholder_end(body: String, from: int) -> int:
@@ -772,7 +806,12 @@ static func _escaped_string_end(body: String, i: int) -> int:
 	return -1
 
 
-func _parse_subexpression(src: String, line: int) -> GateAST._Expr:
+## `src` is a placeholder's text after unescaping: what the sub-parse should read, but
+## not what a position in it should report. `body`/`inner_offset`, `umap` and
+## `fbase_line`/`fbase_col` together map every position the sub-parse reports back to
+## where it really is, so diagnostics and nodes carry a real position, not 1:1.
+func _parse_subexpression(src: String, body: String, inner_offset: int, umap: PackedInt32Array,
+		fbase_line: int, fbase_col: int) -> GateAST._Expr:
 	var lx: GateLexer = GateLexer.new()
 	var sub_diags: GateDiagnostics = GateDiagnostics.new()
 	sub_diags.file = diagnostics.file
@@ -791,14 +830,64 @@ func _parse_subexpression(src: String, line: int) -> GateAST._Expr:
 	p._alias_names = _alias_names
 	p._lines = PackedStringArray([src])
 	var e: GateAST._Expr = p._parse_expr()
+	var src_line_starts: PackedInt32Array = _line_starts_of(src)
 	for d in sub_diags.items:
-		d.line = line
+		var pos: Array = _real_pos(d.line, d.col, src_line_starts, body, inner_offset, umap,
+			fbase_line, fbase_col)
+		d.line = int(pos[0])
+		d.col = int(pos[1])
 		diagnostics.items.append(d)
 	if e == null:
 		var re: GateAST._RawExpr = GateAST._RawExpr.new()
 		re.text = src
+		var p0: Array = _real_pos(1, 1, src_line_starts, body, inner_offset, umap, fbase_line, fbase_col)
+		re.at(int(p0[0]), int(p0[1]))
 		return re
+	_reposition_subparse(e, src_line_starts, body, inner_offset, umap, fbase_line, fbase_col)
 	return e
+
+
+static func _line_starts_of(text: String) -> PackedInt32Array:
+	var starts: PackedInt32Array = PackedInt32Array()
+	var acc: int = 0
+	for l in text.split("\n"):
+		starts.append(acc)
+		acc += l.length() + 1
+	return starts
+
+
+## A (line, col) the sub-parse reported, relative to `src` (1, 1 at its own start),
+## converted the whole way back to where that position really is in the real file.
+static func _real_pos(rel_line: int, rel_col: int, src_line_starts: PackedInt32Array, body: String,
+		inner_offset: int, umap: PackedInt32Array, fbase_line: int, fbase_col: int) -> Array:
+	var li: int = clampi(rel_line - 1, 0, src_line_starts.size() - 1)
+	var flat: int = src_line_starts[li] + (rel_col - 1)
+	var mapped: int = int(umap[clampi(flat, 0, umap.size() - 1)])
+	return _fstring_pos(body, inner_offset + mapped, fbase_line, fbase_col)
+
+
+## Every node in the tree the sub-parse built gets its real position, walking the
+## same generic way `compiler.gd`'s `too_deep()` walks any AST tree.
+static func _reposition_subparse(root, src_line_starts: PackedInt32Array, body: String, inner_offset: int,
+		umap: PackedInt32Array, fbase_line: int, fbase_col: int) -> void:
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n = stack.pop_back()
+		if n is Array:
+			for x in n:
+				stack.append(x)
+			continue
+		if not (n is GateAST._ASTNode):
+			continue
+		var nn: GateAST._ASTNode = n
+		var pos: Array = _real_pos(nn.line, nn.col, src_line_starts, body, inner_offset, umap,
+			fbase_line, fbase_col)
+		nn.line = int(pos[0])
+		nn.col = int(pos[1])
+		for pn in GateAST.child_names(n):
+			var v = (n as Object).get(pn)
+			if v is Array or v is Object:
+				stack.append(v)
 
 
 func _parse_params() -> Array:

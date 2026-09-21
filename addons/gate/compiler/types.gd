@@ -23,6 +23,18 @@ const SHORTHAND := {
 	"f64": "float", "i64": "int",
 }
 
+## A shorthand used as a value (a member receiver, or a constructor/conversion call)
+## is a compile error unless this project setting is on, in which case it maps to the
+## canonical Godot name instead - the only place that decision is made, so headless
+## runs and the editor agree. Read fresh every call: cheap, and lets a Project
+## Settings change take effect on the next build without restarting anything.
+const SETTING_TYPE_NAMES_AS_VALUES := "gate/compiler/type_names_as_values"
+
+
+static func type_names_as_values() -> bool:
+	return bool(ProjectSettings.get_setting(SETTING_TYPE_NAMES_AS_VALUES, false))
+
+
 const BUILTIN := {
 	"int": true, "float": true, "bool": true, "String": true, "Variant": true,
 	"Vector2": true, "Vector2i": true, "Vector3": true, "Vector3i": true,
@@ -53,8 +65,16 @@ const VECTOR_INT := {2: "Vector2i", 3: "Vector3i", 4: "Vector4i"}
 
 
 ## Shorthand names the file or the project declares itself: a `class vec2` means that
-## class, as it does in GDScript. Set for each file before it is parsed.
+## class, as it does in GDScript, in every position - a type position too. Set for
+## each file before it is parsed.
 static var shadowed: Dictionary = {}
+
+## Shorthand names an autoload takes for itself, in value positions only. Godot
+## treats an autoload name as a value, never a type, so `color c = Color.RED` still
+## means `Color` even with an autoload called `color` - only `color.foo`, `color`
+## used bare, and the like keep meaning the autoload. Checked separately from
+## `shadowed`, which callers also consult for type resolution.
+static var value_shadowed: Dictionary = {}
 
 
 static func shadow_declared(tokens: Array, class_names: Dictionary = {}) -> void:
@@ -73,6 +93,13 @@ static func shadow_declared(tokens: Array, class_names: Dictionary = {}) -> void
 	for entry in ProjectSettings.get_global_class_list():
 		if SHORTHAND.has(String(entry["class"])):
 			shadowed[String(entry["class"])] = true
+	# `has_setting` per shorthand name (27) instead of scanning the whole property
+	# list (~950 entries, most of them nothing to do with autoloads): about 1.4ms per
+	# call scanning, versus a handful of dictionary lookups.
+	value_shadowed = {}
+	for n in SHORTHAND:
+		if ProjectSettings.has_setting("autoload/" + n):
+			value_shadowed[n] = true
 
 
 static func is_shorthand(name: String) -> bool:
