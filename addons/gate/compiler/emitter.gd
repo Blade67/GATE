@@ -2332,7 +2332,7 @@ func _alias_loop_type(it) -> GateAST._TypeRef:
 
 
 func _type_alias_read(vd: GateAST._VarDecl) -> void:
-	if not _in_func_body or vd.type != null or not (vd.value is GateAST._Index):
+	if not _in_func_body or not vd.inferred or vd.type != null or not (vd.value is GateAST._Index):
 		return
 	var ix: GateAST._Index = vd.value
 	if not (ix.target is GateAST._Ident) or not _typed_aliases.has((ix.target as GateAST._Ident).name):

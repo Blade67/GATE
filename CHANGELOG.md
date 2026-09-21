@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added
+
+- **Typed destructuring.** `var [Move[] moves, Mark[] marks] = components` gives each name
+  its own type; `var [moves: Move[], marks: Mark[]] = components` works too, and typed and
+  untyped names mix. A name typed as an array or a dictionary is the slot's own object, so
+  an append through it reaches `components`, whether the arrays in it are typed or not.
+  A loop over it is typed, and so is `var first := moves[0]`, as over a real typed array.
+  It cannot go where a real typed array is required, a typed parameter, return, field or
+  variable, directly, through a ternary or `??`, or as a `duplicate()` of it: that is a
+  compile error showing the copy to write. Storing a value of the wrong element type in
+  it, by `append`, `insert`, `assign`, `+=`, an index or a whole assignment, is a compile
+  error too.
+
 ### Changed
 
 - **A token left over on a line is an error.** `total = base bonus` compiled to
@@ -9,6 +22,10 @@
   that looked like a second statement were caught before.
 - **`int a, b = 3` is an error.** The value went to `a`, and `b` got 0. Put each name on
   its own line, or destructure.
+- **A destructured tuple slot takes its type.** With `p: <float, int>`, `var [a, b] = p`
+  now declares `a` a `float`, so an `int` arriving from GDScript is converted, as the tuple
+  says, and `a / 2` divides as floats. Before, `a` was untyped and divided as integers. An
+  `int` slot truncates a `float` the same way.
 
 ### Fixed
 

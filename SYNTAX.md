@@ -149,8 +149,8 @@ A line holds one statement, and anything left on the line after it is an error:
 `out += "x" "y"`, `a() b()` and `total = base bonus` all are. A missing operator or comma
 used to split a line in two, and the second half was dropped or became a statement of its
 own, in silence. Separate two statements with `;` or a line break. What GATE deliberately
-does not model still passes through: Godot 3's `setget`, its parenthesis-free `assert`, and
-`@tool class_name X` on one line.
+does not model still passes through: Godot 3's `setget` and its parenthesis-free `assert`.
+Several file annotations and `class_name` or `extends` on one line are read as one header.
 
 An indented line must belong to a block. One that opens nothing, in a class body, is an error
 rather than raw text in the output.
@@ -497,6 +497,39 @@ parameter keeps GDScript's meaning - the dictionary is passed as the argument - 
 when its keys name the class's properties. A bare key is then a variable, so one that names
 nothing in scope is an error. Keys are bare names; `{ "text": ... }` is an ordinary
 dictionary.
+
+### Destructuring
+
+`var [a, b] = value` binds each element of an array or a tuple to a name. Any name can
+take a type, in either spelling:
+
+```gdscript
+var [Move[] moves, Mark[] marks] = components
+var [moves: Move[], marks: Mark[]] = components
+var [int id, label] = entry
+```
+
+A name with a scalar or object type is declared with it, and a name without one takes the
+tuple slot's type when there is one. A name typed as an array or a dictionary is the slot's
+own object, so `moves.append(m)` changes `components[0]`, typed or not. What is read from
+it is typed as a typed array's would be: `for m in moves` declares `m` a `Move`, and so does
+`var first := moves[0]`.
+
+Because it is whatever the slot holds, it cannot go where a real typed array is required,
+a typed parameter, return, field or variable. That is a compile error, and the fix is a
+copy you write: `Move[] kept = []`, then `kept.assign(moves)`. A copy made from it with
+`duplicate()`, `slice()` or `filter()`, or a dictionary's `keys()` and `values()`, is
+untyped as well, and the rule holds through either side of a ternary or `??`. Storing a
+value of the wrong element type in it, by `append`, `insert`, `assign`, `+=`, an index or a
+whole assignment, is an error too; a store into an array nested inside it, such as
+`grid[0].append(x)` on an `int[][]`, is not checked. A type on a name must hold the tuple
+slot's value without loss: `float` over an `int` slot is fine, `int` over a `float` slot is
+an error, and a name over a nullable slot must be nullable or `Variant`. The source itself
+is trusted, as `as` is: if `components[0]` holds something that is not a `Move`, Godot
+reports it on the line that reads it. A number of the wrong kind is converted instead,
+where the read is typed, as a tuple slot converts it.
+
+`int a, int b = p` is not destructuring and is an error; the brackets are what destructures.
 
 ## Members and methods
 
