@@ -392,8 +392,8 @@ func _walk_stmt(s) -> bool:
 				"an element of '%s'" % _shown((a.target as GateAST._Index).target), a.line, a.col)
 		elif a.op == "=" and a.target is GateAST._Ident:
 			_check_alias_whole_assign(a.target, a.value, a.line, a.col)
-		elif a.op == "+=" and (a.target is GateAST._Ident or a.target is GateAST._Index):
-			_check_alias_append(a.target, a.value, "+=", a.line, a.col)
+		elif a.op == "+=" and a.target is GateAST._Ident:
+			_check_alias_append(a.target, a.value, a.line, a.col)
 		if a.op != "=":
 			_check_value_operand(a.target, a.op, a.line, a.col)
 			if _gate_types:
@@ -451,7 +451,9 @@ func _walk_stmt(s) -> bool:
 					and _tuple_slot(a.target as GateAST._Index, false) != null) \
 					and not _alias_reassign_ok(a.target, a.value) \
 					and not (a.target is GateAST._Index
-						and _alias_container_type((a.target as GateAST._Index).target) != null):
+						and (a.target as GateAST._Index).target is GateAST._Ident
+						and _typed_aliases.has(
+							((a.target as GateAST._Index).target as GateAST._Ident).name)):
 				_into_alias = a.target is GateAST._Ident \
 					and _typed_aliases.has((a.target as GateAST._Ident).name)
 				a.value = _check_value_against(_type_of(a.target), a.value,
@@ -1542,12 +1544,41 @@ func _check_value_against(decl: GateAST._TypeRef, value, what: String, line: int
 		return value
 	if _struct_mismatch(decl, value, what, line, col):
 		return value
+	if _generic_instantiation_mismatch(decl, value, what, line, col):
+		return value
 	if GateChecker.is_gate_only_type(decl):
 		if decl.strict and strict_casts and not decl.nullable:
 			_strict_casts_in(decl, value, what, line, col)
 		return _check_gate_value(decl, value, what, line, col)
 	_check_plain_value(decl, value, what, line, col, strict_casts)
 	return value
+
+
+## `Box<int>` and `Box<i32>` (or `Box<Node>` and `Box<Node?>`) are two different
+## generated classes even where GATE would otherwise call `int`/`i32` or
+## `Node`/`Node?` the same type - each instantiation of a generic mangles its own
+## argument list into the class name, so nothing but that name says whether two
+## instantiations of the same template actually agree. Nothing else catches this:
+## `_godot_probe_type()` (used by `_check_known_plain` below) does not know how to
+## probe a generic instantiation and silently skips it, so a mismatch here used to
+## reach Godot only as a raw "Cannot assign a value of type __Box_i32 to variable
+## ... with specified type __Box_int", naming the mangled classes, not the source
+## spelling.
+func _generic_instantiation_mismatch(decl: GateAST._TypeRef, value, what: String, line: int,
+		col: int) -> bool:
+	if decl.array_depth > 0 or decl.generic_args.is_empty() or not infer.generic_params.has(decl.name):
+		return false
+	var vt: GateAST._TypeRef = _static_type_of(value)
+	if vt == null or vt.array_depth > 0 or vt.name != decl.name or vt.generic_args.is_empty():
+		return false
+	if GateParser.mangle_generic(decl) == GateParser.mangle_generic(vt):
+		return false
+	_err("%s is %s, and %s is a different instantiation of '%s'"
+			% [what, decl.describe(), vt.describe(), decl.name], line, col,
+		"'%s' and '%s' generate two separate classes; use one spelling of the type "
+			% [decl.describe(), vt.describe()]
+		+ "argument consistently, or change the declared type to match.")
+	return true
 
 
 const VECTOR_TYPES := {"Vector2": true, "Vector2i": true, "Vector3": true,
@@ -1952,10 +1983,6 @@ func _check_alias_escape(decl: GateAST._TypeRef, value, what: String, line: int,
 	return false
 
 
-const REASSIGN_CONVERT_HINT := "convert it explicitly first (`int(...)`, say), or use assign(...) " \
-	+ "instead - a real method call that reaches the array and converts"
-
-
 func _check_alias_whole_assign(target, value, line, col) -> void:
 	if not (target is GateAST._Ident) or not _typed_aliases.has((target as GateAST._Ident).name):
 		return
@@ -1964,17 +1991,14 @@ func _check_alias_whole_assign(target, value, line, col) -> void:
 	var t: GateAST._TypeRef = _typed_aliases[(target as GateAST._Ident).name]
 	var what: String = "'%s'" % (target as GateAST._Ident).name
 	if value is GateAST._ArrayLit:
-		var want: GateAST._TypeRef = _enforced_elem(t)
+		var want: GateAST._TypeRef = GateTypeCompat.container_elem(t)
 		if want == null:
 			return
 		for el in (value as GateAST._ArrayLit).elements:
 			var el_t: GateAST._TypeRef = _value_type(el)
-			var would_convert: bool = el_t != null and _nullness(el) == _S.NOTNULL \
-				and GateTypeCompat.godot_converts(el_t, want)
 			if el_t != null and GateTypeCompat.assignable(el_t, want, infer) == GateTypeCompat.NO:
-				var hint: String = REASSIGN_CONVERT_HINT if would_convert else _alias_hint(t)
 				_err("an element of %s is %s, and %s cannot be stored there" % [what, want.describe(),
-						GateTypeCompat.describe(el_t)], line, col, hint)
+						GateTypeCompat.describe(el_t)], line, col, _alias_hint(t))
 				_elem_reported[el] = true
 		return
 	var vt: GateAST._TypeRef = _value_type(value)
@@ -2320,125 +2344,50 @@ const TUPLE_REORDERS := {"reverse": true, "sort": true, "sort_custom": true, "sh
 const ARRAY_STORES := {"append": 0, "push_back": 0, "push_front": 0, "insert": 1, "fill": 0}
 
 
-## The type of `target` if it is a typed alias name, or an index expression rooted at
-## one - `g`, `g[0]`, `g[0][0]`, one `_enforced_elem` per level. Null otherwise.
-func _alias_container_type(target) -> GateAST._TypeRef:
-	if target is GateAST._Ident:
-		var name: String = (target as GateAST._Ident).name
-		return _typed_aliases[name] if _typed_aliases.has(name) else null
-	if target is GateAST._Index:
-		var base_t: GateAST._TypeRef = _alias_container_type((target as GateAST._Index).target)
-		return _enforced_elem(base_t) if base_t != null else null
-	return null
-
-
-## `GateTypeCompat.container_elem`, but null when the result is not itself a real Godot
-## type: `bool[][]` and `{str, bool[]}`'s value collapse to a bare, unenforced
-## `Array`/`Dictionary`, the emitter's own nested lowering rule reused here.
-func _enforced_elem(t: GateAST._TypeRef) -> GateAST._TypeRef:
-	var e: GateAST._TypeRef = GateTypeCompat.container_elem(t)
-	if e == null:
-		return null
-	if e.array_depth == 0 and not e.is_dict():
-		return e
-	if e.array_depth == 1 and not e.is_dict() and GateTypes.has_packed(GateTypes.canonical(e.name)):
-		return e
-	return null
-
-
 func _check_alias_element(target, value, what: String, line: int, col: int) -> void:
-	var t: GateAST._TypeRef = _alias_container_type(target)
-	if t == null:
+	if not (target is GateAST._Ident) or not _typed_aliases.has((target as GateAST._Ident).name):
 		return
-	var et: GateAST._TypeRef = _enforced_elem(t)
+	var t: GateAST._TypeRef = _typed_aliases[(target as GateAST._Ident).name]
+	var et: GateAST._TypeRef = GateTypeCompat.container_elem(t)
 	if et == null or value == null:
 		return
 	var vt: GateAST._TypeRef = _value_type(value)
-	# A null check narrows what nullcheck knows here (`if f != null: xs.append(f)`), so
-	# gate on that flow state, not `vt.nullable`, or a guarded value is refused.
-	var converts: bool = vt != null and _nullness(value) == _S.NOTNULL \
-		and GateTypeCompat.godot_converts(vt, et)
-	if vt != null and not converts and GateTypeCompat.assignable(vt, et, infer) == GateTypeCompat.NO:
+	if vt != null and GateTypeCompat.assignable(vt, et, infer) == GateTypeCompat.NO:
 		_err("%s is %s, and %s cannot be stored there" % [what, et.describe(),
 				GateTypeCompat.describe(vt)], line, col, _alias_hint(t))
 		return
 	_check_known_plain(et, value, what, line, col, _alias_hint(t))
 
 
-## Whether `value` is statically a real packed array of the same kind as `t`. Godot
-## dispatches `+=` by the runtime type of both sides and two matching packed arrays add
-## fine, where a plain Array on the right will not even load. The compare is the exact
-## `Packed*` array: `i64`/`f64` opt out of `int`/`float`'s Packed lowering.
-func _rhs_is_matching_packed(value, t: GateAST._TypeRef) -> bool:
-	if not (value is GateAST._Index):
-		return false
-	var vt: GateAST._TypeRef = _alias_container_type(value)
-	if vt == null or vt.array_depth != 1 or vt.is_dict():
-		return false
-	var vp: String = GateTypes.packed_for(vt.name)
-	return vp != "" and vp == GateTypes.packed_for(t.name)
-
-
-const PLUSEQ_CONVERT_HINT := "convert it explicitly first (`int(...)`, say), or use append(...) " \
-	+ "instead - a real method call that reaches the array and converts"
-
-
-## `via` is the store that reaches here: `"+="`, `"assign()"` or `"append_array"`. A
-## packed-lowered inner position has no `assign` at all, so that is always refused;
-## `+=` only when the right side is not a matching packed array. `append_array` is
-## exempt from both and only gets the element-type check below.
-func _check_alias_append(target, value, via: String, line: int, col: int) -> void:
-	var t: GateAST._TypeRef = _alias_container_type(target)
-	if t == null:
+func _check_alias_append(target, value, line: int, col: int) -> void:
+	if not (target is GateAST._Ident) or not _typed_aliases.has((target as GateAST._Ident).name):
 		return
-	if via != "append_array" and target is GateAST._Index and t.array_depth == 1 \
-			and not t.is_dict() and GateTypes.has_packed(GateTypes.canonical(t.name)) \
-			and (via == "assign()" or not _rhs_is_matching_packed(value, t)):
-		if via == "assign()":
-			_err("'%s' is a packed array, and has no assign method" % _shown(target),
-				line, col, "clear it and use append_array(...) instead")
-		else:
-			_err("'%s' is a packed array, and += only accepts another packed array of the same kind"
-					% _shown(target), line, col,
-				"use append_array(...) to add every element of another array")
-		return
-	var want: GateAST._TypeRef = _enforced_elem(t)
+	var t: GateAST._TypeRef = _typed_aliases[(target as GateAST._Ident).name]
+	var want: GateAST._TypeRef = GateTypeCompat.container_elem(t)
 	if want == null or value == null or _is_dict_alias(t):
 		return
-	var what: String = "an element of '%s'" % _shown(target)
-	# `+=` on a bare alias reassigns the untyped local instead of mutating the shared
-	# object, so it never reaches the source's own conversion machinery. No skip for it.
+	var what: String = "an element of '%s'" % (target as GateAST._Ident).name
 	if value is GateAST._ArrayLit:
 		for el in (value as GateAST._ArrayLit).elements:
 			var el_t: GateAST._TypeRef = _value_type(el)
-			var would_convert: bool = el_t != null and _nullness(el) == _S.NOTNULL \
-				and GateTypeCompat.godot_converts(el_t, want)
-			if el_t != null and not (via != "+=" and would_convert) \
-					and GateTypeCompat.assignable(el_t, want, infer) == GateTypeCompat.NO:
-				var hint: String = PLUSEQ_CONVERT_HINT if via == "+=" and would_convert else _alias_hint(t)
+			if el_t != null and GateTypeCompat.assignable(el_t, want, infer) == GateTypeCompat.NO:
 				_err("%s is %s, and %s cannot be stored there" % [what, want.describe(),
-						GateTypeCompat.describe(el_t)], line, col, hint)
+						GateTypeCompat.describe(el_t)], line, col, _alias_hint(t))
 		return
 	var at_e: GateAST._TypeRef = GateTypeCompat.container_elem(_value_type(value))
-	var at_would_convert: bool = at_e != null and not at_e.nullable and GateTypeCompat.godot_converts(at_e, want)
-	if at_e != null and not (via != "+=" and at_would_convert) \
-			and GateTypeCompat.assignable(at_e, want, infer) == GateTypeCompat.NO:
-		var at_hint: String = PLUSEQ_CONVERT_HINT if via == "+=" and at_would_convert else _alias_hint(t)
+	if at_e != null and GateTypeCompat.assignable(at_e, want, infer) == GateTypeCompat.NO:
 		_err("%s is %s, and %s holds %s" % [what, want.describe(), _shown(value),
-				at_e.describe()], line, col, at_hint)
+				at_e.describe()], line, col, _alias_hint(t))
 
 
 func _check_array_store_call(c: GateAST._Call) -> void:
 	if not (c.callee is GateAST._Member):
 		return
 	var m: GateAST._Member = c.callee
-	if _alias_container_type(m.target) != null:
-		var what: String = "an element of '%s'" % _shown(m.target)
-		if m.name == "append_array" and c.args.size() == 1:
-			_check_alias_append(m.target, c.args[0], "append_array", c.line, c.col)
-			return
-		if m.name == "assign" and c.args.size() == 1:
-			_check_alias_append(m.target, c.args[0], "assign()", c.line, c.col)
+	if m.target is GateAST._Ident and _typed_aliases.has((m.target as GateAST._Ident).name):
+		var what: String = "an element of '%s'" % (m.target as GateAST._Ident).name
+		if (m.name == "append_array" or m.name == "assign") and c.args.size() == 1:
+			_check_alias_append(m.target, c.args[0], c.line, c.col)
 			return
 		if ARRAY_STORES.has(m.name) and c.args.size() > int(ARRAY_STORES[m.name]):
 			_check_alias_element(m.target, c.args[int(ARRAY_STORES[m.name])], what,

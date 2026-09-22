@@ -127,6 +127,14 @@ static func is_gd_nullable(mapped: String) -> bool:
 		return true
 	if mapped.begins_with("Array[") or mapped.begins_with("Dictionary["):
 		return false
+	# `PackedInt32Array` and the rest are value types, like `Array[int]` above, not
+	# object references - Godot refuses a literal `null` assigned to one ("Cannot
+	# assign a value of type null as PackedInt32Array"). None of them are in
+	# `BUILTIN` (only the untyped `Array`/`Dictionary` are), so without this check
+	# every one of them fell through to "not in BUILTIN, so already nullable" -
+	# the same wrong answer an object type gets, but wrong here.
+	if mapped.begins_with("Packed") and mapped.ends_with("Array"):
+		return false
 	return not BUILTIN.has(mapped)
 
 

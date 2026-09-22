@@ -309,9 +309,18 @@ func _expr(e) -> String:
 		# the cast or the cast lands inside the body.
 		if ce.operand is GateAST._Lambda:
 			inner = "(%s)" % inner
+		var mapped_cast: String = _mapped_type_for_test(ce.type)
+		if ce.type != null and ce.type.nullable:
+			# `x as int?` used to map to `Variant`, an untyped pass-through that let
+			# any value - a `String`, say - through unconverted and uncaught. A `?`
+			# on the cast target now means what it means everywhere else: `null`
+			# survives the cast, and anything else casts to the base type, same as
+			# an unmarked `as int` would. The operand is evaluated once.
+			return "(func(__gate_v): return (null if __gate_v == null else (__gate_v as %s))).call(%s)" \
+				% [mapped_cast, inner]
 		if ce.operand is GateAST._CastExpr:
-			return "%s as %s" % [inner, _mapped_type_for_test(ce.type)]
-		return "(%s as %s)" % [inner, _mapped_type_for_test(ce.type)]
+			return "%s as %s" % [inner, mapped_cast]
+		return "(%s as %s)" % [inner, mapped_cast]
 
 	if e is GateAST._IsExpr:
 		return _emit_is(e)
@@ -1780,13 +1789,16 @@ func _emit_widen(w: GateAST._Widen) -> String:
 
 
 ## `_map_type` for an `is`/`as`/match type-pattern test: a substituted generic param
-## tests as its non-nullable type, the same as it did before generics carried
-## nullability at all. `x is T` with `T = int?` must still test `int`, not `Variant`,
-## or every value would match.
+## tests as its non-nullable type. `x is T` with `T = int?` must still test `int`, not
+## `Variant`, or every value would match. The caller tests `null` itself.
 func _mapped_type_for_test(t: GateAST._TypeRef) -> String:
 	var saved: bool = _type_test
 	_type_test = true
-	var mapped: String = _map_type(t)
+	var base_t: GateAST._TypeRef = t
+	if t != null and t.nullable:
+		base_t = GateChecker.copy_type(t)
+		base_t.nullable = false
+	var mapped: String = _map_type(base_t)
 	_type_test = saved
 	return mapped
 
@@ -1800,10 +1812,15 @@ func _emit_is(ie: GateAST._IsExpr) -> String:
 	var mapped: String = _mapped_type_for_test(ie.type)
 	# `int[]` may be lowered as either, so both count. The lambda reads the operand once.
 	var packed: String = _packed_twin(ie.type, mapped)
-	if packed != "":
-		var call: String = "(func(__gate_v): return __gate_v is %s or __gate_v is %s).call(%s)" \
-			% [mapped, packed, _expr(ie.operand)]
+	var check: String = "__gate_v is %s or __gate_v is %s" % [mapped, packed] if packed != "" \
+		else "__gate_v is %s" % mapped
+	if ie.type.nullable:
+		var call: String = "(func(__gate_v): return __gate_v == null or %s).call(%s)" \
+			% [check, _expr(ie.operand)]
 		return "not " + call if ie.negated else call
+	if packed != "":
+		var call2: String = "(func(__gate_v): return %s).call(%s)" % [check, _expr(ie.operand)]
+		return "not " + call2 if ie.negated else call2
 	var operand: String = _paren_below(ie.operand, PREC_TYPE_TEST)
 	var s: String = "%s is %s" % [operand, mapped]
 	return "not (%s)" % s if ie.negated else s

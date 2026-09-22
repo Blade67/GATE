@@ -479,7 +479,11 @@ func _substituted_arg(g: GateAST._TypeRef) -> GateAST._TypeRef:
 	var g2: GateAST._TypeRef = GateAST._TypeRef.new()
 	g2.name = _subst.get(g.name, g.name)
 	g2.array_depth = g.array_depth
-	g2.nullable = g.nullable
+	# `g.nullable` is only the `?` written at this use site; `Box<T>` inside `Outer<T>`
+	# writes plain `T`. If `g` is itself a param bound to a nullable argument, that has
+	# to flow in, or `Box<T>` always mangles to the non-nullable class.
+	g2.nullable = g.nullable or (g.array_depth == 0 and _subst.has(g.name) \
+		and bool(_subst_nullable.get(g.name, false)))
 	for gg in g.generic_args:
 		g2.generic_args.append(_substituted_arg(gg))
 	return g2
@@ -1059,6 +1063,17 @@ func _map_type_core(t: GateAST._TypeRef, packed_hint: bool) -> String:
 		for _d in range(1, t.array_depth):
 			out = "Array[%s]" % out
 		return out
+	# `GateTypes.is_gd_nullable()` treats any name outside its own builtin-scalar
+	# list as already reference-nullable, since that is true of an object type -
+	# but an enum's generated GDScript type is still an int under a name, and
+	# Godot refuses a literal `null` assigned to it ("Cannot assign a value of
+	# type null to variable ... with specified type E") the same way it refuses
+	# one for `int`. A nullable scalar `T[]` deliberately ignores element
+	# nullability elsewhere in this file, so a nullable enum array matches that
+	# and only the scalar use (`array_depth == 0`) collapses here.
+	if t.array_depth == 0 and t.nullable and (_enum_names.has(t.name)
+			or _enum_names.has(t.name.get_slice(".", t.name.get_slice_count(".") - 1))):
+		return "Variant"
 	return GateTypes.resolve(t, diagnostics, packed_hint)
 
 

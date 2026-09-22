@@ -18,27 +18,7 @@
   the copy to write. A `for` loop variable, an `as` cast (trusted by design), and a call
   through a `Callable` are not checked. Storing a value of the wrong element type in it,
   by `append`, `insert`, `assign`, `+=`, an index or a whole assignment, is a compile
-  error too, and so is the same kind of store into an array or dictionary value nested
-  inside it, such as `grid[0].append(x)` on an `int[][]` or `d["k"].append(x)` on a
-  `{str, int[]}` - as far as GATE's own nested-collection lowering keeps a real type
-  there at all: `bool[][]`'s or `{str, bool[]}`'s inner level has no `Packed*` array to
-  lower to, is untyped the same as a real `bool[][]` variable's own element, and is left
-  unchecked the same way. A nested level that does lower to a `Packed*` array has no
-  `assign` method at all, which is now an error too, naming the packed array as the reason
-  and pointing at `append_array`; `+=` on that same level is an error when the right side
-  is a plain Array, but not when it is another packed array of the same exact kind (Godot
-  accepts that one) - `i64`/`f64` share a canonical name with `int`/`float` but lower to a
-  different `Packed*` array, so `int[][] += i64[][]` is still an error, and a bare alias
-  name on the right is never treated as packed either, whatever it actually holds.
-  Storing through the alias is checked as if it reached a real typed array, with one
-  exception: `+=` and a whole reassignment on a bare (non-nested) alias name both
-  reassign the untyped local instead of mutating the source in place, so a converting
-  element (a `float` into an `int` slot) would silently keep its unconverted value rather
-  than the real array's own conversion - both are now refused for that, with a hint to
-  convert explicitly or use `append`/`assign` instead, which do reach the real array.
-  Nullcheck's own flow narrowing is what a store is checked against, not a value's bare
-  declared type, so a nullable value already guarded by a null check (`if f != null:
-  xs.append(f)`) is not refused either.
+  error too.
 
 ### Changed
 
@@ -64,6 +44,47 @@
 
 ### Fixed
 
+- **A generic parameter's nullability was lost one level down.** `class Box<T>: var v: T`
+  and `class Outer<T>: Box<T> inner = Box<T>.new()`, instantiated as `Outer<int?>`, emitted
+  `inner` as `__Box_int` instead of `__Box_int_opt`, so `o.inner.v = null` crashed at
+  runtime - `T`'s own `?` reached the class `Outer` bound it to, but not a further generic
+  `Outer` built out of it. The same fix covers a class-lowered struct argument, `T[]` used
+  as another generic's own argument, and any depth of nesting: every nested instantiation
+  now sees the same nullability the outer one was given.
+- **`o is int?` matched everything, and `o is Node?` matched nothing that was actually
+  `null`.** An explicit `?` on an `is`/`as` target used to fall through the same rule that
+  collapses a nullable scalar *field* to `Variant`, so `x is int?` compiled to `x is
+  Variant` and matched a `String` just as happily as an `int`. An object type took the
+  opposite wrong turn: `x is Node?` silently dropped the `?` and compiled to `x is Node`,
+  which GDScript's own `is` never treats as "or null" (`null is Node` is `false`). Both
+  now test `null` explicitly and the base type otherwise, reading the operand once: `x is
+  int?` is true for an `int` or `null`, false for anything else, and `x as int?` casts to
+  `int` unless the value is already `null`, in which case `null` comes back rather than an
+  unchecked pass-through.
+- **An explicit nullable enum field did not load.** `enum E { A, B }` then `var so: E? =
+  null` compiled straight through, and Godot refused to load the result: an enum's
+  generated type is still a name over an `int`, and Godot rejects a literal `null` stored
+  in it the same way it rejects one for a plain `int`. `E?` now emits what an explicit
+  nullable scalar already does (`Variant`), the same rule a generic's own nullable `T`
+  follows.
+- **`PackedInt32Array?` compiled but ignored the `?`.** Every `Packed*Array` type is a
+  value type, not an object reference, and Godot refuses a literal `null` stored in one -
+  but nothing marked them that way, so a nullable field kept the bare `PackedInt32Array`
+  annotation and failed to load the first time it held `null`. They now collapse to
+  `Variant` the same way a nullable `int` or `float` field already does.
+- **Two different instantiations of one generic that generate two different classes were
+  never compared.** `Box<int> b = Box<i32>.new()` and `Box<Node> b = Box<Node?>.new()`
+  both compiled clean and only failed once Godot tried to load the result, quoting the
+  generated class names (`__Box_i32`, `__Box_int`) rather than the source spelling. GATE
+  now catches this itself wherever a generic-typed value is stored, with a message naming
+  both instantiations.
+- **`Box<Box<int>?>` and `Box<Box<int?>>` mangled to the same class name.** A nested
+  generic argument's own `?` and its inner argument's `?` both ended up as a trailing
+  `_opt` with nothing to say which level it belonged to, so the two meant different things
+  but generated the same class name, and GATE refused to compile either alongside the
+  other ("two different instantiations of 'Box' both mangle to..."). A nested generic
+  argument now marks its own nullability as a prefix instead, so the two stay distinct;
+  every other generic argument's mangled name is unchanged.
 - **A one-line class body was refused.** `class Inner extends RefCounted: var z = 1`
   is valid Godot GDScript - a class whose whole body is the one statement after the
   colon - but GATE reported "expected the end of the statement" because `var` also
@@ -124,16 +145,6 @@
   `const`. A one-line struct or class body follows the same leak rule as before: `struct
   P: int x; int y` puts `y` on the enclosing scope, not on `P`. `int x y` without a `;`
   is still refused, and so is a value after several names (`T a, b = v`).
-- **A doubled `;;` was refused.** `var x = 1;; var y = 2` reported "unexpected token
-  ';'", because GATE only ever expected a real statement right after a `;`, not another
-  `;`. Godot itself treats a run of semicolons as empty statements and accepts it, in a
-  function body, at the file level, inside a class body, in a one-line `if`/`for`/`func`
-  body, and as a lone `;` on its own line once the block has already opened with a real
-  statement - confirmed directly against a live `GDScript.reload()`. GATE now does the
-  same and drops the empty statements from its output; the type-first flavour of a
-  declaration (`int x;; int y`) is covered too. A `;` as the very first thing in a block,
-  or right after a block header's own colon (`func f():;`), is still refused - Godot
-  refuses both of those as well.
 
 ## 1.1.1 - 2026-09-18
 
