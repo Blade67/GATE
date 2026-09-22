@@ -134,6 +134,25 @@ func set_registry(reg, self_path: String) -> void:
 		var gorigin: String = reg.origin.get(gname, "")
 		if gorigin != "" and gorigin != self_path:
 			_extern_generics[gname] = gorigin
+	# A nullable enum reached through another file's top-level `enum` collapses to
+	# `Variant` too. Read from `reg.enum_origin`, not the shared `reg.origin`: every kind
+	# writes into `origin` and it keeps one winner, where two files can each validly
+	# declare their own `enum State`.
+	if "enums" in reg:
+		for ename in reg.enums:
+			if not reg.top_level.has(ename):
+				continue
+			var eorigins: Array = (reg.enum_origin.get(ename, []) as Array) if "enum_origin" in reg \
+				else [String(reg.origin.get(ename, ""))]
+			for eo in eorigins:
+				var eorigin: String = String(eo)
+				if eorigin == "" or eorigin == self_path:
+					continue
+				_extern_enum_names[ename] = true
+				if not _extern_enum_origin.has(ename):
+					_extern_enum_origin[ename] = []
+				if not (_extern_enum_origin[ename] as Array).has(eorigin):
+					(_extern_enum_origin[ename] as Array).append(eorigin)
 
 
 func set_base_chain(chain: Dictionary) -> void:
@@ -232,6 +251,8 @@ func _index_local_names(members: Array) -> void:
 				if f is GateAST._VarDecl and (f as GateAST._VarDecl).type != null:
 					var fv: GateAST._VarDecl = f
 					_field_types["%s.%s" % [cd.name, fv.name]] = fv.type
+				elif f is GateAST._EnumDecl and (f as GateAST._EnumDecl).name != "":
+					_qualified_enum_names["%s.%s" % [cd.name, (f as GateAST._EnumDecl).name]] = true
 			_index_local_names(cd.members)
 		elif m is GateAST._VarDecl:
 			_bound_names[(m as GateAST._VarDecl).name] = true
@@ -1071,10 +1092,53 @@ func _map_type_core(t: GateAST._TypeRef, packed_hint: bool) -> String:
 	# one for `int`. A nullable scalar `T[]` deliberately ignores element
 	# nullability elsewhere in this file, so a nullable enum array matches that
 	# and only the scalar use (`array_depth == 0`) collapses here.
-	if t.array_depth == 0 and t.nullable and (_enum_names.has(t.name)
-			or _enum_names.has(t.name.get_slice(".", t.name.get_slice_count(".") - 1))):
+	if t.array_depth == 0 and t.nullable and _is_nullable_enum_type(t.name):
 		return "Variant"
 	return GateTypes.resolve(t, diagnostics, packed_hint)
+
+
+## Whether `name` (bare or dotted) names an enum, for the collapse-to-`Variant`
+## rule just above. A bare name is a plain lookup in `_enum_names` (declared
+## anywhere in this file, at any nesting depth). A dotted name only matches
+## when the qualifier - the segment right before the leaf - actually names the
+## leaf's declaring container: `_qualified_enum_names` for a same-file nested
+## class (so `Wrap.Mode`, an unrelated plain class nested inside `Wrap`, does
+## not falsely match a same-named top-level enum elsewhere in the file), or,
+## for another file's top-level enum, the qualifier resolving to that enum's
+## origin through a preload const or the origin's own `class_name` - the same
+## two ways `_qualifier_reaches` already resolves a qualifier for a struct.
+func _is_nullable_enum_type(name: String) -> bool:
+	if not name.contains("."):
+		return _enum_names.has(name)
+	var parts: PackedStringArray = name.split(".")
+	var leaf: String = parts[parts.size() - 1]
+	var qualifier: String = parts[parts.size() - 2]
+	if _qualified_enum_names.has("%s.%s" % [qualifier, leaf]):
+		return true
+	if not _extern_enum_names.has(leaf):
+		return false
+	for o in (_extern_enum_origin.get(leaf, []) as Array):
+		var origin: String = String(o)
+		if origin == "":
+			continue
+		if String(_reg_script_classes.get(qualifier, "")) == origin:
+			return true
+		if String(_used_origins.get(origin, "")) == qualifier:
+			return true
+		if _preload_const_of(qualifier) == origin.get_basename() + ".gd":
+			return true
+	return false
+
+
+## Whether an `is`/`as` against `t` needs the explicit null-preserving lambda rather
+## than a plain `as`. True for a nullable scalar that is not already gd-nullable, and
+## for a nullable enum: a plain `(o as E)` crashes on a `null` operand.
+func _cast_needs_null_guard(t: GateAST._TypeRef, mapped: String) -> bool:
+	if t == null or not t.nullable:
+		return false
+	if not GateTypes.is_gd_nullable(mapped):
+		return true
+	return _is_nullable_enum_type(t.name)
 
 
 func _map_dict_value(t: GateAST._TypeRef) -> String:
@@ -1214,7 +1278,19 @@ func _prec_of(e) -> int:
 	if e is GateAST._Ternary:
 		return PREC_TERNARY if (e as GateAST._Ternary).if_false is GateAST._Ternary else PREC_ATOM
 	if e is GateAST._CastExpr and (e as GateAST._CastExpr).operand is GateAST._CastExpr:
-		return PREC_TYPE_TEST   # `a as A as B` is printed without parentheses
+		# `a as A as B` prints without parentheses, unless the outer cast lowers to a lambda
+		# call and binds like one - the same condition the `as` cast in `_expr` uses.
+		var oct: GateAST._TypeRef = (e as GateAST._CastExpr).type
+		if oct != null and oct.nullable:
+			var base_oct: GateAST._TypeRef = GateChecker.copy_type(oct)
+			base_oct.nullable = false
+			var saved_tt: bool = _type_test
+			_type_test = true
+			var oct_mapped: String = _map_type(base_oct)
+			_type_test = saved_tt
+			if _cast_needs_null_guard(oct, oct_mapped):
+				return PREC_ATOM
+		return PREC_TYPE_TEST
 	return PREC_ATOM
 
 
@@ -1334,6 +1410,8 @@ func _is_lowers_to_call(ie: GateAST._IsExpr) -> bool:
 	var tname: String = ie.type.name
 	if not _is_known_native(tname) and _looks_like_interface(tname):
 		return true
+	if ie.type.nullable:
+		return true   # `o is int?` is a lambda call too, same as the packed-twin case
 	return _packed_twin(ie.type, _map_type(ie.type)) != ""
 
 

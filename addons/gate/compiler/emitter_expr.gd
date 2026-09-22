@@ -310,15 +310,19 @@ func _expr(e) -> String:
 		if ce.operand is GateAST._Lambda:
 			inner = "(%s)" % inner
 		var mapped_cast: String = _mapped_type_for_test(ce.type)
-		if ce.type != null and ce.type.nullable:
-			# `x as int?` used to map to `Variant`, an untyped pass-through that let
-			# any value - a `String`, say - through unconverted and uncaught. A `?`
-			# on the cast target now means what it means everywhere else: `null`
-			# survives the cast, and anything else casts to the base type, same as
-			# an unmarked `as int` would. The operand is evaluated once.
+		if _cast_needs_null_guard(ce.type, mapped_cast):
+			# A `?` on the cast target means what it means everywhere else: `null` survives,
+			# anything else casts to the base type. An already gd-nullable base skips this,
+			# since plain `as Node` already yields `null` for a `null` operand.
 			return "(func(__gate_v): return (null if __gate_v == null else (__gate_v as %s))).call(%s)" \
 				% [mapped_cast, inner]
 		if ce.operand is GateAST._CastExpr:
+			var inner_ce: GateAST._CastExpr = ce.operand
+			if _cast_needs_null_guard(inner_ce.type, _mapped_type_for_test(inner_ce.type)):
+				# The inner cast lowered to a `.call(...)`, so the "a chain of casts needs no
+				# parentheses" rule below no longer applies. Recompiling this text lands here too,
+				# which is what keeps the two passes textually identical.
+				return "(%s as %s)" % [inner, mapped_cast]
 			return "%s as %s" % [inner, mapped_cast]
 		return "(%s as %s)" % [inner, mapped_cast]
 

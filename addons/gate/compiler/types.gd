@@ -63,6 +63,15 @@ const PACKED := {
 const VECTOR_FLOAT := {2: "Vector2", 3: "Vector3", 4: "Vector4"}
 const VECTOR_INT := {2: "Vector2i", 3: "Vector3i", 4: "Vector4i"}
 
+## Godot's own Packed*Array type names, exactly. A `begins_with`/`ends_with` shape match
+## would also catch a user class called `PackedFoodArray` and widen it to `Variant`.
+const PACKED_TYPE_NAMES := {
+	"PackedByteArray": true, "PackedInt32Array": true, "PackedInt64Array": true,
+	"PackedFloat32Array": true, "PackedFloat64Array": true, "PackedStringArray": true,
+	"PackedVector2Array": true, "PackedVector3Array": true, "PackedVector4Array": true,
+	"PackedColorArray": true,
+}
+
 
 ## Shorthand names the file or the project declares itself: a `class vec2` means that
 ## class, as it does in GDScript, in every position - a type position too. Set for
@@ -127,13 +136,10 @@ static func is_gd_nullable(mapped: String) -> bool:
 		return true
 	if mapped.begins_with("Array[") or mapped.begins_with("Dictionary["):
 		return false
-	# `PackedInt32Array` and the rest are value types, like `Array[int]` above, not
-	# object references - Godot refuses a literal `null` assigned to one ("Cannot
-	# assign a value of type null as PackedInt32Array"). None of them are in
-	# `BUILTIN` (only the untyped `Array`/`Dictionary` are), so without this check
-	# every one of them fell through to "not in BUILTIN, so already nullable" -
-	# the same wrong answer an object type gets, but wrong here.
-	if mapped.begins_with("Packed") and mapped.ends_with("Array"):
+	# `PackedInt32Array` and the rest are value types, not object references, and Godot
+	# refuses a literal `null` for one. None are in `BUILTIN`, so without this check they
+	# all fell through to "not in BUILTIN, so already nullable".
+	if PACKED_TYPE_NAMES.has(mapped):
 		return false
 	return not BUILTIN.has(mapped)
 

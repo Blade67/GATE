@@ -13,6 +13,22 @@ class _Registry extends RefCounted:
 	var classes: Dictionary = {}      ## name -> _ClassDecl
 	var namespaces: Dictionary = {}   ## name -> _ClassDecl
 	var generics: Dictionary = {}     ## name -> _ClassDecl (the template)
+	var enums: Dictionary = {}        ## name -> _EnumDecl, top-level only
+	## name -> Array[path], every file that declares a top-level enum of that
+	## name, for an enum only. `origin` below is shared by every top-level *and
+	## nested* class/struct/namespace across the whole project (`_collect`
+	## writes `registry.origin[cd.name] = path` for a class at any nesting
+	## depth, not only a top-level one), so a nested class sharing an enum's
+	## bare name in a completely unrelated file silently overwrites the enum's
+	## own entry there. This map is written only by the enum branch of
+	## `_index_file`, so no class or struct can collide with it - but the KEY
+	## is still a bare name, and two files can perfectly validly each declare
+	## their own top-level `enum E` (ordinary Godot code: `enum State`, `enum
+	## Mode` and the like are common names). A single path per name would let
+	## whichever file is indexed last silently win, so this holds every origin
+	## that declares the name; `_is_nullable_enum_type` tries each one and
+	## accepts the first that actually matches the qualifier in front of it.
+	var enum_origin: Dictionary = {}
 	var generic_uses: Array = []   ## Array[_TypeRef]
 	var script_class_names: Dictionary = {}
 	var gd_class_names: Dictionary = {}   ## class_name -> the plain .gd declaring it
@@ -45,8 +61,8 @@ class _Registry extends RefCounted:
 		for p in get_property_list():
 			if (int(p["usage"]) & PROPERTY_USAGE_SCRIPT_VARIABLE) != 0:
 				r.set(p["name"], get(p["name"]))
-		for t in ["interfaces", "traits", "structs", "classes", "namespaces", "generics",
-				"top_level", "origin", "declared_in", "bases"]:
+		for t in ["interfaces", "traits", "structs", "classes", "namespaces", "generics", "enums",
+				"enum_origin", "top_level", "origin", "declared_in", "bases"]:
 			var d: Dictionary = (get(t) as Dictionary).duplicate()
 			for n in names:
 				d.erase(n)
@@ -541,6 +557,15 @@ func _index_file(path: String, src: String, tokens: Array, diags: GateDiagnostic
 				registry.alias_files[ad.name] = []
 			if not registry.alias_files[ad.name].has(path):
 				registry.alias_files[ad.name].append(path)
+		elif m is GateAST._EnumDecl and (m as GateAST._EnumDecl).name != "":
+			var ed: GateAST._EnumDecl = m
+			registry.enums[ed.name] = ed
+			registry.origin[ed.name] = path
+			if not registry.enum_origin.has(ed.name):
+				registry.enum_origin[ed.name] = []
+			if not (registry.enum_origin[ed.name] as Array).has(path):
+				(registry.enum_origin[ed.name] as Array).append(path)
+			registry.top_level[ed.name] = true
 	_index_trait_text(mod.members, src.split("\n"), src)
 	var own: Dictionary = GateChecker.block_names(mod.members)
 	if mod.class_name_decl != "":

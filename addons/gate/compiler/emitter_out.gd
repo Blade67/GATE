@@ -131,7 +131,14 @@ var _instantiations: Dictionary = {}    ## mangled name -> [_ClassDecl, {param: 
 
 var _subst: Dictionary = {}
 var _subst_depth: Dictionary = {}
-var _enum_names: Dictionary = {}
+var _enum_names: Dictionary = {}   ## bare enum name -> true, declared anywhere in this file
+## "Container.EnumName" -> true, for an enum declared inside a same-file nested class,
+## so a dotted reference only means that enum when the qualifier names its own class.
+var _qualified_enum_names: Dictionary = {}
+var _extern_enum_names: Dictionary = {}    ## leaf enum name -> true, top-level in another file
+## leaf enum name -> Array[.gate path], every file declaring a top-level enum
+## of that name - two files can validly share one (`enum State`, `enum Mode`).
+var _extern_enum_origin: Dictionary = {}
 var _subst_types: Dictionary = {}
 var _subst_nullable: Dictionary = {}   ## generic param name -> its bound argument's own `?`
 ## True while emitting an `is`/`as`/match type-pattern test of a substituted generic

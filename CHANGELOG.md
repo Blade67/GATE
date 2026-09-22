@@ -18,7 +18,27 @@
   the copy to write. A `for` loop variable, an `as` cast (trusted by design), and a call
   through a `Callable` are not checked. Storing a value of the wrong element type in it,
   by `append`, `insert`, `assign`, `+=`, an index or a whole assignment, is a compile
-  error too.
+  error too, and so is the same kind of store into an array or dictionary value nested
+  inside it, such as `grid[0].append(x)` on an `int[][]` or `d["k"].append(x)` on a
+  `{str, int[]}` - as far as GATE's own nested-collection lowering keeps a real type
+  there at all: `bool[][]`'s or `{str, bool[]}`'s inner level has no `Packed*` array to
+  lower to, is untyped the same as a real `bool[][]` variable's own element, and is left
+  unchecked the same way. A nested level that does lower to a `Packed*` array has no
+  `assign` method at all, which is now an error too, naming the packed array as the reason
+  and pointing at `append_array`; `+=` on that same level is an error when the right side
+  is a plain Array, but not when it is another packed array of the same exact kind (Godot
+  accepts that one) - `i64`/`f64` share a canonical name with `int`/`float` but lower to a
+  different `Packed*` array, so `int[][] += i64[][]` is still an error, and a bare alias
+  name on the right is never treated as packed either, whatever it actually holds.
+  Storing through the alias is checked as if it reached a real typed array, with one
+  exception: `+=` and a whole reassignment on a bare (non-nested) alias name both
+  reassign the untyped local instead of mutating the source in place, so a converting
+  element (a `float` into an `int` slot) would silently keep its unconverted value rather
+  than the real array's own conversion - both are now refused for that, with a hint to
+  convert explicitly or use `append`/`assign` instead, which do reach the real array.
+  Nullcheck's own flow narrowing is what a store is checked against, not a value's bare
+  declared type, so a nullable value already guarded by a null check (`if f != null:
+  xs.append(f)`) is not refused either.
 
 ### Changed
 
@@ -76,8 +96,8 @@
   never compared.** `Box<int> b = Box<i32>.new()` and `Box<Node> b = Box<Node?>.new()`
   both compiled clean and only failed once Godot tried to load the result, quoting the
   generated class names (`__Box_i32`, `__Box_int`) rather than the source spelling. GATE
-  now catches this itself wherever a generic-typed value is stored, with a message naming
-  both instantiations.
+  now catches this itself in a variable or field's initial value, an assignment, a return,
+  or a call argument, with a message naming both instantiations.
 - **`Box<Box<int>?>` and `Box<Box<int?>>` mangled to the same class name.** A nested
   generic argument's own `?` and its inner argument's `?` both ended up as a trailing
   `_opt` with nothing to say which level it belonged to, so the two meant different things
@@ -145,6 +165,16 @@
   `const`. A one-line struct or class body follows the same leak rule as before: `struct
   P: int x; int y` puts `y` on the enclosing scope, not on `P`. `int x y` without a `;`
   is still refused, and so is a value after several names (`T a, b = v`).
+- **A doubled `;;` was refused.** `var x = 1;; var y = 2` reported "unexpected token
+  ';'", because GATE only ever expected a real statement right after a `;`, not another
+  `;`. Godot itself treats a run of semicolons as empty statements and accepts it, in a
+  function body, at the file level, inside a class body, in a one-line `if`/`for`/`func`
+  body, and as a lone `;` on its own line once the block has already opened with a real
+  statement - confirmed directly against a live `GDScript.reload()`. GATE now does the
+  same and drops the empty statements from its output; the type-first flavour of a
+  declaration (`int x;; int y`) is covered too. A `;` as the very first thing in a block,
+  or right after a block header's own colon (`func f():;`), is still refused - Godot
+  refuses both of those as well.
 
 ## 1.1.1 - 2026-09-18
 

@@ -192,17 +192,29 @@ func subst_generic(t: GateAST._TypeRef, recv: GateAST._TypeRef) -> GateAST._Type
 		return t
 	var params: Array = generic_params[recv.name]
 	var at: int = params.find(t.name)
-	if at < 0 or at >= recv.generic_args.size():
-		return t
-	var c: GateAST._TypeRef = GateChecker.copy_type(recv.generic_args[at])
-	c.at(t.line, t.col)
-	if t.array_depth > 0:
-		c.elem_nullable = c.elem_nullable or (c.array_depth == 0 and c.nullable) or t.elem_nullable
-		c.nullable = t.nullable
-		c.array_depth += t.array_depth
-	else:
-		c.nullable = c.nullable or t.nullable
-	return c
+	if at >= 0 and at < recv.generic_args.size():
+		var c: GateAST._TypeRef = GateChecker.copy_type(recv.generic_args[at])
+		c.at(t.line, t.col)
+		if t.array_depth > 0:
+			c.elem_nullable = c.elem_nullable or (c.array_depth == 0 and c.nullable) or t.elem_nullable
+			c.nullable = t.nullable
+			c.array_depth += t.array_depth
+		else:
+			c.nullable = c.nullable or t.nullable
+		return c
+	# `t` is not itself a bare template param (`A`), but may still use one as a
+	# nested generic argument (`Box<A>`, a param typed by another of the
+	# receiver's own generics). Substitute each argument the same way, so a
+	# method parameter or return typed `Box<A>` on `Pair<int>` resolves to
+	# `Box<int>`, matching what the receiver was actually instantiated with -
+	# without this, `Box<A>` stayed unsubstituted and any comparison against a
+	# concrete `Box<int>` looked like two different instantiations.
+	if not t.generic_args.is_empty():
+		var t2: GateAST._TypeRef = GateChecker.copy_type(t)
+		for i in t2.generic_args.size():
+			t2.generic_args[i] = subst_generic(t2.generic_args[i], recv)
+		return t2
+	return t
 
 
 func _lookup(table: Dictionary, cls: String, key_suffix: String):

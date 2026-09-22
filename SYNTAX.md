@@ -319,6 +319,9 @@ initialisers, the cast is trusted.
 
 `is`, `as` and type patterns take a single type, not a union or a tuple.
 
+`x is T?` is true for a `T` or for `null`; `x as T?` is `null` for a `null` operand,
+and otherwise casts to `T` the same as `x as T`.
+
 ## Match type patterns
 
 ```gdscript
