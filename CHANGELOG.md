@@ -18,7 +18,27 @@
   the copy to write. A `for` loop variable, an `as` cast (trusted by design), and a call
   through a `Callable` are not checked. Storing a value of the wrong element type in it,
   by `append`, `insert`, `assign`, `+=`, an index or a whole assignment, is a compile
-  error too.
+  error too, and so is the same kind of store into an array or dictionary value nested
+  inside it, such as `grid[0].append(x)` on an `int[][]` or `d["k"].append(x)` on a
+  `{str, int[]}` - as far as GATE's own nested-collection lowering keeps a real type
+  there at all: `bool[][]`'s or `{str, bool[]}`'s inner level has no `Packed*` array to
+  lower to, is untyped the same as a real `bool[][]` variable's own element, and is left
+  unchecked the same way. A nested level that does lower to a `Packed*` array has no
+  `assign` method at all, which is now an error too, naming the packed array as the reason
+  and pointing at `append_array`; `+=` on that same level is an error when the right side
+  is a plain Array, but not when it is another packed array of the same exact kind (Godot
+  accepts that one) - `i64`/`f64` share a canonical name with `int`/`float` but lower to a
+  different `Packed*` array, so `int[][] += i64[][]` is still an error, and a bare alias
+  name on the right is never treated as packed either, whatever it actually holds.
+  Storing through the alias is checked as if it reached a real typed array, with one
+  exception: `+=` and a whole reassignment on a bare (non-nested) alias name both
+  reassign the untyped local instead of mutating the source in place, so a converting
+  element (a `float` into an `int` slot) would silently keep its unconverted value rather
+  than the real array's own conversion - both are now refused for that, with a hint to
+  convert explicitly or use `append`/`assign` instead, which do reach the real array.
+  Nullcheck's own flow narrowing is what a store is checked against, not a value's bare
+  declared type, so a nullable value already guarded by a null check (`if f != null:
+  xs.append(f)`) is not refused either.
 
 ### Changed
 

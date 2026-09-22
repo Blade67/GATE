@@ -546,13 +546,34 @@ is refused the same way, named as the call that made it; the rule holds through 
 side of a ternary or `??` too, named as the whole expression. A `for` loop variable, an
 `as` cast (trusted by design), and a call through a `Callable` are not checked. Storing a
 value of the wrong element type in it, by `append`, `insert`, `assign`, `+=`, an index or a
-whole assignment, is an error too; a store into an array nested inside it, such as
-`grid[0].append(x)` on an `int[][]`, is not checked. A type on a name must hold the tuple
-slot's value without loss: `float` over an `int` slot is fine, `int` over a `float` slot is
-an error, and a name over a nullable slot must be nullable or `Variant`. The source itself
-is trusted, as `as` is: if `components[0]` holds something that is not a `Move`, Godot
-reports it on the line that reads it. A number of the wrong kind is converted instead,
-where the read is typed, as a tuple slot converts it.
+whole assignment, is an error too, and so is a store into an array or dictionary value
+nested inside it, such as `grid[0].append(x)` on an `int[][]` - but only as far as the
+nested collections rule above enforces: `grid[0]` on a `bool[][]` is untyped, the same as
+a real `bool[][]` variable's own element, so nothing stored in it is checked either. A
+nested level that lowers to a `Packed*` array has no `assign` method at all, which Godot
+refuses outright - `grid[0].assign([1])` is always an error naming the real reason, with
+`append_array` as the fix. `+=` with a plain Array on that same level is also refused
+(`grid[0] += [1]`), but `+=` with another packed array of the same *exact* kind is not -
+Godot dispatches it by the runtime type of both sides, and two matching packed arrays add
+fine (`grid[0] += grid[1]`, both `PackedInt32Array`). "The same kind" means the same
+`Packed*` array, not just the same canonical element name: `i64`/`f64` opt out of the
+default 32-bit storage width, but not the type itself, so `PackedInt32Array` and
+`PackedInt64Array` are still different arrays and `int[][] += i64[][]` is refused, even
+though `i64` and `int` share a canonical name. The right side has to be a nested alias
+position too, resolved the same deterministic way as the left - a bare alias name is never
+treated as packed, whatever it actually holds at runtime, since only a nested position is
+forced to Packed by the emitter's own rule. A store through the untyped alias itself is
+checked as if it reached a real typed array, but `+=` and a whole reassignment on a bare
+(non-nested) alias name are different: both reassign the untyped local rather than
+mutating the source array in place, so a converting element (a `float` into an `int` slot,
+say) does not actually convert - the value stays what it was, which a real typed array
+could never hold - so both are refused for that, with a hint to convert explicitly or use
+`append`/`assign` instead, which do reach the real array and convert. A type on a name
+must hold the tuple slot's value without loss: `float` over an `int` slot is fine, `int`
+over a `float` slot is an error, and a name over a nullable slot must be nullable or
+`Variant`. The source itself is trusted, as `as` is: if `components[0]` holds something
+that is not a `Move`, Godot reports it on the line that reads it. A number of the wrong
+kind is converted instead, where the read is typed, as a tuple slot converts it.
 
 `int a, int b = p` is not destructuring and is an error; the brackets are what destructures.
 
