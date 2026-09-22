@@ -228,6 +228,7 @@ func _emit_monomorphised() -> void:
 		_subst = pair[1]
 		_subst_depth = pair[2] if pair.size() > 2 else {}
 		_subst_types = pair[3] if pair.size() > 3 else {}
+		_subst_nullable = pair[4] if pair.size() > 4 else {}
 		var saved_name: String = cd.name
 		_mono_scope = ""
 		for k in _class_decls:
@@ -243,6 +244,7 @@ func _emit_monomorphised() -> void:
 		_subst = {}
 		_subst_depth = {}
 		_subst_types = {}
+		_subst_nullable = {}
 
 
 func _emit_member(m) -> void:

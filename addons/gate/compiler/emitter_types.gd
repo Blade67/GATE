@@ -560,13 +560,16 @@ func _close_instantiations() -> void:
 			var saved: Dictionary = _subst
 			var saved_depth: Dictionary = _subst_depth
 			var saved_types: Dictionary = _subst_types
+			var saved_nullable: Dictionary = _subst_nullable
 			_subst = entry[1]
 			_subst_depth = entry[2] if entry.size() > 2 else {}
 			_subst_types = entry[3] if entry.size() > 3 else {}
+			_subst_nullable = entry[4] if entry.size() > 4 else {}
 			_collect_instantiations((entry[0] as GateAST._ClassDecl).members)
 			_subst = saved
 			_subst_depth = saved_depth
 			_subst_types = saved_types
+			_subst_nullable = saved_nullable
 		if _instantiations.size() == before:
 			return
 
@@ -586,25 +589,33 @@ func _note_type(t: GateAST._TypeRef) -> void:
 			var sub: Dictionary = {}
 			var depths: Dictionary = {}
 			var full: Dictionary = {}
+			# param -> whether the argument itself was written `T?`, since
+			# `_subst_value` below only keeps the bare type name.
+			var nullables: Dictionary = {}
 			for i in cd.generic_params.size():
 				if i < st.generic_args.size():
 					var ga: GateAST._TypeRef = st.generic_args[i]
 					sub[cd.generic_params[i]] = _subst_value(ga)
 					depths[cd.generic_params[i]] = ga.array_depth
+					nullables[cd.generic_params[i]] = ga.nullable
 					if _is_shape(ga):
 						full[cd.generic_params[i]] = _normalized(GateChecker.copy_type(ga))
 			if not _names_template_param(st):
-				_instantiations[mangled] = [cd, sub, depths, full]
+				_instantiations[mangled] = [cd, sub, depths, full, nullables]
 		else:
 			var prev: Array = _instantiations[mangled]
 			var prev_sub: Dictionary = prev[1]
+			var prev_nullable: Dictionary = prev[4] if prev.size() > 4 else {}
 			var same: bool = true
 			var cd2: GateAST._ClassDecl = _generics[t.name]
 			for i2 in cd2.generic_params.size():
 				if i2 >= st.generic_args.size():
 					continue
 				var key: String = cd2.generic_params[i2]
-				if GateTypes.canonical(prev_sub.get(key, "")) != GateTypes.canonical(_subst_value(st.generic_args[i2])):
+				var new_arg: GateAST._TypeRef = st.generic_args[i2]
+				if GateTypes.canonical(prev_sub.get(key, "")) != GateTypes.canonical(_subst_value(new_arg)):
+					same = false
+				if bool(prev_nullable.get(key, false)) != new_arg.nullable:
 					same = false
 			if not same and prev[0] == cd2:
 				diagnostics.error(
@@ -946,7 +957,11 @@ func _script_has_func(ref: String, from: String, n: String, depth: int) -> bool:
 
 
 func _is_class_struct(t: GateAST._TypeRef) -> bool:
-	if t == null or t.nullable or t.array_depth != 0 or t.is_dict():
+	if t == null or t.array_depth != 0 or t.is_dict():
+		return false
+	# A generic param bound nullably (`Box<S?>`'s `T`) counts as nullable here: a
+	# nullable struct field is not auto-constructed, it defaults like any other.
+	if t.nullable or bool(_subst_nullable.get(t.name, false)):
 		return false
 	var s: Dictionary = _struct_of(t.name)
 	return not s.is_empty() and s["lowering"] != "vector"
@@ -999,7 +1014,11 @@ func _map_type_core(t: GateAST._TypeRef, packed_hint: bool) -> String:
 		var concrete: GateAST._TypeRef = GateAST._TypeRef.new()
 		concrete.name = _subst[t.name]
 		concrete.array_depth = t.array_depth + int(_subst_depth.get(t.name, 0))
-		concrete.nullable = t.nullable
+		# A scalar *use site* (`T`, not `T[]`) carries the argument's own `?`, keyed on the
+		# use site's array depth rather than the result's. `is`/`as`/a match pattern test the
+		# substituted type itself, not a declaration, so `_type_test` suppresses it.
+		concrete.nullable = t.nullable or (t.array_depth == 0 and not _type_test \
+			and bool(_subst_nullable.get(t.name, false)))
 		return _map_type(concrete, packed_hint)
 	if not t.generic_args.is_empty() and _extern_generics.has(t.name):
 		var ga: String = _extern_generic_alias(t.name)

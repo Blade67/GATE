@@ -26,7 +26,15 @@ func parse(tokens: Array, source: String, diags: GateDiagnostics) -> GateAST._Mo
 
 	var mod: GateAST._Module = GateAST._Module.new()
 	_skip_newlines()
+	var seen_a_member: bool = false
 	while not _at_end():
+		# A bare `;` is an empty statement, but only once the file has opened with a real one
+		# (`extends` included). A leading `;` is still refused, matching a real reload().
+		if seen_a_member and _check_op(";"):
+			while _match_op(";"):
+				pass
+			_skip_newlines()
+			continue
 		var before: int = diags.error_count()
 		var m: GateAST._Stmt = _parse_module_member(mod)
 		if m != null:
@@ -37,6 +45,8 @@ func parse(tokens: Array, source: String, diags: GateDiagnostics) -> GateAST._Mo
 		while _match_op(";"):
 			if _at_stmt_end():
 				break
+			if _check_op(";"):
+				continue   # a doubled `;;` is an empty statement, not leftover text
 			var before2: int = diags.error_count()
 			var m2: GateAST._Stmt = _parse_module_member(mod)
 			if m2 != null:
@@ -45,6 +55,7 @@ func parse(tokens: Array, source: String, diags: GateDiagnostics) -> GateAST._Mo
 			_drain_hoisted(mod.members)
 			_expect_stmt_end(before2)
 		_skip_newlines()
+		seen_a_member = true
 	mod.generic_uses = _generic_uses
 	mod.uses_nullable = _saw_nullable
 	mod.has_aliases = _saw_alias
@@ -764,10 +775,18 @@ func _parse_block_body(is_class_body: bool) -> Array:
 	if not _check(GateLexer._T.INDENT):
 		return out
 	_advance()  # INDENT
+	var seen_a_stmt: bool = false
 	while not _at_end() and not _check(GateLexer._T.DEDENT):
 		_skip_newlines()
 		if _check(GateLexer._T.DEDENT) or _at_end():
 			break
+		# A bare `;` on its own line is an empty statement, but only once the block has a real
+		# one before it. First in the block it is refused, matching a real reload().
+		if seen_a_stmt and _check_op(";"):
+			while _match_op(";"):
+				pass
+			_skip_newlines()
+			continue
 		var before: int = diagnostics.error_count()
 		var s: GateAST._Stmt = _parse_member() if is_class_body else _parse_statement()
 		if s != null:
@@ -778,6 +797,8 @@ func _parse_block_body(is_class_body: bool) -> Array:
 		while _match_op(";"):
 			if _at_stmt_end():
 				break
+			if _check_op(";"):
+				continue   # a doubled `;;` is an empty statement, not leftover text
 			var before2: int = diagnostics.error_count()
 			var s2: GateAST._Stmt = _parse_member() if is_class_body else _parse_statement()
 			if s2 != null:
@@ -786,6 +807,7 @@ func _parse_block_body(is_class_body: bool) -> Array:
 			_drain_hoisted(out)
 			_expect_stmt_end(before2)
 		_skip_newlines()
+		seen_a_stmt = true
 	if _check(GateLexer._T.DEDENT):
 		_advance()
 	return out
@@ -864,6 +886,8 @@ func _parse_lambda_inline_body(limit_line: int = 0) -> Array:
 		while _match_op(";"):
 			if _at_stmt_end():
 				break
+			if _check_op(";"):
+				continue   # a doubled `;;` is an empty statement, not leftover text
 			var s2: GateAST._Stmt = _parse_statement()
 			if s2 != null:
 				out.append(s2)
@@ -894,6 +918,8 @@ func _parse_inline_body() -> Array:
 	while _match_op(";"):
 		if _at_stmt_end():
 			break
+		if _check_op(";"):
+			continue   # a doubled `;;` is an empty statement, not leftover text
 		var s2: GateAST._Stmt = _parse_statement()
 		if s2 != null:
 			out.append(s2)
@@ -1058,6 +1084,8 @@ func _parse_bracketed_block(owner_col: int) -> Array:
 		while _match_op(";"):
 			if _at_stmt_end():
 				break
+			if _check_op(";"):
+				continue   # a doubled `;;` is an empty statement, not leftover text
 			var st2: GateAST._Stmt = _parse_statement()
 			if st2 != null:
 				out.append(st2)

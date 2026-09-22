@@ -133,6 +133,12 @@ var _subst: Dictionary = {}
 var _subst_depth: Dictionary = {}
 var _enum_names: Dictionary = {}
 var _subst_types: Dictionary = {}
+var _subst_nullable: Dictionary = {}   ## generic param name -> its bound argument's own `?`
+## True while emitting an `is`/`as`/match type-pattern test of a substituted generic
+## param. Those test the substituted type itself, not a declaration, so `_subst_nullable`
+## must not collapse `T` to Variant there - `x is T` with `T = int?` must still test
+## `int`, or every value would match.
+var _type_test: bool = false
 
 var _pending_generic: Dictionary = {}
 

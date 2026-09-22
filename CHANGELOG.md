@@ -74,6 +74,46 @@
 - **Annotations and modifiers reached only the first name in `T a, b`.** `@export int a, b`
   exported `a` alone, and `static` and `priv` did the same. They now apply to every name.
 - **`int a, b { get }` in an interface required only `a`.** Every name is required now.
+- **A generic instantiated with two spellings of the same type produced two classes.**
+  `Box<str>` and `Box<String>` mangled to `__Box_str` and `__Box_String`, two different
+  generated classes for what is exactly the same type, and code that mixed the spellings
+  compiled, but Godot treated the two as incompatible and refused to load the result. A
+  type argument is canonicalised before it joins the mangled name now, recursively for a
+  nested one (`Box<str[]>`, `Box<Box<str>>`), so every spelling - including through a
+  `type` alias - lands on the same class. `f64`/`i32` and the other width-explicit names
+  are the one exception, kept apart from `float`/`int` on purpose: a `@packed T[]` field
+  picks its storage width from the written name, and canonicalising that away silently
+  narrowed `Pool<f64>` to 32 bits.
+- **A generic instantiated with a nullable type argument lost the nullability.** `Box<int?>`
+  with `var first: T = items[0]` emitted `var first: int = items[0]`, the same as a
+  non-nullable `Box<int>`, and reading a `null` through it crashed instead of doing what an
+  explicit `int?` field already does (emit `Variant`). A struct or enum type argument had
+  the same problem the other way: `Box<Struct?>` still auto-constructed the field's default
+  and copied it unguarded on return, so a real `null` crashed there too. Every nullable
+  argument now gets its own generated class, and that class's fields, defaults and returns
+  match what writing the substituted type explicitly, with its own `?`, already produces.
+  `T[]` is unaffected either way, matching what `int?[]` already emits, and `is`/`as`/a
+  match type pattern test the substituted type on its own terms, not the nullable-collapsed
+  declaration form - `x is T` with `T = int?` still tests `int`, not `Variant`.
+- **A `;` after a type-first declaration with no value was refused.** `int x; int y` and
+  `struct P: int x; int y` reported "expected the end of the statement" on the declaration
+  itself, because GATE did not recognise `;` as ending `int x` the way it already ends
+  `var x = 1`. `;` now terminates a type-first declaration everywhere `var` allows it:
+  a function body, a class body, the file level, after `T a, b`, after a nullable type
+  (`int? x`), after a tuple or union type list (`<int, str> t`), and after a type-first
+  `const`. A one-line struct or class body follows the same leak rule as before: `struct
+  P: int x; int y` puts `y` on the enclosing scope, not on `P`. `int x y` without a `;`
+  is still refused, and so is a value after several names (`T a, b = v`).
+- **A doubled `;;` was refused.** `var x = 1;; var y = 2` reported "unexpected token
+  ';'", because GATE only ever expected a real statement right after a `;`, not another
+  `;`. Godot itself treats a run of semicolons as empty statements and accepts it, in a
+  function body, at the file level, inside a class body, in a one-line `if`/`for`/`func`
+  body, and as a lone `;` on its own line once the block has already opened with a real
+  statement - confirmed directly against a live `GDScript.reload()`. GATE now does the
+  same and drops the empty statements from its output; the type-first flavour of a
+  declaration (`int x;; int y`) is covered too. A `;` as the very first thing in a block,
+  or right after a block header's own colon (`func f():;`), is still refused - Godot
+  refuses both of those as well.
 
 ## 1.1.1 - 2026-09-18
 

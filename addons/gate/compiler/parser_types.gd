@@ -394,9 +394,11 @@ func _decl_name_follows(j2: int) -> bool:
 		var inner: GateLexer._Token = _toks[j2 + 2] if j2 + 2 < _toks.size() else null
 		return inner != null and inner.value in ["get", "set"]
 	# A comment is a token, so a trailing one sits where the NEWLINE would be.
+	# `;` terminates a type-first declaration the same way it terminates `var`:
+	# `int x; int y` is two statements, not one with `y` trailing `x`.
 	return after.type == GateLexer._T.NEWLINE \
 		or after.type == GateLexer._T.COMMENT \
-		or (after.type == GateLexer._T.OP and after.value in ["=", ":", ","])
+		or (after.type == GateLexer._T.OP and after.value in ["=", ":", ",", ";"])
 
 
 func _is_type_looking(name: String) -> bool:
@@ -502,13 +504,24 @@ func _closes_generic_args() -> bool:
 static func mangle_generic(t: GateAST._TypeRef) -> String:
 	var parts: PackedStringArray = PackedStringArray()
 	for g in t.generic_args:
-		var one: String = String(g.name).replace(".", "_")
+		# A type argument is canonicalised before it joins the mangled name, so
+		# `Box<str>` and `Box<String>` (or an alias to either) land on the same
+		# generated class instead of two that Godot cannot tell apart. `f64`/`i32`
+		# and the like are the one exception: canonicalising `f64` to `float` would
+		# collide it with `Box<float>`, but `@packed T[]` picks PackedFloat32Array
+		# or PackedFloat64Array from the *written* name, so the two must stay
+		# different classes. `GateTypes.PACKED` is exactly that written-name set.
+		var one: String = (g.name if GateTypes.PACKED.has(g.name) \
+			else GateTypes.canonical(g.name)).replace(".", "_")
 		if not g.generic_args.is_empty():
 			one = mangle_generic(g)
 		elif g.is_union() or g.is_tuple() or g.is_func_type or g.is_dict() or g.is_set():
 			one = _mangle_shape(g)
 		for _d in g.array_depth:
 			one += "_arr"
+		# Every nullable argument gets its own class, never collapsed with the non-nullable
+		# spelling by name: whether nullability changes the body depends on the argument's
+		# kind, so reusing one body made the answer depend on which site came first.
 		if g.nullable:
 			one += "_opt"
 		parts.append(one)

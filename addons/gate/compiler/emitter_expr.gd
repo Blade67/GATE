@@ -310,8 +310,8 @@ func _expr(e) -> String:
 		if ce.operand is GateAST._Lambda:
 			inner = "(%s)" % inner
 		if ce.operand is GateAST._CastExpr:
-			return "%s as %s" % [inner, _map_type(ce.type)]
-		return "(%s as %s)" % [inner, _map_type(ce.type)]
+			return "%s as %s" % [inner, _mapped_type_for_test(ce.type)]
+		return "(%s as %s)" % [inner, _mapped_type_for_test(ce.type)]
 
 	if e is GateAST._IsExpr:
 		return _emit_is(e)
@@ -795,7 +795,10 @@ func _copy_value(e) -> String:
 	if tr == null and e is GateAST._Ident and _null_locals.has((e as GateAST._Ident).name) and _needs_copy(e):
 		var nt: String = _expr(e)
 		return "(%s._gate_copy() if %s != null else null)" % [nt, nt]
-	if tr != null and tr.array_depth == 0 and (tr.is_union() or tr.nullable):
+	# A generic param bound nullably (`Box<S?>`'s `T`) never has `tr.nullable` set, so it
+	# is checked through `_subst_nullable` too, or `_gate_copy()` crashes on a real null.
+	if tr != null and tr.array_depth == 0 and (tr.is_union() or tr.nullable \
+			or bool(_subst_nullable.get(tr.name, false))):
 		var text: String = _expr(e)
 		if _copied(text, tr) == text:
 			return text
@@ -1561,7 +1564,7 @@ func _copied(text: String, tr: GateAST._TypeRef) -> String:
 		return "(%s._gate_copy() if %s else %s)" % [text, " or ".join(tests), text]
 	if not _is_value_class(tr.name):
 		return text
-	if tr.nullable:
+	if tr.nullable or bool(_subst_nullable.get(tr.name, false)):
 		return "(%s._gate_copy() if %s != null else null)" % [text, text]
 	return "%s._gate_copy()" % text
 
@@ -1776,13 +1779,25 @@ func _emit_widen(w: GateAST._Widen) -> String:
 	return out
 
 
+## `_map_type` for an `is`/`as`/match type-pattern test: a substituted generic param
+## tests as its non-nullable type, the same as it did before generics carried
+## nullability at all. `x is T` with `T = int?` must still test `int`, not `Variant`,
+## or every value would match.
+func _mapped_type_for_test(t: GateAST._TypeRef) -> String:
+	var saved: bool = _type_test
+	_type_test = true
+	var mapped: String = _map_type(t)
+	_type_test = saved
+	return mapped
+
+
 func _emit_is(ie: GateAST._IsExpr) -> String:
 	var tname: String = ie.type.name
 	if not _is_known_native(tname) and _looks_like_interface(tname):
 		_want_iface_helper()
 		var expr: String = "__gate_is(%s, \"%s\")" % [_paren_below(ie.operand, PREC_TYPE_TEST), tname]
 		return "not " + expr if ie.negated else expr
-	var mapped: String = _map_type(ie.type)
+	var mapped: String = _mapped_type_for_test(ie.type)
 	# `int[]` may be lowered as either, so both count. The lambda reads the operand once.
 	var packed: String = _packed_twin(ie.type, mapped)
 	if packed != "":
