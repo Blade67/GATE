@@ -23,16 +23,23 @@ const SHORTHAND := {
 	"f64": "float", "i64": "int",
 }
 
-## A shorthand used as a value (a member receiver, or a constructor/conversion call)
-## is a compile error unless this project setting is on, in which case it maps to the
-## canonical Godot name instead - the only place that decision is made, so headless
-## runs and the editor agree. Read fresh every call: cheap, and lets a Project
-## Settings change take effect on the next build without restarting anything.
-const SETTING_TYPE_NAMES_AS_VALUES := "gate/compiler/type_names_as_values"
-
-
+## A shorthand used as a value is a compile error unless this flag is on, in which case
+## it maps to the canonical Godot name. Decided here alone, so headless runs and the
+## editor agree; read from the per-compile snapshot, so a build never sees it change.
 static func type_names_as_values() -> bool:
-	return bool(ProjectSettings.get_setting(SETTING_TYPE_NAMES_AS_VALUES, false))
+	return GateFeatures.enabled("type_names_as_values")
+
+
+## Off: a shorthand (`str`, `vec2`, `f64`...) is not a type name at all, unless the
+## file shadows it itself. Row in GateFeatures.ROWS, default on.
+static func shorthand_types_enabled() -> bool:
+	return GateFeatures.enabled("shorthand_types")
+
+
+## Whether a bare shorthand used as a value maps to the canonical Godot name: both
+## flags have to agree, since with shorthands off there is no type name to map.
+static func value_mapping_enabled() -> bool:
+	return type_names_as_values() and shorthand_types_enabled()
 
 
 const BUILTIN := {
@@ -78,15 +85,18 @@ const PACKED_TYPE_NAMES := {
 ## each file before it is parsed.
 static var shadowed: Dictionary = {}
 
-## Shorthand names an autoload takes for itself, in value positions only. Godot
-## treats an autoload name as a value, never a type, so `color c = Color.RED` still
-## means `Color` even with an autoload called `color` - only `color.foo`, `color`
-## used bare, and the like keep meaning the autoload. Checked separately from
-## `shadowed`, which callers also consult for type resolution.
+## Shorthand names an autoload takes for itself, in value positions only: Godot treats
+## an autoload name as a value, never a type, so `color c = Color.RED` still means
+## `Color` even with an autoload called `color`.
 static var value_shadowed: Dictionary = {}
 
+## Every project-declared name a type-first parse should treat as taken, wider than
+## `shadowed` and deliberately not folded into it: `shadowed`'s other consumers read it
+## as "not a struct or enum GATE knows", and widening it broke them.
+static var project_declared: Dictionary = {}
 
-static func shadow_declared(tokens: Array, class_names: Dictionary = {}) -> void:
+
+static func shadow_declared(tokens: Array, class_names: Dictionary = {}, extra_type_names: Dictionary = {}) -> void:
 	shadowed = {}
 	for i in tokens.size() - 1:
 		var t: GateLexer._Token = tokens[i]
@@ -102,6 +112,10 @@ static func shadow_declared(tokens: Array, class_names: Dictionary = {}) -> void
 	for entry in ProjectSettings.get_global_class_list():
 		if SHORTHAND.has(String(entry["class"])):
 			shadowed[String(entry["class"])] = true
+	project_declared = shadowed.duplicate()
+	for n in extra_type_names:
+		if SHORTHAND.has(n):
+			project_declared[n] = true
 	# `has_setting` per shorthand name (27) instead of scanning the whole property
 	# list (~950 entries, most of them nothing to do with autoloads): about 1.4ms per
 	# call scanning, versus a handful of dictionary lookups.

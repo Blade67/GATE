@@ -159,7 +159,7 @@ func _expr(e) -> String:
 	if e is GateAST._Member:
 		var m: GateAST._Member = e
 		if m.target is GateAST._Ident and _is_bare_shorthand(m.target as GateAST._Ident) \
-				and not GateTypes.type_names_as_values():
+				and not GateTypes.value_mapping_enabled():
 			var tid: GateAST._Ident = m.target
 			return _shorthand_value_error(tid, "%s.%s" % [GateTypes.canonical(tid.name), m.name])
 		if m.target is GateAST._Ident and _soa_cursors.has((m.target as GateAST._Ident).name):
@@ -1175,26 +1175,20 @@ func _is_bare_shorthand(id: GateAST._Ident) -> bool:
 func _shorthand_value_error(id: GateAST._Ident, canonical_text: String, offer_setting: bool = true) -> String:
 	var hint: String = "use `%s`" % canonical_text
 	if offer_setting:
-		hint += ", or turn on Project Settings > Gate > Compiler > Type Names As Values"
+		if GateTypes.shorthand_types_enabled():
+			hint += ", or turn on Project Settings > Gate > Features > Type Names As Values"
+		else:
+			hint += ", or turn on Project Settings > Gate > Features > Shorthand Types"
 	diagnostics.error("'%s' is a type name, not a value" % id.name, id.line, id.col, hint)
 	return "null"
 
 
-## A match pattern is captured as raw source text at parse time (`_scan_pattern`),
-## not an expression tree, so it never reaches `_expr` and a bare shorthand in one -
-## `vec2.ZERO:`, `vec2(1, 2):`, or a bare `vec2:` on its own - passed straight
-## through unmapped and unchecked. This re-tokenizes the pattern's own text
-## (`first_line` keeps line numbers absolute; a first-line column still needs
-## `base_col` added by hand, since a lexer given a substring always starts columns
-## at 1) and applies the same rules `_expr` and the Ident-callee constructor check
-## would: a member or constructible-call receiver maps or errors depending on the
-## mode; a bare whole-pattern value, or a call to a canonical name that is not
-## itself constructible (`any(3):` -> `Variant(3)`, not real GDScript), is always an
-## error, in both modes, the same as `_expr`'s own bare-Ident check and the
-## `NOT_CONSTRUCTIBLE` guard on the Ident-callee case.
+## A match pattern is captured as raw source text at parse time, never as an
+## expression tree, so a bare shorthand in one passes through unmapped. This
+## re-tokenizes it and applies the same rules `_expr` would.
 func _map_pattern_shorthand(text: String, base_line: int, base_col: int) -> String:
 	var toks: Array = GateLexer.new().tokenize(text, GateDiagnostics.new(), base_line)
-	var mapping: bool = GateTypes.type_names_as_values()
+	var mapping: bool = GateTypes.value_mapping_enabled()
 	var line_starts: PackedInt32Array = PackedInt32Array()
 	var acc: int = 0
 	for l in text.split("\n"):
@@ -1637,7 +1631,7 @@ func _postfix_base(e, as_receiver: bool = true) -> String:
 	if as_receiver and e is GateAST._Ident and _is_bare_shorthand(e as GateAST._Ident):
 		var id: GateAST._Ident = e
 		var canon: String = GateTypes.canonical(id.name)
-		if GateTypes.type_names_as_values():
+		if GateTypes.value_mapping_enabled():
 			return canon
 		return _shorthand_value_error(id, canon)
 	return _paren_below(e, PREC_ATOM)
@@ -2032,7 +2026,7 @@ func _emit_call(c: GateAST._Call) -> String:
 	if c.callee is GateAST._Member and _plain_callee(c.callee):
 		recv_node = (c.callee as GateAST._Member).target
 	if recv_node is GateAST._Ident and _is_bare_shorthand(recv_node as GateAST._Ident) \
-			and not GateTypes.type_names_as_values():
+			and not GateTypes.value_mapping_enabled():
 		var rtid: GateAST._Ident = recv_node
 		var rcm: GateAST._Member = c.callee
 		var saved_pending2: PackedStringArray = _pending
@@ -2056,7 +2050,7 @@ func _emit_call(c: GateAST._Call) -> String:
 		if n != "str" and _is_bare_shorthand(c.callee as GateAST._Ident):
 			var ncanon: String = GateTypes.canonical(n)
 			var call_text: String = "%s(%s)" % [ncanon, ", ".join(args)]
-			if GateTypes.type_names_as_values() and not NOT_CONSTRUCTIBLE.has(ncanon):
+			if GateTypes.value_mapping_enabled() and not NOT_CONSTRUCTIBLE.has(ncanon):
 				return call_text
 			return _shorthand_value_error(c.callee as GateAST._Ident, call_text,
 				not NOT_CONSTRUCTIBLE.has(ncanon))

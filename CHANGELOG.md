@@ -4,10 +4,31 @@
 
 ### Added
 
-- **`Project Settings > Gate > Compiler > Type Names As Values`.** Off by default. Turns a
+- **A feature-flag table.** One place, `GateFeatures.ROWS`, declares every GATE flag; Project
+  Settings registration, the value the compiler reads, and the incremental build cache all
+  derive from it, so a new flag is one row plus the code that checks it. `gate/features/<id>`
+  for a shipped feature, `gate/experiments/<id>` for one that is not. Flipping any flag
+  rebuilds every file, the same way changing the project's classes does.
+- **`Project Settings > Gate > Features > Shorthand Types`.** On by default. Off, `str`,
+  `vec2`, `f64` and the rest of GATE's shorthands are not type names anywhere - a type-first
+  declaration, `is`/`as`, an array element or a generic argument spelled with one is a compile
+  error ("'str' is not a type here") naming the setting and the Godot spelling to write
+  instead. A file that declares its own class, struct, interface, trait, namespace, enum or
+  const of that name keeps meaning that, flag on or off - only the shorthand meaning goes
+  away, never a name the file gave itself (`str` excepted: it is also GDScript's own global
+  `str()` function, so `struct str`/`interface str`/`trait str`/`namespace str` and a generic
+  `class str<T>` are all refused outright on either setting, same as before this flag existed;
+  a plain, non-generic `class str` is unaffected). Plain GDScript,
+  which never spells a type this way, is
+  unaffected either way. With `shorthand_types` off, `type_names_as_values` cannot map a
+  bare shorthand used as a value either - there is no type name left to map it to - so that
+  case's hint names `Shorthand Types` instead.
+- **`Project Settings > Gate > Features > Type Names As Values`.** Off by default. Turns a
   shorthand type name used as a value (`vec2.ZERO`, `vec2(1, 2)`, `f64(3)`) back into the
   canonical Godot name instead of a compile error - see the entry under Changed. Never
-  written to `project.godot` unless you change it yourself.
+  written to `project.godot` unless you change it yourself. Was briefly
+  `gate/compiler/type_names_as_values`; renamed into the flag table above before shipping, so
+  no project depends on the old path.
 - **Typed destructuring.** `var [Move[] moves, Mark[] marks] = components` gives each name
   its own type. `var [moves: Move[], marks: Mark[]] = components` works too, and typed and
   untyped names mix. A name typed as an array or a dictionary is the slot's own object. An
@@ -49,7 +70,7 @@
   declared in the current scope") - GATE reported success and handed back code that did
   not load. Every one of these is now a compile error, "'vec2' is a type name, not a
   value", with a hint giving the fix. `vec2(1, 2)`, `vec2.ZERO` and the rest map to the
-  canonical name again if `Project Settings > Gate > Compiler > Type Names As Values` is
+  canonical name again if `Project Settings > Gate > Features > Type Names As Values` is
   turned on (see Added). `str(5)` is unaffected either way - it is GDScript's own builtin,
   not a shorthand - and so is a type position like `x is vec2` or `vec2 v`. A bare name
   used as a value is not an error when another file declares its own class, struct,

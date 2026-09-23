@@ -637,7 +637,8 @@ static func extend_alias_scope(outer: Dictionary, decls: Array, known: Dictionar
 				report.call("'%s' is already an alias in this scope" % ad.name, ad.line, ad.col,
 					"rename one of them")
 			continue
-		if GateTypes.is_shorthand(ad.name) or GateTypes.BUILTIN.has(ad.name) \
+		if (GateTypes.is_shorthand(ad.name) and GateTypes.shorthand_types_enabled()) \
+				or GateTypes.BUILTIN.has(ad.name) \
 				or ClassDB.class_exists(ad.name) or known.has(ad.name):
 			if report.is_valid():
 				report.call("'%s' is already a type, so it cannot be an alias" % ad.name,

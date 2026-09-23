@@ -39,12 +39,7 @@ func _enter_tree() -> void:
 ## only writes a setting that differs from its initial value, and this never calls
 ## ProjectSettings.save() itself.
 func _register_settings() -> void:
-	var key: String = GateTypes.SETTING_TYPE_NAMES_AS_VALUES
-	if not ProjectSettings.has_setting(key):
-		ProjectSettings.set_setting(key, false)
-	ProjectSettings.set_initial_value(key, false)
-	ProjectSettings.add_property_info({"name": key, "type": TYPE_BOOL})
-	ProjectSettings.set_as_basic(key, true)
+	GateFeatures.register_settings()
 
 
 ## `.gate` tabs never stay in the saved layout, so a session without GATE cannot

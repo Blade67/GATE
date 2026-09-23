@@ -43,11 +43,28 @@ Lowercase shorthands. Canonical names still work, and engine classes keep theirs
 
 These are type names, not values: `vec2.ZERO` and `vec2(1, 2)` are a compile error
 ("'vec2' is a type name, not a value") unless the project setting
-`Project Settings > Gate > Compiler > Type Names As Values` is on, in which case they mean
+`Project Settings > Gate > Features > Type Names As Values` is on, in which case they mean
 the Godot type - `vec2.ZERO` is `Vector2.ZERO`, `vec2(1, 2)` is `Vector2(1, 2)`. `str(...)`
 called as a function is always GDScript's own builtin, never affected either way. `x is
 vec2` and `x as vec2` are unaffected in both modes, since a type name is exactly what they
 expect there.
+
+Whether these are type names at all is itself a project setting:
+`Project Settings > Gate > Features > Shorthand Types`, on by default. Turned off, none of
+GATE's shorthands are type names anywhere - `str label`, `vec2 v`, `x is vec2`, `vec2[] a`
+and `Box<str>` are all a compile error ("'str' is not a type here") naming the setting and
+the Godot spelling to write instead. A file that declares its own class, struct, interface,
+trait, namespace, enum or const named like a shorthand keeps meaning that declaration either
+way - the setting only decides whether the *shorthand* meaning exists, never removes a name
+the file gave itself. (`str` is the one exception: it is also GDScript's own global
+`str()` function, so `struct str`, `interface str`, `trait str`, `namespace str` and a generic
+`class str<T>` are all refused outright, on either setting - unrelated to this flag and
+unchanged from before it existed. A plain, non-generic `class str` is not affected by this and
+keeps its meaning, like any other declared name.)
+
+The two settings do not act independently: with Shorthand Types off, Type Names As Values
+has nothing to map, so a bare shorthand used as a value stays an error and its hint offers
+Shorthand Types instead.
 
 A class, enum or constant you declare with one of these names, or a `class_name` anywhere in
 the project, means your own type, as it does in GDScript.

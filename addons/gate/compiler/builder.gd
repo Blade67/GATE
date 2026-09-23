@@ -225,11 +225,10 @@ func build(root: String = "res://") -> Dictionary:
 	_dep_keys = _dependency_keys(gate_files, registry, root)
 
 	var sig: String = registry.signature()
-	# Folds in the type-names-as-values setting: flipping it changes every file's
-	# output, so it has to invalidate every file's cache entry the same way a
-	# registry change does.
+	# Folds in every feature flag: flipping one changes what a file compiles to, so it
+	# has to invalidate every cache entry the way a registry change does.
 	var reg_sig: String = "%d:%d:%s:%s" % [sig.hash(), sig.length(), _shadowing_globals(registry),
-		"1" if GateTypes.type_names_as_values() else "0"]
+		GateFeatures.cache_key()]
 
 	var deferred: Dictionary = {}
 	_skipped_now = []

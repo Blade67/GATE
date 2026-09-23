@@ -46,7 +46,8 @@ static func module_for(text: String, path: String, reg: RefCounted) -> GateAST._
 	var diagnostics: GateDiagnostics = GateDiagnostics.new()
 	diagnostics.file = path
 	var tokens: Array[GateLexer._Token] = GateLexer.new().tokenize(text, diagnostics)
-	GateTypes.shadow_declared(tokens, reg.script_class_names if reg != null else {})
+	GateTypes.shadow_declared(tokens, reg.script_class_names if reg != null else {},
+		reg.cross_file_type_names() if reg != null else {})
 	var module: GateAST._Module = parser_for(reg).parse(tokens, text, diagnostics)
 	GateTypes.shadowed.clear()
 	return module

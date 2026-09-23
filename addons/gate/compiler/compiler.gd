@@ -169,6 +169,9 @@ static func _expression_start(e: GateAST._Expr) -> GateAST._Expr:
 
 
 func compile(src_in: String, path: String, registry = null) -> _Result:
+	# Every flag's value, taken once here so parsing, checking and emitting this
+	# file all agree.
+	GateFeatures.snapshot()
 	# Normalise line endings once, before anything reads the text. Constructs
 	# re-emitted as raw source would otherwise carry a bare CR into the output.
 	var src: String = src_in.replace("\r\n", "\n").replace("\r", "\n")
@@ -179,7 +182,8 @@ func compile(src_in: String, path: String, registry = null) -> _Result:
 
 	var lexer: GateLexer = GateLexer.new()
 	var tokens: Array[GateLexer._Token] = lexer.tokenize(src, diags)
-	GateTypes.shadow_declared(tokens, registry.script_class_names if registry != null else {})
+	GateTypes.shadow_declared(tokens, registry.script_class_names if registry != null else {},
+		registry.cross_file_type_names() if registry != null else {})
 
 	var parser: GateParser = GateParser.new()
 	if registry != null:

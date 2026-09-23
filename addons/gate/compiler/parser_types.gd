@@ -49,6 +49,12 @@ func _parse_type() -> GateAST._TypeRef:
 			t.name = "Variant"
 			return t
 		t.name = _advance().value
+		if GateTypes.SHORTHAND.has(t.name) and not GateTypes.project_declared.has(t.name) \
+				and not _alias_names.has(t.name) and not GateTypes.shorthand_types_enabled():
+			diagnostics.error("'%s' is not a type here" % t.name, t.line, t.col,
+				"write `%s`, or turn on Project Settings > Gate > Features > Shorthand Types"
+					% GateTypes.SHORTHAND[t.name])
+			t.name = "Variant"
 		while _check_op(".") and _peek(1).type == GateLexer._T.IDENT:
 			_advance()
 			t.name += "." + _advance().value
