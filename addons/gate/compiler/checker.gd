@@ -45,6 +45,7 @@ func check(mod: GateAST._Module, diags: GateDiagnostics, registry = null) -> voi
 		for k in registry.classes:
 			if not classes.has(k): classes[k] = registry.classes[k]
 	_check_global_names(mod)
+	_check_global_classes(mod)
 	_check_duplicate_kinds(mod, registry)
 	for m in mod.members:
 		_process(m)
@@ -171,6 +172,81 @@ func _check_global_names(mod: GateAST._Module) -> void:
 			diagnostics.warn("'%s' is also a global name (a class_name, an autoload, or one of "
 					% cd.name + "Godot's): other files keep using that one", cd.line, cd.col,
 				"this file sees its own class; rename it to use it from elsewhere")
+
+
+## `@global` is only meaningful on a `class` at the module's own top level: it has to
+## become its own script. Everywhere else it is refused, a func included.
+func _check_global_classes(mod: GateAST._Module) -> void:
+	for m in mod.members:
+		if m is GateAST._ClassDecl:
+			var cd: GateAST._ClassDecl = m
+			if cd.is_global:
+				_check_global_placement(cd, mod)
+			_check_global_nested(cd.members)
+		else:
+			_check_global_on_member(m)
+
+
+func _check_global_placement(cd: GateAST._ClassDecl, mod: GateAST._Module) -> void:
+	if cd.form != "class":
+		diagnostics.error("'@global' does not apply to a %s" % cd.form, cd.line, cd.col,
+			"only a `class` can become its own script; a struct, interface or trait cannot")
+		return
+	if cd.name == mod.class_name_decl:
+		diagnostics.error("'%s' is already this file's own class_name" % cd.name, cd.line, cd.col,
+			"a project can only have one global class of a given name; rename one of them")
+	elif is_global_identifier(cd.name) and not _is_own_global_registration(cd.name, mod.path):
+		diagnostics.error("'%s' is already a global name (a class_name, an autoload, or one of "
+				% cd.name + "Godot's), so @global cannot give it to this class", cd.line, cd.col,
+			"rename it")
+
+
+## `@global class Foo` in `res://src/pool.gate` registers itself as `Foo`, writing
+## `res://src/pool.Foo.gd` - so once it has built once, Godot's own global class
+## list already has a `Foo`, pointing right back at that same file. That is
+## success settling in, not a clash: only a `Foo` registered from anywhere else
+## (an engine class, an autoload, another file's class_name) is one.
+static func _is_own_global_registration(name: String, mod_path: String) -> bool:
+	if mod_path == "":
+		return false
+	var want: String = mod_path.get_basename() + "." + name + ".gd"
+	for entry in ProjectSettings.get_global_class_list():
+		if String(entry.get("class", "")) == name:
+			return String(entry.get("path", "")) == want
+	return false
+
+
+## A class nested inside another class, a struct, an interface, a trait or a
+## namespace: none of those can be file scope, however deep the annotation sits.
+func _check_global_nested(members: Array) -> void:
+	for m in members:
+		if m is GateAST._ClassDecl:
+			var cd: GateAST._ClassDecl = m
+			if cd.is_global:
+				diagnostics.error("'@global' is only allowed on a class declared at file scope",
+					cd.line, cd.col,
+					"a nested class cannot become its own script; move it to the top level")
+			_check_global_nested(cd.members)
+		else:
+			_check_global_on_member(m)
+
+
+func _check_global_on_member(m) -> void:
+	var anns: Array = []
+	if m is GateAST._FuncDecl:
+		anns = (m as GateAST._FuncDecl).annotations
+	elif m is GateAST._VarDecl:
+		anns = (m as GateAST._VarDecl).annotations
+	elif m is GateAST._SignalDecl:
+		anns = (m as GateAST._SignalDecl).annotations
+	elif m is GateAST._EnumDecl:
+		anns = (m as GateAST._EnumDecl).annotations
+	else:
+		return
+	for a in anns:
+		if (a as GateAST._Annotation).name == "global":
+			diagnostics.error("'@global' only applies to a class declaration", a.line, a.col,
+				"remove it, or move it onto a `class` at file scope")
 
 
 ## Names no alias may take: a class_name, an autoload, a GDScript global.
@@ -637,8 +713,7 @@ static func extend_alias_scope(outer: Dictionary, decls: Array, known: Dictionar
 				report.call("'%s' is already an alias in this scope" % ad.name, ad.line, ad.col,
 					"rename one of them")
 			continue
-		if (GateTypes.is_shorthand(ad.name) and GateTypes.shorthand_types_enabled()) \
-				or GateTypes.BUILTIN.has(ad.name) \
+		if GateTypes.is_shorthand(ad.name) or GateTypes.BUILTIN.has(ad.name) \
 				or ClassDB.class_exists(ad.name) or known.has(ad.name):
 			if report.is_valid():
 				report.call("'%s' is already a type, so it cannot be an alias" % ad.name,

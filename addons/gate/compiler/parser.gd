@@ -159,6 +159,14 @@ func _parse_annotations() -> Array:
 	return out
 
 
+## `@global` is GATE's own; it is consumed here, not passed through to the output.
+func _take_global(cd: GateAST._ClassDecl) -> void:
+	for i in range(cd.annotations.size() - 1, -1, -1):
+		if (cd.annotations[i] as GateAST._Annotation).name == "global":
+			cd.is_global = true
+			cd.annotations.remove_at(i)
+
+
 func _parse_member() -> GateAST._Stmt:
 	var start_line: int = _cur().line
 	if _check(GateLexer._T.INDENT):
@@ -201,6 +209,7 @@ func _parse_member() -> GateAST._Stmt:
 		if cd != null:
 			cd.annotations = annotations
 			cd.is_abstract = is_abstract
+			_take_global(cd)
 		return cd
 
 	if _cur().type == GateLexer._T.KEYWORD and _looks_like_func_type_decl():

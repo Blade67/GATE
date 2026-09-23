@@ -11,6 +11,10 @@ var _out: PackedStringArray = []
 
 var _map: Array[int] = []          ## output line -> source line
 
+## One entry per `@global` class emitted this compile: its own script, beside the
+## source. {"path", "class_name", "source", "map", "deps"}.
+var _extra_outputs: Array = []
+
 var _indent: int = 0
 
 ## Source lines with at least one blank above them. A presence flag, not a count:

@@ -375,6 +375,7 @@ class _ClassDecl extends _Stmt:
 	var lowering: String = ""          ## structs: "vector"|"soa"|"scalar"|"class"
 	var vector_type: String = ""       ## e.g. "Vector4"
 	var interface_names: Array = []    ## flattened
+	var is_global: bool = false        ## `@global`: its own script, not an inner class
 
 
 class _IfStmt extends _Stmt:
