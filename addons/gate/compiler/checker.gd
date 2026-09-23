@@ -161,7 +161,9 @@ func _check_global_names(mod: GateAST._Module) -> void:
 		if not (m is GateAST._ClassDecl):
 			continue
 		var cd: GateAST._ClassDecl = m
-		if cd.name == mod.class_name_decl or not is_global_identifier(cd.name):
+		# A `@global` class registers itself, on purpose; `_check_global_placement` and
+		# `_check_global_body` validate it. Unskipped, it warned that it shadowed itself.
+		if cd.is_global or cd.name == mod.class_name_decl or not is_global_identifier(cd.name):
 			continue
 		if cd.form != "class" or not cd.generic_params.is_empty():
 			diagnostics.error("'%s' is already a global name (a class_name, an autoload, or one of "
@@ -182,6 +184,7 @@ func _check_global_classes(mod: GateAST._Module) -> void:
 			var cd: GateAST._ClassDecl = m
 			if cd.is_global:
 				_check_global_placement(cd, mod)
+				_check_global_body(cd, mod)
 			_check_global_nested(cd.members)
 		else:
 			_check_global_on_member(m)
@@ -189,7 +192,8 @@ func _check_global_classes(mod: GateAST._Module) -> void:
 
 func _check_global_placement(cd: GateAST._ClassDecl, mod: GateAST._Module) -> void:
 	if cd.form != "class":
-		diagnostics.error("'@global' does not apply to a %s" % cd.form, cd.line, cd.col,
+		var article: String = "an" if cd.form == "interface" else "a"
+		diagnostics.error("'@global' does not apply to %s %s" % [article, cd.form], cd.line, cd.col,
 			"only a `class` can become its own script; a struct, interface or trait cannot")
 		return
 	if cd.name == mod.class_name_decl:
@@ -232,6 +236,140 @@ static func _is_own_global_registration(name: String, mod_path: String) -> bool:
 		if String(entry.get("class", "")) == name:
 			return String(entry.get("path", "")) == want
 	return false
+
+
+## `@global` extracts a class into its own script: a sibling declared at this
+## file's own top level - a class, struct, interface, trait, namespace, enum,
+## const, var or func, not itself `@global` - is not there any more once it is.
+## Unrefused, the file compiles clean, with no diagnostic, and writes a script
+## Godot refuses to load. Refuses the first such name reached anywhere in the
+## class's own body (its `extends` clause, a field or parameter type, an
+## expression), naming it and what it is.
+func _check_global_body(cd: GateAST._ClassDecl, mod: GateAST._Module) -> void:
+	var outside: Dictionary = {}   ## sibling name -> its kind, only non-@global ones
+	for m in mod.members:
+		if m == cd:
+			continue
+		var name: String = ""
+		var kind: String = ""
+		if m is GateAST._ClassDecl:
+			var mc: GateAST._ClassDecl = m
+			if mc.is_global:
+				continue
+			name = mc.name
+			kind = mc.form
+		elif m is GateAST._FuncDecl:
+			name = (m as GateAST._FuncDecl).name
+			kind = "function"
+		elif m is GateAST._VarDecl:
+			var vd: GateAST._VarDecl = m
+			name = vd.name
+			kind = "const" if vd.is_const else "field"
+		elif m is GateAST._EnumDecl and (m as GateAST._EnumDecl).name != "":
+			name = (m as GateAST._EnumDecl).name
+			kind = "enum"
+		elif m is GateAST._TypeAliasDecl:
+			name = (m as GateAST._TypeAliasDecl).name
+			kind = "type alias"
+		elif m is GateAST._SignalDecl:
+			# A file-level `signal` is reached the way any other sibling is (`hit.emit(1)` inside
+			# the class), and is the member kind easiest to leave out of this walk.
+			name = (m as GateAST._SignalDecl).name
+			kind = "signal"
+		if name != "":
+			outside[name] = kind
+	if outside.is_empty():
+		return
+	var own: Dictionary = {cd.name: true}
+	for g in cd.generic_params:
+		own[g] = true
+	_global_body_bound(cd.members, own)
+	# A name this class inherits is never a leak either: the inherited member already won
+	# inside the nested class, so extraction changes nothing. An unresolvable chain falls
+	# through to the ordinary refusal - "unknown" must not be read as "assume inherited".
+	var chain: Dictionary = base_chain(cd.extends_type, mod.path, _registry)
+	var chain_names: Dictionary = chain["names"]
+	var chain_engine: String = chain["engine"]
+	var refs: Array = []
+	if cd.extends_type != null:
+		_global_body_refs(cd.extends_type, refs)
+	_global_body_refs(cd.members, refs)
+	refs.sort_custom(func(a, b): return a.line < b.line)
+	for r in refs:
+		var rn: String = (r as GateAST._Ident).name if r is GateAST._Ident else (r as GateAST._TypeRef).name
+		if not outside.has(rn) or own.has(rn):
+			continue
+		if chain_names.has(rn):
+			continue
+		if chain_engine != "" and (ClassDB.class_has_method(chain_engine, rn)
+				or ClassDB.class_has_signal(chain_engine, rn)
+				or ClassDB.class_has_integer_constant(chain_engine, rn)
+				or ClassDB.class_has_enum(chain_engine, rn)
+				or _engine_property_names(chain_engine).has(rn)):
+			continue
+		var kind: String = String(outside[rn])
+		var article: String = "an" if kind.substr(0, 1) in ["a", "e", "i", "o", "u"] else "a"
+		diagnostics.error("'%s' is %s %s declared in this file, not @global - it will not "
+				% [rn, article, kind] + "exist in %s's own script" % cd.name, r.line, r.col,
+			"move it out of this file and mark it @global too, or move it inside %s" % cd.name)
+		return
+
+
+static func _global_body_bound(node, out: Dictionary) -> void:
+	if node is Array:
+		for x in node:
+			_global_body_bound(x, out)
+		return
+	if not (node is Object) or node == null or (node as Object).get_script() == null:
+		return
+	if node is GateAST._VarDecl:
+		out[(node as GateAST._VarDecl).name] = true
+	elif node is GateAST._Param:
+		out[(node as GateAST._Param).name] = true
+	elif node is GateAST._FuncDecl:
+		out[(node as GateAST._FuncDecl).name] = true
+	elif node is GateAST._ClassDecl:
+		var cd2: GateAST._ClassDecl = node
+		out[cd2.name] = true
+		for g in cd2.generic_params:
+			out[g] = true
+	elif node is GateAST._EnumDecl:
+		var ed: GateAST._EnumDecl = node
+		if ed.name != "":
+			out[ed.name] = true
+		else:
+			for k in ed.keys:
+				out[String(k)] = true
+	elif node is GateAST._ForStmt:
+		for vn in (node as GateAST._ForStmt).var_names:
+			out[String(vn)] = true
+	elif node is GateAST._MultiAssign and (node as GateAST._MultiAssign).declares:
+		for t in (node as GateAST._MultiAssign).targets:
+			if t is GateAST._Ident:
+				out[(t as GateAST._Ident).name] = true
+	elif node is GateAST._MatchStmt:
+		for br in (node as GateAST._MatchStmt).branches:
+			for k in pattern_bindings(br[0]):
+				out[k] = true
+	for pn in GateAST.walk_names(node):
+		var v = (node as Object).get(pn)
+		if v is Array or (v is Object and v != null):
+			_global_body_bound(v, out)
+
+
+static func _global_body_refs(node, out: Array) -> void:
+	if node is Array:
+		for x in node:
+			_global_body_refs(x, out)
+		return
+	if not (node is Object) or node == null or (node as Object).get_script() == null:
+		return
+	if node is GateAST._Ident or node is GateAST._TypeRef:
+		out.append(node)
+	for pn in GateAST.walk_names(node):
+		var v = (node as Object).get(pn)
+		if v is Array or (v is Object and v != null):
+			_global_body_refs(v, out)
 
 
 ## A class nested inside another class, a struct, an interface, a trait or a

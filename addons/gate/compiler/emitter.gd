@@ -439,7 +439,17 @@ func _emit_global_class(cd: GateAST._ClassDecl) -> void:
 
 	_cur_class = cd.name
 	_cur_base = cd.extends_type.name if cd.extends_type != null else ""
-	_scope_class = _qjoin(saved_scope, cd.name)
+	# A monomorphised instantiation's fields and methods are indexed under the
+	# generic template's own scope key (`GiPool`), not the mangled name
+	# (`__GiPool_int`) `cd.name` is temporarily set to here. Object initialiser
+	# lowering is keyed on `_scope_class`, so the mangled name looks the class up
+	# under a key nothing was indexed under and finds nothing: `GiPool.new({a:
+	# 1})` then reaches the output verbatim instead of being lowered.
+	# `_emit_monomorphised` sets `_mono_scope` to the original key for exactly
+	# this; a plain (non-generic) global class never sets it, so
+	# `_qjoin(saved_scope, cd.name)` is still the fallback.
+	_scope_class = _mono_scope if _mono_scope != "" else _qjoin(saved_scope, cd.name)
+	_mono_scope = ""
 	_in_gate_helper = saved_gen or _gate_written(cd)
 	_emit_interface_marker(cd)
 	_iface_scopes.append(false)

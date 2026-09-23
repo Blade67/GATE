@@ -304,6 +304,12 @@ func _parse_member() -> GateAST._Stmt:
 		_skip_to_statement_end()
 		return null
 
+	for a in annotations:
+		if (a as GateAST._Annotation).name == "global":
+			diagnostics.error("'@global' only applies to a class declaration", a.line, a.col,
+				"remove it, or move it onto a `class` at file scope")
+			_skip_to_statement_end()
+			return null
 	_skip_to_statement_end()
 	var raw: GateAST._RawStmt = _raw_from(start_line, maxi(_cur().line, start_line))
 	return raw

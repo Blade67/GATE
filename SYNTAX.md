@@ -486,6 +486,13 @@ A file's own `class_name` cannot be generic: `class_name Pool<T>` is refused, si
 allows one `class_name` per file however it is spelled. Write `@global class Pool<T>:`
 instead.
 
+A `@global` class's own body - its `extends` clause, a field or parameter type, an
+expression - can only name itself, a project-wide name, or something it declares itself.
+Naming a plain sibling declared at the same file's own top level - a class, struct,
+interface, trait, namespace, enum, const, var, signal or func that is not itself `@global` -
+is refused, since that sibling is not there any more once the class is extracted into its
+own script. Mark the sibling `@global` too, or move it inside the class.
+
 ## Generics
 
 ```gdscript

@@ -521,6 +521,12 @@ iterate, so it pays off only if you make more than about 1.3 passes per rebuild.
   class GATE did not compile.
 - **Namespaced classes cannot be attached to nodes** as their script. A top-level class
   marked `@global` can; `@global` does not reach inside a `namespace`.
+- **A `@global` class's own body can only name itself, a project-wide name, or something it
+  declares itself** - not a plain sibling declared at the same file's own top level: a
+  class, struct, interface, trait, namespace, enum, const, var, signal or func that is not
+  itself `@global`, since that sibling is not there any more once the class is extracted
+  into its own script. Refused at compile time, naming the sibling; mark it `@global` too,
+  or move it inside the class.
 - **Saving a `.gate` in the editor rewrites its indentation** to whatever
   *Text Editor -> Behavior -> Indent* says, as Godot does for a `.gd`. GATE reads tabs
   and spaces alike, so the output is unchanged either way.
