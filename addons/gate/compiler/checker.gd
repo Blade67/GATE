@@ -325,6 +325,18 @@ static func hidden_by_base(mod: GateAST._Module, registry, chain: Dictionary = {
 		for n in table:
 			if String(registry.origin.get(n, "")) != mod.path:
 				cross.append(n)
+	# A cross-file enum needs the same guard: an engine global, a class_name or a
+	# base-chain member of that bare name must still win over it. Read from
+	# `registry.enum_origin`, not the single-valued `registry.origin` above.
+	if "enum_origin" in registry:
+		for en in registry.enum_origin:
+			var is_own: bool = false
+			for eo in (registry.enum_origin[en] as Array):
+				if String(eo) == mod.path:
+					is_own = true
+					break
+			if not is_own and not cross.has(en):
+				cross.append(en)
 	if cross.is_empty():
 		return hidden
 	if chain.is_empty():
@@ -1466,6 +1478,21 @@ func _verify_type_name(t: GateAST._TypeRef, known: Dictionary) -> void:
 		return   # a class_name a plain .gd of this project declares
 	if _enum_names.has(n) or GateTypeCompat.PACKED_ARRAYS.has(n):
 		return   # an enum of this file, or a Packed array
+	# A top-level enum in another file, the same bare cross-file resolution the emitter
+	# gives a class or struct. `enum_origin` has already had `hidden_by_base`'s names
+	# erased, and an ambiguous bare name is reported rather than guessed at.
+	if _registry != null and "enum_origin" in _registry and _registry.enum_origin.has(n):
+		var eo: Array = _registry.enum_origin[n]
+		if eo.size() > 1:
+			var files: PackedStringArray = PackedStringArray()
+			for o in eo:
+				files.append(String(o).get_file())
+			diagnostics.error(
+				"'%s' is an enum declared in more than one file, so a bare reference is ambiguous"
+					% n, t.line, t.col,
+				"it is declared in %s. Preload one and write the qualified form, e.g. const D = preload(\"...\"); D.%s"
+					% [", ".join(files), n])
+		return
 	if ClassDB.class_exists(n):
 		return
 	for c in ProjectSettings.get_global_class_list():

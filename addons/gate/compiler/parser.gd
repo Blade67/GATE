@@ -35,6 +35,12 @@ func parse(tokens: Array, source: String, diags: GateDiagnostics) -> GateAST._Mo
 				pass
 			_skip_newlines()
 			continue
+		if not seen_a_member and _check_op(";"):
+			_err("unexpected token ';'")
+			while _match_op(";"):
+				pass
+			_skip_newlines()
+			continue
 		var before: int = diags.error_count()
 		var m: GateAST._Stmt = _parse_module_member(mod)
 		if m != null:

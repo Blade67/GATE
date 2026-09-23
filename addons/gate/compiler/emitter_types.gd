@@ -153,6 +153,18 @@ func set_registry(reg, self_path: String) -> void:
 					_extern_enum_origin[ename] = []
 				if not (_extern_enum_origin[ename] as Array).has(eorigin):
 					(_extern_enum_origin[ename] as Array).append(eorigin)
+		# A bare reference resolves the way a bare cross-file class already does, whenever
+		# exactly one other file declares the name; a class or struct of that name keeps
+		# priority. Several declaring files have no qualifier at the use site to tell them
+		# apart, so `_ambiguous_bare_enums` records it and it becomes a compile error.
+		for ename2 in _extern_enum_origin:
+			if _extern_origin.has(ename2):
+				continue
+			var ecandidates: Array = _extern_enum_origin[ename2]
+			if ecandidates.size() == 1:
+				_extern_origin[ename2] = String(ecandidates[0])
+			elif ecandidates.size() > 1:
+				_ambiguous_bare_enums[ename2] = ecandidates
 
 
 func set_base_chain(chain: Dictionary) -> void:
@@ -175,6 +187,24 @@ func _extern_alias(name: String) -> String:
 	if _local_types.has(name) or _base_names.has(name) or _value_shadows(name):
 		return ""
 	return _origin_alias(_extern_origin[name])
+
+
+## True when `name` is a bare identifier that would name a top-level enum declared in
+## more than one other file, and nothing in this file claims the name first.
+func _ambiguous_bare_enum_use(name: String) -> bool:
+	return _ambiguous_bare_enums.has(name) and not _local_types.has(name) \
+		and not _base_names.has(name) and not _value_shadows(name)
+
+
+func _report_ambiguous_bare_enum(name: String, line: int, col: int) -> void:
+	var files: PackedStringArray = PackedStringArray()
+	for o in (_ambiguous_bare_enums.get(name, []) as Array):
+		files.append(String(o).get_file())
+	diagnostics.error(
+		"'%s' is an enum declared in more than one file, so a bare reference is ambiguous"
+			% name, line, col,
+		"it is declared in %s. Preload one and write the qualified form, e.g. const D = preload(\"...\"); D.%s"
+			% [", ".join(files), name])
 
 
 func _value_shadows(n: String) -> bool:
@@ -1058,6 +1088,15 @@ func _map_type_core(t: GateAST._TypeRef, packed_hint: bool) -> String:
 		return "Dictionary[%s, %s]" % [_map_type(t.dict_key), _map_dict_value(t.dict_value)]
 	if t.generic_args.is_empty() and _is_erased_type(t.name):
 		return "Array" if t.array_depth > 0 else "Variant"
+	if t.generic_args.is_empty() and not t.name.contains(".") and _ambiguous_bare_enum_use(t.name):
+		_report_ambiguous_bare_enum(t.name, t.line, t.col)
+		return "Variant"
+	# `GateTypes.is_gd_nullable()` calls any non-builtin name reference-nullable, but an
+	# enum's generated type is an int under a name and Godot refuses a literal `null`
+	# against it. Checked ahead of the qualification below, which would otherwise return
+	# a qualified name first and never reach this.
+	if t.array_depth == 0 and t.nullable and _is_nullable_enum_type(t.name):
+		return "Variant"
 	if (t.generic_args.is_empty() and t.name.contains(".") and not t.name.begins_with("res://")
 			and _extern_alias(t.name.get_slice(".", 0)) != ""):
 		var qn: String = "%s.%s" % [_extern_alias(t.name.get_slice(".", 0)), t.name]
@@ -1084,32 +1123,16 @@ func _map_type_core(t: GateAST._TypeRef, packed_hint: bool) -> String:
 		for _d in range(1, t.array_depth):
 			out = "Array[%s]" % out
 		return out
-	# `GateTypes.is_gd_nullable()` treats any name outside its own builtin-scalar
-	# list as already reference-nullable, since that is true of an object type -
-	# but an enum's generated GDScript type is still an int under a name, and
-	# Godot refuses a literal `null` assigned to it ("Cannot assign a value of
-	# type null to variable ... with specified type E") the same way it refuses
-	# one for `int`. A nullable scalar `T[]` deliberately ignores element
-	# nullability elsewhere in this file, so a nullable enum array matches that
-	# and only the scalar use (`array_depth == 0`) collapses here.
-	if t.array_depth == 0 and t.nullable and _is_nullable_enum_type(t.name):
-		return "Variant"
 	return GateTypes.resolve(t, diagnostics, packed_hint)
 
 
-## Whether `name` (bare or dotted) names an enum, for the collapse-to-`Variant`
-## rule just above. A bare name is a plain lookup in `_enum_names` (declared
-## anywhere in this file, at any nesting depth). A dotted name only matches
-## when the qualifier - the segment right before the leaf - actually names the
-## leaf's declaring container: `_qualified_enum_names` for a same-file nested
-## class (so `Wrap.Mode`, an unrelated plain class nested inside `Wrap`, does
-## not falsely match a same-named top-level enum elsewhere in the file), or,
-## for another file's top-level enum, the qualifier resolving to that enum's
-## origin through a preload const or the origin's own `class_name` - the same
-## two ways `_qualifier_reaches` already resolves a qualifier for a struct.
+## Whether `name` (bare or dotted) names an enum, for the collapse above. A bare name
+## matches one declared anywhere in this file, or a top-level one in another. A dotted
+## name matches only when the qualifier names the leaf's declaring container, the same
+## two ways `_qualifier_reaches` resolves one for a struct.
 func _is_nullable_enum_type(name: String) -> bool:
 	if not name.contains("."):
-		return _enum_names.has(name)
+		return _enum_names.has(name) or _extern_enum_names.has(name)
 	var parts: PackedStringArray = name.split(".")
 	var leaf: String = parts[parts.size() - 1]
 	var qualifier: String = parts[parts.size() - 2]
@@ -1193,13 +1216,23 @@ func _build_struct(_st: Dictionary, _ctor: String, _keys: Array, _values: Array,
 	return "null"
 
 
+## Whether a bare `name` genuinely means the cross-file enum for `_default_for`'s `0`
+## collapse. `reg.origin` is shared by every kind of declaration, so `struct Shape` in
+## one file and `enum Shape` in another must still give the struct's own default.
+func _bare_default_is_enum(name: String) -> bool:
+	if name.contains("."):
+		return true
+	return not _structs.has(name) and not _reg_classes.has(name) and not _reg_namespaces.has(name)
+
+
 func _default_for(t: GateAST._TypeRef, packed_hint: bool) -> String:
 	var shaped: GateAST._TypeRef = _param_shape(t)
 	if shaped != null:
 		t = shaped
 	if t != null and not t.nullable and t.array_depth == 0 and (_enum_names.has(t.name)
-			or _enum_names.has(t.name.get_slice(".", t.name.get_slice_count(".") - 1))):
-		return "0"   # `Meta.Kind` is an enum of this file too
+			or _enum_names.has(t.name.get_slice(".", t.name.get_slice_count(".") - 1))
+			or (_is_nullable_enum_type(t.name) and _bare_default_is_enum(t.name))):
+		return "0"   # `Meta.Kind` is an enum of this file too, or another file's top-level enum
 	if t != null and not t.nullable and t.array_depth == 0 and t.is_union():
 		return _default_for(t.union_members[0], false)
 	if t != null and not t.nullable and t.array_depth == 0 and t.is_tuple():

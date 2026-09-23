@@ -65,6 +65,9 @@ func _expr(e) -> String:
 		var ialias: String = _extern_alias(iname)
 		if ialias != "":
 			return "%s.%s" % [ialias, iname]
+		if gb == "" and _ambiguous_bare_enum_use(iname):
+			_report_ambiguous_bare_enum(iname, e.line, e.col)
+			return iname
 		var nsq: String = _namespace_qualifier(iname) if gb == "" else ""
 		if nsq != "":
 			return "%s.%s" % [nsq, _member_name(nsq, iname)]
@@ -1150,36 +1153,25 @@ func _may_be_value(id: GateAST._Ident) -> bool:
 	return _fn_locals.has(id.name) or _declares_value(_scope_class, id.name)
 
 
-## Canonical names in `GateTypes.SHORTHAND` that GDScript does not let you call as a
-## constructor at all - `any` -> `Variant` is the one today. Mapping mode cannot turn
-## `any(3)` into `Variant(3)`: that is not valid GDScript either, so this stays an
-## error in both modes, the same as a bare `vec2` used as a whole value.
+## Canonical names in `GateTypes.SHORTHAND` GDScript will not let you call as a
+## constructor - `any` -> `Variant` today. An error in both modes.
 const NOT_CONSTRUCTIBLE := {"Variant": true}
 
 
-## A shorthand type name (`vec2`, `f64`...) sitting where a value is expected: the
-## receiver of a member access, or the callee of a call. False when the file's own
-## scope gives the name a different meaning (a local, param, field, or a method that
-## shadows it, including one declared in a base class from another file or an engine
-## class), or when an autoload takes the name for itself - `GateTypes.value_shadowed`
-## only affects value positions, unlike `GateTypes.shadowed` (folded into `is_
-## shorthand` itself), which also disables the name in type positions. This is the
-## superset guarantee.
+## A shorthand type name (`vec2`, `f64`...) where a value is expected: a member
+## receiver, or a call's callee. False when the file's own scope, an autoload, or
+## another file's bare declaration already gives the name a meaning.
 func _is_bare_shorthand(id: GateAST._Ident) -> bool:
 	return id.generic_base == "" and GateTypes.is_shorthand(id.name) \
 		and not GateTypes.value_shadowed.has(id.name) \
 		and not _shorthand_taken(id.name) and not _may_be_value(id) \
-		and not _shorthand_field_taken(id.name)
+		and not _shorthand_field_taken(id.name) \
+		and _extern_alias(id.name) == "" and not _ambiguous_bare_enums.has(id.name)
 
 
-## Reports that `id` is a type name used as a value. `canonical_text` is the same
-## expression spelled with the Godot name - offered as the fix, and (when `offer_
-## setting`) what mapping mode would emit instead. `offer_setting` is false for the
-## forms that are an error in both modes (a bare type name as a whole value, or a
-## conversion call whose canonical name is not itself constructible, like `any(...)`
-## -> `Variant(...)`) - turning the setting on would not fix those, so the hint must
-## not suggest it. Always returns "null" for the caller to use as the node's text; the
-## compile is rejected regardless of what that text is.
+## Reports that `id` is a type name used as a value. `offer_setting` is false for the
+## forms that are an error in both modes, so the hint does not suggest a setting that
+## cannot fix them. Always returns "null"; the compile is rejected regardless.
 func _shorthand_value_error(id: GateAST._Ident, canonical_text: String, offer_setting: bool = true) -> String:
 	var hint: String = "use `%s`" % canonical_text
 	if offer_setting:
@@ -1212,6 +1204,21 @@ func _map_pattern_shorthand(text: String, base_line: int, base_col: int) -> Stri
 	var cursor: int = 0
 	for i in toks.size():
 		var t: GateLexer._Token = toks[i]
+		if t.type == GateLexer._T.IDENT and not GateTypes.is_shorthand(t.value):
+			var eprev: GateLexer._Token = toks[i - 1] if i > 0 else null
+			var enxt: GateLexer._Token = toks[i + 1] if i + 1 < toks.size() else null
+			if (eprev == null or not (eprev.is_op(".") or eprev.is_kw("var"))) \
+					and enxt != null and enxt.is_op("."):
+				var ecol: int = t.col + (base_col - 1) if t.line == base_line else t.col
+				if _ambiguous_bare_enum_use(t.value):
+					_report_ambiguous_bare_enum(t.value, t.line, ecol)
+				else:
+					var ealias: String = _extern_alias(t.value)
+					if ealias != "":
+						var estart: int = line_starts[t.line - base_line] + (t.col - 1)
+						out += text.substr(cursor, estart - cursor) + ("%s.%s" % [ealias, t.value])
+						cursor = estart + t.value.length()
+			continue
 		if t.type != GateLexer._T.IDENT or not GateTypes.is_shorthand(t.value):
 			continue
 		var prev: GateLexer._Token = toks[i - 1] if i > 0 else null

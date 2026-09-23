@@ -139,6 +139,13 @@ var _extern_enum_names: Dictionary = {}    ## leaf enum name -> true, top-level 
 ## leaf enum name -> Array[.gate path], every file declaring a top-level enum
 ## of that name - two files can validly share one (`enum State`, `enum Mode`).
 var _extern_enum_origin: Dictionary = {}
+## leaf enum name -> Array[.gate path], for a bare (unqualified) name that names a
+## top-level enum in more than one other file - there is no qualifier at a bare use
+## site to pick a candidate by, so a bare reference to one of these is a compile
+## error instead of a silent guess. A name with exactly one candidate origin is not
+## here - it is folded into `_extern_origin` instead, so it resolves through the
+## same silent-import machinery a bare cross-file class or struct already uses.
+var _ambiguous_bare_enums: Dictionary = {}
 var _subst_types: Dictionary = {}
 var _subst_nullable: Dictionary = {}   ## generic param name -> its bound argument's own `?`
 ## True while emitting an `is`/`as`/match type-pattern test of a substituted generic

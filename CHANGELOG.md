@@ -9,36 +9,36 @@
   canonical Godot name instead of a compile error - see the entry under Changed. Never
   written to `project.godot` unless you change it yourself.
 - **Typed destructuring.** `var [Move[] moves, Mark[] marks] = components` gives each name
-  its own type; `var [moves: Move[], marks: Mark[]] = components` works too, and typed and
-  untyped names mix. A name typed as an array or a dictionary is the slot's own object, so
-  an append through it reaches `components`, whether the arrays in it are typed or not.
+  its own type. `var [moves: Move[], marks: Mark[]] = components` works too, and typed and
+  untyped names mix. A name typed as an array or a dictionary is the slot's own object. An
+  append through it reaches `components`, whether the arrays in it are typed or not.
   A loop over it is typed, and so is `var first := moves[0]`, as over a real typed array.
-  A typed parameter, return, field or variable that GATE can see refuses it, directly,
-  through a ternary or `??`, or as a `duplicate()` of it: that is a compile error showing
-  the copy to write. A `for` loop variable, an `as` cast (trusted by design), and a call
-  through a `Callable` are not checked. Storing a value of the wrong element type in it,
-  by `append`, `insert`, `assign`, `+=`, an index or a whole assignment, is a compile
-  error too, and so is the same kind of store into an array or dictionary value nested
-  inside it, such as `grid[0].append(x)` on an `int[][]` or `d["k"].append(x)` on a
-  `{str, int[]}` - as far as GATE's own nested-collection lowering keeps a real type
-  there at all: `bool[][]`'s or `{str, bool[]}`'s inner level has no `Packed*` array to
-  lower to, is untyped the same as a real `bool[][]` variable's own element, and is left
-  unchecked the same way. A nested level that does lower to a `Packed*` array has no
-  `assign` method at all, which is now an error too, naming the packed array as the reason
-  and pointing at `append_array`; `+=` on that same level is an error when the right side
-  is a plain Array, but not when it is another packed array of the same exact kind (Godot
-  accepts that one) - `i64`/`f64` share a canonical name with `int`/`float` but lower to a
-  different `Packed*` array, so `int[][] += i64[][]` is still an error, and a bare alias
-  name on the right is never treated as packed either, whatever it actually holds.
-  Storing through the alias is checked as if it reached a real typed array, with one
-  exception: `+=` and a whole reassignment on a bare (non-nested) alias name both
-  reassign the untyped local instead of mutating the source in place, so a converting
-  element (a `float` into an `int` slot) would silently keep its unconverted value rather
-  than the real array's own conversion - both are now refused for that, with a hint to
-  convert explicitly or use `append`/`assign` instead, which do reach the real array.
+  A typed parameter, return, field or variable that GATE can see refuses it. That holds
+  directly, through a ternary or `??`, or as a `duplicate()` of it: it is a compile error
+  showing the copy to write. A `for` loop variable, an `as` cast (trusted by design), and a
+  call through a `Callable` are not checked. Storing a value of the wrong element type in
+  it is a compile error too, by `append`, `insert`, `assign`, `+=`, an index or a whole
+  assignment. So is the same kind of store into an array or dictionary value nested inside
+  it, such as `grid[0].append(x)` on an `int[][]` or `d["k"].append(x)` on a `{str, int[]}`.
+  That holds as far as GATE's own nested-collection lowering keeps a real type there at
+  all: `bool[][]`'s or `{str, bool[]}`'s inner level has no `Packed*` array to lower to. It
+  is untyped the same as a real `bool[][]` variable's own element, and is left unchecked
+  the same way. A nested level that does lower to a `Packed*` array has no `assign` method
+  at all. That is now an error too, naming the packed array as the reason and pointing at
+  `append_array`. `+=` on that same level is an error when the right side is a plain Array,
+  but not when it is another packed array of the same exact kind, since Godot accepts that
+  one. `i64`/`f64` share a canonical name with `int`/`float` but lower to a different
+  `Packed*` array, so `int[][] += i64[][]` is still an error. A bare alias name on the
+  right is never treated as packed either, whatever it actually holds.
+  Storing through the alias is checked as if it reached a real typed array. One exception:
+  `+=` and a whole reassignment on a bare (non-nested) alias name both reassign the untyped
+  local instead of mutating the source in place. A converting element, a `float` into an
+  `int` slot say, would then silently keep its unconverted value rather than the real
+  array's own conversion. Both are now refused for that, with a hint to convert explicitly
+  or use `append`/`assign` instead, since those do reach the real array.
   Nullcheck's own flow narrowing is what a store is checked against, not a value's bare
-  declared type, so a nullable value already guarded by a null check (`if f != null:
-  xs.append(f)`) is not refused either.
+  declared type. A nullable value already guarded by a null check, `if f != null:
+  xs.append(f)` say, is not refused either.
 
 ### Changed
 
@@ -51,7 +51,10 @@
   value", with a hint giving the fix. `vec2(1, 2)`, `vec2.ZERO` and the rest map to the
   canonical name again if `Project Settings > Gate > Compiler > Type Names As Values` is
   turned on (see Added). `str(5)` is unaffected either way - it is GDScript's own builtin,
-  not a shorthand - and so is a type position like `x is vec2` or `vec2 v`.
+  not a shorthand - and so is a type position like `x is vec2` or `vec2 v`. A bare name
+  used as a value is not an error when another file declares its own class, struct,
+  namespace or enum of that same name (a `class color` or `enum plane`, say): the name
+  means that declaration, project-wide, the same way a type position already reaches it.
 - **A token left over on a line is an error.** `total = base bonus` compiled to
   `total = base` and then `bonus` on a line of its own, which Godot accepts. Only leftovers
   that looked like a second statement were caught before.
@@ -120,21 +123,6 @@
   exporting it), but a bare leading `static` does not - Godot drops it, so
   `class A: static var s = 3` puts a plain instance var `s` on the enclosing scope, not
   a static one.
-- **An overloaded method called through a class name from another file produced a call
-  that does not exist.** The declaring file emits `__compute_1` and `__compute_2` for two
-  arities of `compute`, but `DamageMath.compute(3)` in another file kept the plain name,
-  so Godot refused the caller with *Static function "compute()" not found in base
-  "DamageMath"*. GATE only warned, and the warning said the type of the receiver was
-  unknown when the receiver was the class itself. Both the flat case and a class nested
-  inside another, `Outer.Inner.pick(3)`, now emit the name the declaring file wrote.
-- **Issue #9's line compiled wrong without a word.** In
-  `C_MoveIntent[] intents, C_MoveSpeed[] movespeeds = components`, GATE read `C_MoveSpeed`
-  as a second variable and the rest of the line as separate statements. With a member named
-  `movespeeds` in scope, Godot accepted the result, and it assigned the whole array to that
-  member. It is now an error that points at the destructuring form.
-- **Annotations and modifiers reached only the first name in `T a, b`.** `@export int a, b`
-  exported `a` alone, and `static` and `priv` did the same. They now apply to every name.
-- **`int a, b { get }` in an interface required only `a`.** Every name is required now.
 - **A generic instantiated with two spellings of the same type produced two classes.**
   `Box<str>` and `Box<String>` mangled to `__Box_str` and `__Box_String`, two different
   generated classes for what is exactly the same type, and code that mixed the spellings
@@ -173,8 +161,44 @@
   statement - confirmed directly against a live `GDScript.reload()`. GATE now does the
   same and drops the empty statements from its output; the type-first flavour of a
   declaration (`int x;; int y`) is covered too. A `;` as the very first thing in a block,
-  or right after a block header's own colon (`func f():;`), is still refused - Godot
-  refuses both of those as well.
+  right after a block header's own colon (`func f():;`), or as the very first thing in
+  the file, is still refused - Godot refuses all three the same way.
+- **A bare reference to another file's enum compiled, and Godot refused to load it.**
+  `enum E { A, B, C }` in one file, then plain `E.C` in another with no `const D =
+  preload(...)` qualifier at all, compiled clean and failed with "Identifier 'E' not
+  declared" - GATE already resolves a bare cross-file class or struct name this way
+  (auto-preloading the file that declares it), but never did the same for an enum. A
+  bare enum name now resolves the same way, wherever it appears: a type (both the
+  plain annotation form and GATE's own type-first spelling, `E lv = E.C`, including
+  a nullable local, an array, a dictionary value, a typed `const` and typed
+  destructuring), `E.C`, a match pattern, a parameter default, `is`/`as`, and the
+  nullable form `E?` (which still collapses to `Variant`, same as a same-file `E?`
+  already does). An engine global, a `class_name` or a base-chain member of that
+  bare name still wins over the enum, the same way one already wins over a bare
+  cross-file class - a project-wide `enum Color` no longer hijacks `Color.RED`, and
+  an `extends Node` script keeps reaching the real `ProcessMode`. When two files
+  each declare their own top-level enum of the same bare name, there is no qualifier
+  at a bare use site to tell them apart, so GATE now refuses it as a compile error
+  naming both files, instead of silently picking one and risking a reference to a
+  member the wrong one does not have. A cross-file enum with no initialiser - a plain
+  field, a local, a one-line class member, or the qualified `D.E` form - now defaults
+  to `0` the same way a same-file enum already does, instead of emitting `null` and
+  failing to load.
+- **An overloaded method called through a class name from another file produced a call
+  that does not exist.** The declaring file emits `__compute_1` and `__compute_2` for two
+  arities of `compute`, but `DamageMath.compute(3)` in another file kept the plain name,
+  so Godot refused the caller with *Static function "compute()" not found in base
+  "DamageMath"*. GATE only warned, and the warning said the type of the receiver was
+  unknown when the receiver was the class itself. Both the flat case and a class nested
+  inside another, `Outer.Inner.pick(3)`, now emit the name the declaring file wrote.
+- **Issue #9's line compiled wrong without a word.** In
+  `C_MoveIntent[] intents, C_MoveSpeed[] movespeeds = components`, GATE read `C_MoveSpeed`
+  as a second variable and the rest of the line as separate statements. With a member named
+  `movespeeds` in scope, Godot accepted the result, and it assigned the whole array to that
+  member. It is now an error that points at the destructuring form.
+- **Annotations and modifiers reached only the first name in `T a, b`.** `@export int a, b`
+  exported `a` alone, and `static` and `priv` did the same. They now apply to every name.
+- **`int a, b { get }` in an interface required only `a`.** Every name is required now.
 
 ## 1.1.1 - 2026-09-18
 
