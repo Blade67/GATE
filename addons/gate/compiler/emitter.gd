@@ -391,6 +391,16 @@ func _emit_class(cd: GateAST._ClassDecl) -> void:
 ## then the caller's buffers are put back exactly as they were - the main file's
 ## own output is unaffected by a class that no longer lives in it.
 func _emit_global_class(cd: GateAST._ClassDecl) -> void:
+	# A generic global class is checked here, per instantiation, not by the
+	# checker's own file-scope pass: `@global class Pool<T>:` itself names
+	# nothing that could clash - only a concrete `Pool<int>`, once mangled to the
+	# name its own script will carry, can. `cd.name` is already that mangled name
+	# by the time this runs, via `_emit_monomorphised`.
+	if GateChecker.is_global_identifier(cd.name) and not GateChecker._is_own_global_registration(cd.name, source_path):
+		diagnostics.error("'%s' is already a global name (a class_name, an autoload, or one of "
+				% cd.name + "Godot's), so @global cannot give it to this class", cd.line, cd.col,
+			"rename the class, or the type argument that produces this name")
+		return
 	var saved_out: PackedStringArray = _out
 	var saved_map: Array[int] = _map
 	var saved_indent: int = _indent

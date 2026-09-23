@@ -195,17 +195,35 @@ func _check_global_placement(cd: GateAST._ClassDecl, mod: GateAST._Module) -> vo
 	if cd.name == mod.class_name_decl:
 		diagnostics.error("'%s' is already this file's own class_name" % cd.name, cd.line, cd.col,
 			"a project can only have one global class of a given name; rename one of them")
-	elif is_global_identifier(cd.name) and not _is_own_global_registration(cd.name, mod.path):
+		return
+	if is_global_identifier(cd.name) and not _is_own_global_registration(cd.name, mod.path):
 		diagnostics.error("'%s' is already a global name (a class_name, an autoload, or one of "
 				% cd.name + "Godot's), so @global cannot give it to this class", cd.line, cd.col,
 			"rename it")
+		return
+	if _registry == null:
+		return
+	var own_extra: String = mod.path.get_basename() + "." + cd.name + ".gd"
+	if "gd_class_names" in _registry and _registry.gd_class_names.has(cd.name) \
+			and String(_registry.gd_class_names[cd.name]) != own_extra:
+		diagnostics.error("'%s' is already a global name (a class_name in %s)"
+				% [cd.name, _registry.gd_class_names[cd.name]], cd.line, cd.col,
+			"rename it; every file reaches whichever one wins")
+		return
+	if "class_name_declared_in" in _registry and _registry.class_name_declared_in.has(cd.name):
+		var others: PackedStringArray = PackedStringArray()
+		for p in _registry.class_name_declared_in[cd.name]:
+			if String(p) != mod.path:
+				others.append(String(p))
+		if not others.is_empty():
+			diagnostics.error("'%s' is already a global name, declared in %s"
+					% [cd.name, ", ".join(others)], cd.line, cd.col,
+				"a project can only have one global class of a given name; rename one of them")
 
 
-## `@global class Foo` in `res://src/pool.gate` registers itself as `Foo`, writing
-## `res://src/pool.Foo.gd` - so once it has built once, Godot's own global class
-## list already has a `Foo`, pointing right back at that same file. That is
-## success settling in, not a clash: only a `Foo` registered from anywhere else
-## (an engine class, an autoload, another file's class_name) is one.
+## `@global class Foo` in `pool.gate` writes `pool.Foo.gd`, so once built, Godot's own
+## global class list holds a `Foo` pointing back at that same file. That is success
+## settling in, not a clash: only a `Foo` registered from elsewhere is one.
 static func _is_own_global_registration(name: String, mod_path: String) -> bool:
 	if mod_path == "":
 		return false

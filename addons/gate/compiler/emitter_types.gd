@@ -121,6 +121,9 @@ func set_registry(reg, self_path: String) -> void:
 		for name in table:
 			if not reg.top_level.has(name):
 				continue
+			var decl = table[name]
+			if decl is GateAST._ClassDecl and (decl as GateAST._ClassDecl).is_global:
+				continue   # its own script carries class_name; no preload, ever
 			var origin: String = reg.origin.get(name, "")
 			if origin != "" and origin != self_path:
 				_extern_origin[name] = origin

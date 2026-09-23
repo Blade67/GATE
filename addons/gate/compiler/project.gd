@@ -56,24 +56,6 @@ class _Registry extends RefCounted:
 	func describe(name: String) -> String:
 		return origin.get(name, "<unknown file>")
 
-	## Every bare name the project gives its own meaning: not just a class_name script but
-	## a struct, interface, trait, namespace, generic or top-level enum in another file.
-	func cross_file_type_names() -> Dictionary:
-		var out: Dictionary = script_class_names.duplicate()
-		for n in structs:
-			out[n] = true
-		for n in interfaces:
-			out[n] = true
-		for n in traits:
-			out[n] = true
-		for n in namespaces:
-			out[n] = true
-		for n in generics:
-			out[n] = true
-		for n in enum_origin:
-			out[n] = true
-		return out
-
 	func without(names: Dictionary) -> _Registry:
 		var r: _Registry = _Registry.new()
 		for p in get_property_list():
@@ -552,6 +534,17 @@ func _index_file(path: String, src: String, tokens: Array, diags: GateDiagnostic
 		if not registry.class_name_declared_in.has(mod.class_name_decl):
 			registry.class_name_declared_in[mod.class_name_decl] = []
 		registry.class_name_declared_in[mod.class_name_decl].append(path)
+	# `@global class Foo` writes its own script carrying `class_name Foo`, so from every
+	# other file it is a project-wide name needing no preload. `_collect` records the
+	# declaration itself regardless; this is the half that says the name is global.
+	for gm in mod.members:
+		if gm is GateAST._ClassDecl and (gm as GateAST._ClassDecl).is_global:
+			var gcd: GateAST._ClassDecl = gm
+			var gpath: String = path.get_basename() + "." + gcd.name + ".gd"
+			registry.script_class_names[gcd.name] = gpath
+			if not registry.class_name_declared_in.has(gcd.name):
+				registry.class_name_declared_in[gcd.name] = []
+			registry.class_name_declared_in[gcd.name].append(path)
 	var defines: Array = []
 	for fm in mod.members:
 		if fm is GateAST._FuncDecl and SYNTHESISED.has((fm as GateAST._FuncDecl).name):

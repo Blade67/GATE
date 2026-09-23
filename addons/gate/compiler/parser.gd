@@ -110,6 +110,17 @@ func _parse_module_member(mod: GateAST._Module) -> GateAST._Stmt:
 		mod.class_name_line = cn_tok.line
 		if _check(GateLexer._T.IDENT):
 			mod.class_name_decl = _advance().value
+		if _check_op("<"):
+			_err("a file's own class_name cannot be generic",
+				("Godot allows one class_name per file, so `class_name %s<...>` cannot work "
+				+ "however it is spelled - write `@global class %s<...>:` inside the file "
+				+ "instead, and drop this class_name line") % [mod.class_name_decl, mod.class_name_decl])
+			_advance()
+			var depth: int = 1
+			while not _at_end() and depth > 0:
+				if _check_op("<"): depth += 1
+				elif _check_op(">"): depth -= 1
+				_advance()
 		if _match_op(","):
 			if _check(GateLexer._T.STRING): mod.icon = _advance().value
 		if _check_kw("extends"):
