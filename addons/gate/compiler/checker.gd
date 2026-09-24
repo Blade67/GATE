@@ -238,13 +238,10 @@ static func _is_own_global_registration(name: String, mod_path: String) -> bool:
 	return false
 
 
-## `@global` extracts a class into its own script: a sibling declared at this
-## file's own top level - a class, struct, interface, trait, namespace, enum,
-## const, var or func, not itself `@global` - is not there any more once it is.
-## Unrefused, the file compiles clean, with no diagnostic, and writes a script
-## Godot refuses to load. Refuses the first such name reached anywhere in the
-## class's own body (its `extends` clause, a field or parameter type, an
-## expression), naming it and what it is.
+## `@global` extracts a class into its own script, so a sibling declared at this
+## file's own top level is not there any more once it is. Unrefused, the file compiles
+## clean and writes a script Godot refuses to load. Never a name the class inherits
+## through its base chain, or one its own subtree declares or binds.
 func _check_global_body(cd: GateAST._ClassDecl, mod: GateAST._Module) -> void:
 	var outside: Dictionary = {}   ## sibling name -> its kind, only non-@global ones
 	for m in mod.members:
@@ -266,8 +263,17 @@ func _check_global_body(cd: GateAST._ClassDecl, mod: GateAST._Module) -> void:
 			name = vd.name
 			kind = "const" if vd.is_const else "field"
 		elif m is GateAST._EnumDecl and (m as GateAST._EnumDecl).name != "":
+			# Only the enum's own name is a sibling here, never its keys: Godot 4.7.2 requires
+			# the `KKind.` qualifier at every scope. Treating keys as bare file-scope names
+			# refuses `enum Layer { Node, Timer }` poisoning `add_child(Node.new())`.
 			name = (m as GateAST._EnumDecl).name
 			kind = "enum"
+		elif m is GateAST._EnumDecl:
+			# An *unnamed* `enum { A, B }` has no name of its own to add above, but its keys are
+			# file-scope constants exactly like a `const` is.
+			for k in (m as GateAST._EnumDecl).keys:
+				outside[String(k)] = "const"
+			continue
 		elif m is GateAST._TypeAliasDecl:
 			name = (m as GateAST._TypeAliasDecl).name
 			kind = "type alias"
@@ -296,7 +302,11 @@ func _check_global_body(cd: GateAST._ClassDecl, mod: GateAST._Module) -> void:
 	_global_body_refs(cd.members, refs)
 	refs.sort_custom(func(a, b): return a.line < b.line)
 	for r in refs:
-		var rn: String = (r as GateAST._Ident).name if r is GateAST._Ident else (r as GateAST._TypeRef).name
+		var full_rn: String = (r as GateAST._Ident).name if r is GateAST._Ident else (r as GateAST._TypeRef).name
+		# A dotted type reference to a sibling's own inner class (`var x: KOuter.KInner`)
+		# carries the whole path as one `_TypeRef.name` and so matches no bare sibling name.
+		# The outer name, the one that stops existing, is everything before the first `.`.
+		var rn: String = full_rn.get_slice(".", 0) if r is GateAST._TypeRef else full_rn
 		if not outside.has(rn) or own.has(rn):
 			continue
 		if chain_names.has(rn):
@@ -328,6 +338,8 @@ static func _global_body_bound(node, out: Dictionary) -> void:
 		out[(node as GateAST._Param).name] = true
 	elif node is GateAST._FuncDecl:
 		out[(node as GateAST._FuncDecl).name] = true
+	elif node is GateAST._SignalDecl:
+		out[(node as GateAST._SignalDecl).name] = true
 	elif node is GateAST._ClassDecl:
 		var cd2: GateAST._ClassDecl = node
 		out[cd2.name] = true
@@ -869,7 +881,8 @@ static func extend_alias_scope(outer: Dictionary, decls: Array, known: Dictionar
 				report.call("'%s' is already an alias in this scope" % ad.name, ad.line, ad.col,
 					"rename one of them")
 			continue
-		if GateTypes.is_shorthand(ad.name) or GateTypes.BUILTIN.has(ad.name) \
+		if (GateTypes.is_shorthand(ad.name) and GateTypes.shorthand_types_enabled()) \
+				or GateTypes.BUILTIN.has(ad.name) \
 				or ClassDB.class_exists(ad.name) or known.has(ad.name):
 			if report.is_valid():
 				report.call("'%s' is already a type, so it cannot be an alias" % ad.name,

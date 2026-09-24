@@ -56,6 +56,24 @@ class _Registry extends RefCounted:
 	func describe(name: String) -> String:
 		return origin.get(name, "<unknown file>")
 
+	## Every bare name the project gives its own meaning: not just a class_name script but
+	## a struct, interface, trait, namespace, generic or top-level enum in another file.
+	func cross_file_type_names() -> Dictionary:
+		var out: Dictionary = script_class_names.duplicate()
+		for n in structs:
+			out[n] = true
+		for n in interfaces:
+			out[n] = true
+		for n in traits:
+			out[n] = true
+		for n in namespaces:
+			out[n] = true
+		for n in generics:
+			out[n] = true
+		for n in enum_origin:
+			out[n] = true
+		return out
+
 	func without(names: Dictionary) -> _Registry:
 		var r: _Registry = _Registry.new()
 		for p in get_property_list():

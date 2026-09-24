@@ -19,6 +19,14 @@ var hashes: Dictionary = {}
 
 var out_hashes: Dictionary = {}
 
+## A `@global` extra's own last-written hash, keyed by the extra's path. Not
+## `out_hashes`, which is keyed by the *gate* path and means the main output.
+var extra_out_hashes: Dictionary = {}
+
+## The extra's own `.map` hash. `_proof` only tracks the main output's map, so an
+## extra compared against it never matches and the build never settles.
+var extra_map_hashes: Dictionary = {}
+
 var unverified: Dictionary = {}
 
 var _last_good: Dictionary = {}
@@ -234,11 +242,10 @@ func build(root: String = "res://") -> Dictionary:
 	_dep_keys = _dependency_keys(gate_files, registry, root)
 
 	var sig: String = registry.signature()
-	# Folds in the type-names-as-values setting: flipping it changes every file's
-	# output, so it has to invalidate every file's cache entry the same way a
-	# registry change does.
+	# Folds in every feature flag: flipping one changes what a file compiles to, so it
+	# has to invalidate every cache entry the way a registry change does.
 	var reg_sig: String = "%d:%d:%s:%s" % [sig.hash(), sig.length(), _shadowing_globals(registry),
-		"1" if GateTypes.type_names_as_values() else "0"]
+		GateFeatures.cache_key()]
 
 	var deferred: Dictionary = {}
 	_skipped_now = []
@@ -382,6 +389,10 @@ func build(root: String = "res://") -> Dictionary:
 		var info: Dictionary = deferred[out_path]
 		if not failed_outputs.has(out_path):
 			continue
+		# `changed`/`unchanged` are counted once per *source*, never once per extra.
+		# Decrementing here for an extra too double-counts one source and can drive
+		# `changed` negative; `plugin.gd` only rescans when `changed > 0`.
+		var is_main: bool = out_path == String(info["gate"]).get_basename() + ".gd"
 		var back: Dictionary = _last_good.get(out_path, info)
 		_last_good.erase(out_path)
 		if back["existed"]:
@@ -407,11 +418,19 @@ func build(root: String = "res://") -> Dictionary:
 				DirAccess.remove_absolute(
 					ProjectSettings.globalize_path(out_path + ".map"))
 			_resync(out_path, back["prev"])
-			out_hashes[info["gate"]] = String(back["prev"]).md5_text()
-		if info["was"] == 1:
-			changed -= 1
-		else:
-			unchanged -= 1
+			if is_main:
+				out_hashes[info["gate"]] = String(back["prev"]).md5_text()
+			else:
+				extra_out_hashes[out_path] = String(back["prev"]).md5_text()
+				if back.get("prev_map_existed", false):
+					extra_map_hashes[out_path] = String(back["prev_map"]).md5_text()
+				else:
+					extra_map_hashes.erase(out_path)
+		if is_main:
+			if info["was"] == 1:
+				changed -= 1
+			else:
+				unchanged -= 1
 		failed += 1
 		var why: String = _users_error(heard, info["source"], _read_text(info["gate"]), info.get("map", []))
 		var kept: String = ("the previous %s has been put back, and the output that does not "
@@ -538,9 +557,18 @@ func _settle(root: String, before: Dictionary, result: Dictionary, registry, def
 	var was: Dictionary = before["scripts"]
 	var now: Dictionary = after["scripts"]
 	var touched: Array = []
+	# The gate a touched file belongs to is recorded here, not derived from the
+	# filename below: that is right for a main output and wrong for an extra
+	# (`pool.Foo.gd` -> `pool.Foo.gate`, a source that does not exist).
+	var file_gate: Dictionary = {}
+	var file_is_main: Dictionary = {}
 	for o in deferred:
+		var gate_of: String = String(deferred[o]["gate"])
+		var main_out: bool = String(o) == gate_of.get_basename() + ".gd"
 		for f1 in [String(o), String(o) + ".map"]:
 			touched.append(f1)
+			file_gate[f1] = gate_of
+			file_is_main[f1] = main_out
 			if FileAccess.file_exists(f1):
 				now[f1] = FileAccess.get_md5(f1)
 			elif now.has(f1):
@@ -549,15 +577,22 @@ func _settle(root: String, before: Dictionary, result: Dictionary, registry, def
 		if was.get(f, "") == now.get(f, ""):
 			continue
 		var gd: String = String(f).trim_suffix(".map")
-		var gate: String = gd.get_basename() + ".gate"
+		var gate: String = String(file_gate.get(f, gd.get_basename() + ".gate"))
 		var proof: Dictionary = _proof.get(gate, {})
 		var h: String = String(hashes.get(gate, ""))
 		if proof.is_empty() or h == "" or String(proof["h"]) != h or String(_failed_at.get(gate, "")) == h:
 			return
+		var is_main_file: bool = bool(file_is_main.get(f, true))
 		if String(f).ends_with(".map"):
-			if String(proof["map"]) != String(now[f]):
+			if is_main_file:
+				if String(proof["map"]) != String(now[f]):
+					return
+			elif String(extra_map_hashes.get(gd, "")) != String(now[f]):
 				return
-		elif _file_hash(gd) != String(out_hashes.get(gate, "")):
+		elif is_main_file:
+			if _file_hash(gd) != String(out_hashes.get(gate, "")):
+				return
+		elif _file_hash(gd) != String(extra_out_hashes.get(gd, "")):
 			return
 	_settled_world = after
 	_settled_world["reached"] = _reached.duplicate()
@@ -1370,6 +1405,8 @@ func _write_global_extras(gate_path: String, extras: Array, src: String, root: S
 			if prev_text == ex_source or _same_but_indent(prev_text, ex_source):
 				if not _map_matches(ex_map, gate_path, ex["map"], prev_text, src):
 					_write_map(ex_path, gate_path, ex["map"], prev_text, src)
+				extra_out_hashes[ex_path] = prev_text.md5_text()
+				extra_map_hashes[ex_path] = FileAccess.get_md5(ex_map)
 				if deferred != null:
 					deferred[ex_path] = {
 						"gate": gate_path, "source": prev_text, "deps": ex_deps,
@@ -1394,56 +1431,34 @@ func _write_global_extras(gate_path: String, extras: Array, src: String, root: S
 		o.close()
 		_wrote_session[ex_path] = true
 		_write_map(ex_path, gate_path, ex["map"], ex_source, src)
+		extra_out_hashes[ex_path] = ex_source.md5_text()
+		extra_map_hashes[ex_path] = FileAccess.get_md5(ex_map)
 	if ok:
 		_known_extras[gate_path] = paths
-		# Always called. `_known_extras` is in memory only, so it is empty at
-		# the start of every editor session, and gating this on "was there an
-		# extra before" would skip the scan on the session that most needs it:
-		# the first one after `@global` was removed, which has never seen the
-		# extra it now has to find and trash. What makes the scan cheap is the
-		# name filter in `_forget_shrunk_extras`, not skipping the call.
+		# Always called: `_known_extras` is in memory only, so the session right after
+		# `@global` was removed has never seen the extra it now has to trash.
 		_forget_shrunk_extras(gate_path, paths, root)
 	return ok
 
 
-## A source that used to declare a `@global` class no longer does - renamed, or
-## the annotation removed - leaves its old extra output behind with nothing to
-## mark it stale, because its own source still exists and still compiles: the
-## ordinary orphan sweep only ever looks at sources that are gone. Beside the
-## source is where every extra is written, so that is all this scans: any `.gd`
-## there whose own `.map` says it came from this source, and is not one of the
-## paths this compile just produced, is handled exactly like any other GATE
-## orphan - trashed only if unchanged since it was generated, otherwise a warning.
+## A source that no longer declares a `@global` class leaves its old extra behind
+## with nothing to mark it stale, since the orphan sweep only looks at sources that
+## are gone. Scans beside the source and treats a match as any other orphan.
 func _forget_shrunk_extras(gate_path: String, current_paths: Array, root: String) -> void:
 	var dir: String = gate_path.get_base_dir()
 	var names: Variant = _gd_names_in(dir)
 	if names == null:
 		return
-	# A plain string set is wrong here: `_was_ours` below matches by `same_path`,
-	# which is case-insensitive on Windows, so a lookup that is not would treat a
-	# path this very build just wrote as unrecognised - and, since `_was_ours` says
-	# yes, as an orphan to trash. Compiling the same file through a differently
-	# cased path (no rename needed - Windows resolves both to the same file) had
-	# it delete its own main output and a valid extra, both freshly written this
-	# same build.
+	# Keyed by `same_path`, not a plain string set: that compare is case-insensitive on
+	# Windows, and a case-sensitive lookup once trashed a main output and a valid extra
+	# this same build had just written.
 	var still: Array = current_paths.duplicate()
 	still.append(gate_path.get_basename() + ".gd")   ## the main output, not an extra
-	# Every extra this source could ever have written is named `<this source's
-	# own basename>.<Class>.gd` (`_emit_global_class`'s own convention), so a
-	# name that does not start with that prefix cannot be one - a plain string
-	# compare, before `_was_ours` opens and parses a `.map` that was never going
-	# to match. That is what makes this cheap. Skipping the scan outright is not
-	# an option: it would have to key on in-memory history of what this source
-	# had before, and that is empty at the start of every session, including the
-	# one right after `@global` was removed - exactly the one that has to find
-	# the orphan.
+	# Every extra this source could have written is named `<basename>.<Class>.gd`
+	# (`_emit_global_class`'s convention), so a name without that prefix cannot be one -
+	# a string compare, before `_was_ours` parses a `.map` for nothing.
 	var prefix: String = gate_path.get_basename().get_file() + "."
-	# Lower-cased on Windows, matching `same_path`. A case-sensitive compare on
-	# a filesystem that is not lets a source reached through a differently cased
-	# path (Windows resolves both to the same file, same as the `same_path` case
-	# the comment above guards) miss a real extra and leave it behind
-	# unrecognised. Not lossy - the trash step below never ran on it either way -
-	# but it is still an extra that should have been found.
+	# Lower-cased on Windows, matching `same_path`.
 	var prefix_cmp: String = prefix.to_lower() if _windows() else prefix
 	for n in (names as PackedStringArray):
 		var n_cmp: String = n.to_lower() if _windows() else n
