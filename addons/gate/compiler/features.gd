@@ -12,6 +12,7 @@ const GROUP_EXPERIMENTS := "gate/experiments"
 const ROWS := [
 	{"id": "shorthand_types", "group": GROUP_FEATURES, "default": true},
 	{"id": "type_names_as_values", "group": GROUP_FEATURES, "default": false},
+	{"id": "type_first", "group": GROUP_FEATURES, "default": true},
 ]
 
 

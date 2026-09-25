@@ -105,6 +105,8 @@ static func shadow_declared(tokens: Array, class_names: Dictionary = {}, extra_t
 		if t.value in ["class", "class_name", "enum", "const", "struct", "interface", "trait", "namespace"]:
 			var nx: GateLexer._Token = tokens[i + 1]
 			if nx.type == GateLexer._T.IDENT and SHORTHAND.has(nx.value):
+				if t.value == "const" and not _const_names_it(tokens, i + 1):
+					continue
 				shadowed[nx.value] = true
 	for cn in class_names:
 		if SHORTHAND.has(cn):
@@ -116,14 +118,22 @@ static func shadow_declared(tokens: Array, class_names: Dictionary = {}, extra_t
 	for n in extra_type_names:
 		if SHORTHAND.has(n):
 			project_declared[n] = true
-	# `has_setting` per shorthand name (27) instead of scanning the whole property
-	# list (~950 entries, most of them nothing to do with autoloads): about 1.4ms per
-	# call scanning, versus a handful of dictionary lookups.
+	# `has_setting` per shorthand name (27) rather than scanning the whole property list
+	# (~950 entries): about 1.4 ms a call scanning, against a few dictionary lookups.
 	value_shadowed = {}
 	for n in SHORTHAND:
 		if ProjectSettings.has_setting("autoload/" + n):
 			value_shadowed[n] = true
 
+
+## Whether the name straight after `const` is the constant's own name or its type.
+## `const str = "x"` declares `str`; in `const str NAME = "x"` the shorthand is the
+## type, so the file has not taken the name.
+static func _const_names_it(tokens: Array, i: int) -> bool:
+	if i + 1 >= tokens.size():
+		return true
+	var after: GateLexer._Token = tokens[i + 1]
+	return after.is_op("=") or after.is_op(":")
 
 static func is_shorthand(name: String) -> bool:
 	return SHORTHAND.has(name) and not shadowed.has(name)

@@ -41,6 +41,17 @@
   derive from it, so a new flag is one row plus the code that checks it. `gate/features/<id>`
   for a shipped feature, `gate/experiments/<id>` for one that is not. Flipping any flag
   rebuilds every file, the same way changing the project's classes does.
+- **`Project Settings > Gate > Features > Type First`.** On by default. Off, a type-first
+  declaration (`int hp = 100`, `str label = "x"`, `vec2[] tiles`, `const int MAX = 10`) is a
+  compile error naming the setting and the `var name: Type` spelling to write instead. Only
+  the declaration form goes away: GATE's own types still work in a GDScript annotation
+  (`var scores: int[]`, `var target: Node2D?`, `var id: <int | str>`), and a struct,
+  interface or trait body takes `var name: Type = value` too, so no other feature becomes
+  unreachable. `int a, b` has no replacement, GDScript having no multi-name declaration.
+  Independent of Shorthand Types: with type-first off, `var v: vec2` still means `Vector2`.
+  Inside a destructuring pattern the flag covers the `Type name` slot spelling only:
+  `var [a: int, b: String] = ...` always works, and destructuring itself is never refused,
+  GDScript having none of its own to write instead.
 - **`Project Settings > Gate > Features > Shorthand Types`.** On by default. Off, `str`,
   `vec2`, `f64` and the rest of GATE's shorthands are not type names anywhere - a type-first
   declaration, `is`/`as`, an array element or a generic argument spelled with one is a compile
@@ -120,6 +131,19 @@
 
 ### Fixed
 
+- **A type-first constant named its own type as taken.** `const str NAME = "abc"` failed
+  with "unknown type 'str'", and so did every other use of `str` in the same file: the scan
+  that works out which shorthands a file has declared for itself read the token straight
+  after `const`, which in a type-first constant is the type, not the name. Only
+  `const str = "x"` and `const str: String = "x"` declare the name now. Nothing else was
+  affected, since `class`, `enum`, `struct`, `interface`, `trait` and `namespace` always put
+  their name straight after the keyword.
+- **`var` with a type before the name reached the output verbatim.** `var int a = 1` at
+  class level was passed through as an unrecognised line, with the compile reported as
+  successful, and Godot then refused to load the `.gd` GATE had just written. It is a
+  compile error now, in a function body as well, naming both spellings GATE does accept
+  (`int a = 1`, or GDScript's own `var a: int = 1`). Inside a function it was already an
+  error, but reported as a leftover token at the name rather than at the type.
 - **A generic parameter's nullability was lost one level down.** `class Box<T>: var v: T`
   and `class Outer<T>: Box<T> inner = Box<T>.new()`, instantiated as `Outer<int?>`, emitted
   `inner` as `__Box_int` instead of `__Box_int_opt`, so `o.inner.v = null` crashed at

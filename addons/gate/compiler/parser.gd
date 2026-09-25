@@ -624,12 +624,25 @@ func _parse_var_decl(strict_end := false) -> GateAST._VarDecl:
 	if vd.is_const and (_looks_like_typed_decl() or _looks_like_paren_type_decl()):
 		vd.type = _parse_type()
 		vd.type.strict = true
+	elif not vd.is_const and _looks_like_typed_decl():
+		var tn: GateLexer._Token = _cur()
+		var ty: GateAST._TypeRef = _parse_type()
+		var nm: String = _cur().value if _is_name_token(_cur()) else "name"
+		diagnostics.error("'var' does not take a type before the name", tn.line, tn.col,
+			"write `%s %s = ...`, or GDScript's own `var %s: %s = ...`"
+				% [ty.describe(), nm, nm, ty.describe()])
+		_skip_to_statement_end()
+		return null
 	if not (_check(GateLexer._T.IDENT) or _check(GateLexer._T.KEYWORD)):
 		_err("expected a variable name after '%s'" % kw.value)
 		_skip_to_statement_end()
 		return null
 	vd.name = _advance().value
 	if vd.type != null:
+		if not GateFeatures.enabled("type_first"):
+			diagnostics.error("a type-first declaration is turned off here", kw.line, kw.col,
+				"write `const %s: %s = ...`, or turn on Project Settings > Gate > Features > Type First"
+					% [vd.name, vd.type.describe()])
 		if _match_op("="):
 			vd.value = _parse_expr()
 		else:
@@ -716,6 +729,10 @@ func _parse_typed_decl() -> GateAST._VarDecl:
 		_skip_to_statement_end()
 		return null
 	vd.name = _advance().value
+	if not GateFeatures.enabled("type_first"):
+		diagnostics.error("a type-first declaration is turned off here", start.line, start.col,
+			"write `var %s: %s = ...`, or turn on Project Settings > Gate > Features > Type First"
+				% [vd.name, vd.type.describe()])
 
 	var extra_names: Array = []
 	while _check_op(",") and _peek(1).type == GateLexer._T.IDENT:
@@ -1426,11 +1443,16 @@ func _parse_pattern_name(st: GateAST._MultiAssign) -> bool:
 		_err("expected a name in the destructuring pattern, found '%s'" % _cur().value,
 			"write `name`, `name: Type` or `Type name`, separated by commas.")
 		return false
+	var tstart: GateLexer._Token = _cur()
 	tt = _parse_type()
 	if tt == null or not _at_name():
 		_err("expected a name after the type in the destructuring pattern, found '%s'"
 			% _cur().value, "write `Type name` or `name: Type`.")
 		return false
+	if not GateFeatures.enabled("type_first"):
+		diagnostics.error("a type-first declaration is turned off here", tstart.line, tstart.col,
+			"write `%s: %s` in the pattern, or turn on Project Settings > Gate > Features > Type First"
+				% [_cur().value, tt.describe()])
 	_add_pattern_name(st, _advance(), tt)
 	return true
 

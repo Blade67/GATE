@@ -57,7 +57,8 @@ GATE's shorthands are type names anywhere - `str label`, `vec2 v`, `x is vec2`, 
 and `Box<str>` are all a compile error ("'str' is not a type here") naming the setting and
 the Godot spelling to write instead. A file that declares its own class, struct, interface,
 trait, namespace, enum or const named like a shorthand keeps meaning that declaration either
-way - the setting only decides whether the *shorthand* meaning exists, never removes a name
+way (a constant *named* like one, that is: in `const str NAME = "x"` the shorthand is the
+type, and the file has taken nothing) - the setting only decides whether the *shorthand* meaning exists, never removes a name
 the file gave itself. (`str` is the one exception: it is also GDScript's own global
 `str()` function, so `struct str`, `interface str`, `trait str`, `namespace str` and a generic
 `class str<T>` are all refused outright, on either setting - unrelated to this flag and
@@ -118,6 +119,23 @@ annotation carries GATE's own types as well, so `var target: Node2D? = null`,
 `var scores: int[] = []` and `var id: <int | str> = 7` all work and mean what the
 type-first spellings mean. Every feature in this document is reachable without writing a
 single type-first declaration.
+
+**Type-first declarations are themselves a project setting**,
+`Project Settings > Gate > Features > Type First`, on by default. Turned off, a type-first
+declaration is a compile error naming the setting and the GDScript spelling to write
+instead, and nothing else changes: every other feature in this document stays reachable,
+because GATE's types work in a GDScript annotation too (`var scores: int[] = []`,
+`var target: Node2D? = null`, `var id: <int | str> = 7`) and a struct, interface or trait
+body takes `var name: Type = value` just as well. The one thing with no replacement is the
+shared line, `int a, b`, since GDScript has no multi-name declaration. The flag is
+independent of `Shorthand Types`: with type-first off, `var v: vec2 = Vector2.ZERO` still
+means `Vector2`.
+
+**`const` takes the type first as well, `var` does not.** `const int MAX = 10` and
+`const str NAME = "player"` are type-first declarations like any other, because a constant
+has no keyword-free form to fall back on. A variable has one, so `var` keeps GDScript's own
+spelling and nothing else: write `int hp = 100`, or `var hp: int = 100`. Mixing them,
+`var int hp = 100`, is neither, and is a compile error naming both spellings.
 
 ### Collections
 
@@ -588,10 +606,16 @@ dictionary.
 take a type, in either spelling:
 
 ```gdscript
-var [Move[] moves, Mark[] marks] = components
 var [moves: Move[], marks: Mark[]] = components
-var [int id, label] = entry
+var [Move[] moves, Mark[] marks] = components
+var [id: int, label] = entry
 ```
+
+The pattern already sits inside a `var`, so `name: Type` is the spelling to reach for, and
+it is the one that always works. `Type name` is a type-first declaration like any other and
+follows `Project Settings > Gate > Features > Type First`; with that off, a slot spelled
+that way is a compile error naming the setting and the `name: Type` form. Destructuring
+itself is never refused by the flag, GDScript having none of its own to fall back on.
 
 A name with a scalar or object type is declared with it, and a name without one takes the
 tuple slot's type when there is one. A name typed as an array or a dictionary is the slot's
