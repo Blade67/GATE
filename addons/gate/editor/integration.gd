@@ -65,6 +65,10 @@ func attach(plugin: EditorPlugin) -> void:
 	_highlighter = _Highlighter.new()
 	EditorInterface.get_script_editor().register_syntax_highlighter(_highlighter)
 
+	# Before anything can export again: a `.gate_export_bak` left by an export
+	# that never reached _export_end() (the editor or the export itself crashed
+	# mid-way) means a working `.gd` is still holding export-time content.
+	_Export.restore_leftover_backups("res://")
 	_export = _Export.new()
 	_plugin.add_export_plugin(_export)
 

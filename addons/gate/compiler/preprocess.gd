@@ -37,8 +37,14 @@ class _Cursor:
 		return t
 
 
+## Cheap enough to call before deciding whether a file needs anything else here: a
+## substring test, true even inside a string. A fast "definitely nothing to do".
+static func has_directive(src: String) -> bool:
+	return src.contains("@if") or src.contains("@elif") or src.contains("@else") or src.contains("@endif")
+
+
 static func run(src: String, diags: GateDiagnostics, defines: Dictionary) -> String:
-	if not (src.contains("@if") or src.contains("@elif") or src.contains("@else") or src.contains("@endif")):
+	if not has_directive(src):
 		return src
 	var inside: Dictionary = GateCompiler.lines_inside_strings(src)
 	var lines: PackedStringArray = src.split("\n")

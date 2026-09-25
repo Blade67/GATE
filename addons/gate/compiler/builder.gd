@@ -1118,11 +1118,9 @@ func compile_file(gate_path: String, registry = null, deferred = null, reg_sig: 
 	var map_path: String = out_path + ".map"
 	var chain: String = String(registry.gd_chain.get(gate_path, "")) if registry != null else ""
 	var unit: String = _indent_for(src)
-	# Only a file with a directive in it is sensitive to the symbol table, so
-	# only that file's key moves when gate/compiler/defines changes: a file
-	# with no @if is untouched, same as any other build with nothing to redo.
-	var has_directive: bool = (src.contains("@if") or src.contains("@elif")
-		or src.contains("@else") or src.contains("@endif"))
+	# Only a file with a directive is sensitive to the symbol table, so only that
+	# file's key moves when gate/compiler/defines changes.
+	var has_directive: bool = GatePreprocess.has_directive(src)
 	var h: String = "%d:%d:%s:%s:%s%d:%s%s" % [src.hash(), src.length(), reg_sig, chain,
 		"t" if unit.begins_with(TAB) else "s", unit.length(), String(_dep_keys.get(gate_path, "")),
 		(":" + _defines_sig) if has_directive else ""]

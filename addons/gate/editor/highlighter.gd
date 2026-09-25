@@ -97,6 +97,7 @@ var _text_color: Color = Color.WHITE
 var _dim_color: Color = Color.WHITE
 
 var _re_annotation: RegEx = null
+var _re_directive: RegEx = null
 var _re_fstring: RegEx = null
 var _re_shorthand: RegEx = null
 var _re_capitalised: RegEx = null
@@ -195,6 +196,7 @@ func _rebuild() -> void:
 	_synced_version = -1
 
 	_re_annotation = RegEx.create_from_string("@[A-Za-z_][A-Za-z_0-9]*")
+	_re_directive = RegEx.create_from_string("(?m)^[ \\t]*(@if|@elif|@else|@endif)\\b")
 	_re_fstring = RegEx.create_from_string("\\bf(?=[\"'])")
 	_re_shorthand = RegEx.create_from_string("\\b(?:%s)\\b(?:\\[\\])*\\??" % SHORTHANDS)
 	_re_capitalised = RegEx.create_from_string("\\b[A-Z][A-Za-z_0-9]*(?:\\[\\])*\\??")
@@ -363,12 +365,19 @@ func _prose_color(kind: int) -> Color:
 ## Spans of `[start, end, colour, over_member]`. The last flag is false where layer
 ## one calling the word a member access wins instead, which is what keeps
 ## `xform.basis` and `pool._items` in the member colour.
+const DIRECTIVE_WORDS := {"@if": true, "@elif": true, "@else": true, "@endif": true}
+
+
 func _spans(text: String, prose: Array) -> Array:
 	var out: Array = []
 	for span in prose:
 		out.append([int(span[0]), int(span[1]), _prose_color(int(span[2])), true])
 	for match_ in _re_annotation.search_all(text):
+		if DIRECTIVE_WORDS.has(match_.get_string()):
+			continue
 		out.append([match_.get_start(), match_.get_end(), _function_color, true])
+	for match_ in _re_directive.search_all(text):
+		out.append([match_.get_start(1), match_.get_end(1), _control_color, true])
 	for match_ in _re_fstring.search_all(text):
 		out.append([match_.get_start(), match_.get_end(), _string_color, true])
 	for match_ in _re_shorthand.search_all(text):

@@ -40,7 +40,11 @@ extends EditorExportPlugin
 
 const ADDON_PREFIX: String = "res://addons/gate/"
 
-const SKIPPED_SUFFIXES: Array[String] = [".gate", ".gate.uid", ".gd.map"]
+## The export swap's own sibling file, holding a `.gd`'s pre-swap content while
+## an export is in progress - never a project file, and never packed.
+const BACKUP_SUFFIX: String = ".gate_export_bak"
+
+const SKIPPED_SUFFIXES: Array[String] = [".gate", ".gate.uid", ".gd.map", BACKUP_SUFFIX]
 
 ## The only part of the addon a game needs. See above for why each is here.
 const RUNTIME: Array[String] = [
@@ -68,44 +72,120 @@ static func is_editor_only(path: String) -> bool:
 ## namespaces, generics) still need to resolve during the recompile below.
 var _export_registry = null
 
-## Every `.gd` this export overwrote on disk, with its original text, so
-## `_export_end()` can put it back once Godot has packed the replacement.
-## `skip()` plus `add_file()` ships the replacement as raw source under the
-## `.gd` name, not Godot's own compiled `.gdc` - measured against the pack
-## produced with this plugin removed. Writing the file and letting Godot's own
-## default export path (never skipped) read and compile it is what makes the
-## packed file match: still `.gdc`, still whatever `script_export_mode` asks
-## for, and never Godot's default source-visible-in-the-pack request.
-var _export_restore: Dictionary = {}
+## Every `.gd` this export swapped, with the sibling backup path holding its
+## original text - `_export_end()` restores from there and deletes it. Kept as
+## a real file, not just memory, so a crash between the swap and `_export_end()`
+## still leaves something `restore_leftover_backups()` can find and fix next
+## time the editor opens, rather than a working file stuck holding export-time
+## content forever.
+var _export_backups: PackedStringArray = PackedStringArray()
 
-
+## Godot 4.7 offers no way to export a compiled `.gd` without the right source
+## being on disk first. `EditorExportPlugin.add_file()` stores the exact bytes
+## given under the exact path given, so pairing it with `skip()` on a `.gd`
+## ships raw source under the `.gd` name rather than Godot's own `.gdc`, and
+## `GDScript` exposes no `get_as_byte_code()`. Resource customization
+## (`_begin_customize_resources()` / `_customize_resource(resource, path)` /
+## `_get_customization_configuration_hash()`) reads like the answer and is not:
+## the hash callback fires with the right per-export value, but
+## `_customize_resource()` is never called for a `.gd` at all, on either
+## `--export-debug` or `--export-release`.
+##
+## So the swap stays, made crash-safe: only a `.gd` whose `.gate` source
+## actually has a directive in it is ever opened for writing (GatePreprocess.
+## has_directive(), the same cheap check the preprocessor's own fast path and
+## the build cache use), the original text is saved to a sibling
+## `.gate_export_bak` before the write, and `_export_end()` restores from that
+## file and deletes it. Godot runs export in-process, so a crash between the
+## write and `_export_end()` is a real path, not a theoretical one -
+## `restore_leftover_backups()` is called once, when the plugin attaches, so a
+## backup an earlier session left behind is put back and reported the next
+## time the editor opens, not left silently wrong.
 func _export_begin(_features: PackedStringArray, _is_debug: bool, _path: String, _flags: int) -> void:
 	_export_registry = null
-	_export_restore = {}
+	_export_backups = PackedStringArray()
 
 
 func _export_end() -> void:
-	for path in _export_restore:
-		var f: FileAccess = FileAccess.open(path, FileAccess.WRITE)
-		if f != null:
-			f.store_string(String(_export_restore[path]))
-			f.close()
-	_export_restore = {}
+	for path in _export_backups:
+		_restore_one(path)
+	_export_backups = PackedStringArray()
 
 
-## `.gate` files never reach the pack (skipped above), so an exported `.gd`
-## still carries every `@if` block as ordinary code unless this recompiles it
-## with the preset's own symbols. `features` is the same set Godot resolved
-## for this file: the platform, "debug" or "release", and the preset's own
-## custom_features - GateDefines.overrides_from_features() turns it into the
-## table an `@if` is judged against, so a release export genuinely lacks a
-## `@if DEBUG` block rather than merely not running it.
+## Writes `path`'s current bytes to `path + BACKUP_SUFFIX`, returning false (and
+## touching nothing) if either read fails, so a swap is only ever recorded once
+## it is actually safe to undo.
+func _backup(path: String) -> bool:
+	var text: String = FileAccess.get_file_as_string(path)
+	if text == "" and not FileAccess.file_exists(path):
+		return false
+	var bak: FileAccess = FileAccess.open(path + BACKUP_SUFFIX, FileAccess.WRITE)
+	if bak == null:
+		return false
+	bak.store_string(text)
+	bak.close()
+	return true
+
+
+static func _restore_one(path: String) -> void:
+	var bak_path: String = path + BACKUP_SUFFIX
+	if not FileAccess.file_exists(bak_path):
+		return
+	var text: String = FileAccess.get_file_as_string(bak_path)
+	var f: FileAccess = FileAccess.open(path, FileAccess.WRITE)
+	if f != null:
+		f.store_string(text)
+		f.close()
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(bak_path))
+
+
+## Called once, when the plugin attaches (`editor/integration.gd`'s `attach()`),
+## well before any export could run: an export that started and never finished
+## leaves its swapped file's real content sitting in a `.gate_export_bak`
+## sibling, so this puts it back and says so, rather than leaving a working
+## file silently holding export-time content indefinitely.
+static func restore_leftover_backups(root: String) -> void:
+	var found: Array[String] = []
+	_scan_for_backups(root, found)
+	for bak_path in found:
+		var real_path: String = bak_path.substr(0, bak_path.length() - BACKUP_SUFFIX.length())
+		_restore_one(real_path)
+		push_warning(("[GATE] %s was left holding export-time content by an export that did not "
+			+ "finish; restored from %s.") % [real_path, bak_path])
+
+
+static func _scan_for_backups(dir: String, found: Array[String]) -> void:
+	var d: DirAccess = DirAccess.open(dir)
+	if d == null:
+		return
+	d.list_dir_begin()
+	var n: String = d.get_next()
+	while n != "":
+		var p: String = dir.path_join(n)
+		if d.current_is_dir():
+			if GateProject.walks_into(d, n, p):
+				_scan_for_backups(p, found)
+		elif n.ends_with(BACKUP_SUFFIX):
+			found.append(p)
+		n = d.get_next()
+	d.list_dir_end()
+
+
+## `.gate` files never reach the pack (skipped in `_export_file()` below), so an
+## exported `.gd` still carries every `@if` block as ordinary code unless this
+## recompiles it with the preset's own symbols. `features` is the same set
+## Godot resolved for this file: the platform, "debug" or "release", and the
+## preset's own custom_features - GateDefines.overrides_from_features() turns
+## it into the table an `@if` is judged against, so a release export genuinely
+## lacks a `@if DEBUG` block rather than merely not running it.
 func _recompile_for_export(path: String, gate_path: String, features: PackedStringArray) -> void:
 	var f: FileAccess = FileAccess.open(gate_path, FileAccess.READ)
 	if f == null:
 		return
 	var src: String = f.get_as_text()
 	f.close()
+	if not GatePreprocess.has_directive(src):
+		return
 	if _export_registry == null:
 		var project: GateProject = GateProject.new()
 		_export_registry = project.index("res://")
@@ -115,20 +195,26 @@ func _recompile_for_export(path: String, gate_path: String, features: PackedStri
 	var res: GateCompiler._Result = compiler.compile(src, gate_path, _export_registry, defines)
 	if not res.ok:
 		return
-	var gf: FileAccess = FileAccess.open(path, FileAccess.READ)
-	if gf == null:
-		return
-	var original: String = gf.get_as_text()
-	gf.close()
+	# An earlier export that swapped this file and never reached _export_end()
+	# leaves its backup sitting here with the true original, and `path` itself
+	# holding THAT export's content, not the source. Put it back before reading
+	# `path` as "the original" for anything below, or a second swap in the same
+	# process bases its own backup on already-stripped content and the real
+	# original is gone for good.
+	if FileAccess.file_exists(path + BACKUP_SUFFIX):
+		_restore_one(path)
+	var original: String = FileAccess.get_file_as_string(path)
 	if original == res.source:
 		return
-	_export_restore[path] = original
+	if not _backup(path):
+		return
 	var wf: FileAccess = FileAccess.open(path, FileAccess.WRITE)
 	if wf == null:
-		_export_restore.erase(path)
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path + BACKUP_SUFFIX))
 		return
 	wf.store_string(res.source)
 	wf.close()
+	_export_backups.append(path)
 
 
 func _export_file(path: String, type: String, features: PackedStringArray) -> void:

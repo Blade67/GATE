@@ -83,6 +83,12 @@ const ANNOTATIONS: Array[String] = [
 	"@export_node_path", "@export_flags", "@export_subgroup",
 ]
 
+## `@if` / `@elif` / `@else` / `@endif` are directives, not annotations, but
+## they still start with `@`, so completion after one offers these alongside
+## ANNOTATIONS: without them, typing `@if` would offer nothing but decorators
+## that do not apply, with no hint the four directive words exist at all.
+const DIRECTIVES: Array[String] = ["@if", "@elif", "@else", "@endif"]
+
 ## One parsed module, and the text it was parsed from.
 ##
 ## Parsing is the whole cost of a completion request - measured at 16 ms on a
@@ -254,6 +260,8 @@ static func _wrap(options: Array) -> Dictionary:
 static func _annotations() -> Array:
 	var out: Array = []
 	for name in ANNOTATIONS:
+		out.append(option(KIND_PLAIN_TEXT, name, name.substr(1), HERE))
+	for name in DIRECTIVES:
 		out.append(option(KIND_PLAIN_TEXT, name, name.substr(1), HERE))
 	return out
 

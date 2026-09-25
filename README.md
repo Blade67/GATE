@@ -20,13 +20,13 @@ Bugs and feature requests go in [issues](https://github.com/Blade67/GATE/issues)
    * [Null safety](#null-safety)
    * [Structs](#structs)
    * [Interfaces, traits and namespaces](#interfaces-traits-and-namespaces)
-   * [Global classes](#global-classes)
    * [Generics](#generics)
    * [Unions, tuples and typed callables](#unions-tuples-and-typed-callables)
    * [Type aliases and typed scenes](#type-aliases-and-typed-scenes)
    * [Narrowing and match patterns](#narrowing-and-match-patterns)
    * [Swizzling and object initialisers](#swizzling-and-object-initialisers)
    * [Editor annotations](#editor-annotations)
+   * [Conditional compilation](#conditional-compilation)
    * [Expressions](#expressions)
 - [In the editor](#in-the-editor)
 - [Performance](#performance)
@@ -219,21 +219,6 @@ class Enemy extends CharacterBody2D implements Damageable with Poolable:
 		pass
 ```
 
-### Global classes
-
-`@global` on a top-level class gives it its own Godot script beside the file that
-declares it, carrying `class_name` - a real, attachable script that shows up in the
-Create Node dialog, rather than an inner class of the `.gate`'s own output. The name is
-project-wide, the same as a file's own `class_name`.
-
-##### Example
-```gdscript
-# res://src/bullet.gate
-@global class Bullet extends Node2D:
-	var speed: float = 400.0
-# writes res://src/bullet.Bullet.gd, carrying `class_name Bullet`
-```
-
 ### Generics
 
 Monomorphised, so `Pool<Bullet>` holds a real `Array[Bullet]` rather than an untyped one.
@@ -343,6 +328,27 @@ extends Node
 @export @required Node2D target
 @export bool use_timer = false
 @export_if(use_timer) float delay = 1.0
+```
+
+### Conditional compilation
+
+`@if` / `@elif` / `@else` / `@endif` resolve when the file compiles. A dropped block is
+blanked, not deleted, so every line after it keeps its original number, and it is never
+parsed, so it can hold code that would not compile at all. Symbols come from Godot itself:
+`DEBUG`, `RELEASE`, `EDITOR`, `EXPORT`, platform and architecture tags, and `GODOT_VERSION`
+in a comparison. An unknown symbol is a compile error, not a silent false. At export, each
+`.gd` is recompiled with the preset's own values, so a release build genuinely lacks a
+`@if DEBUG` block.
+
+##### Example
+```gdscript
+@if DEBUG
+print("debug build")
+@elif GODOT_VERSION >= 4.7 && WINDOWS
+print("windows, recent Godot")
+@else
+print("release")
+@endif
 ```
 
 ### Expressions
@@ -519,14 +525,7 @@ iterate, so it pays off only if you make more than about 1.3 passes per rebuild.
   after the file is on disk.
 - **Interfaces do not fall back to structural checks.** `x is SomeInterface` is false for a
   class GATE did not compile.
-- **Namespaced classes cannot be attached to nodes** as their script. A top-level class
-  marked `@global` can; `@global` does not reach inside a `namespace`.
-- **A `@global` class's own body can only name itself, a project-wide name, or something it
-  declares itself** - not a plain sibling declared at the same file's own top level: a
-  class, struct, interface, trait, namespace, enum, const, var, signal or func that is not
-  itself `@global`, since that sibling is not there any more once the class is extracted
-  into its own script. Refused at compile time, naming the sibling; mark it `@global` too,
-  or move it inside the class.
+- **Namespaced classes cannot be attached to nodes** as their script.
 - **Saving a `.gate` in the editor rewrites its indentation** to whatever
   *Text Editor -> Behavior -> Indent* says, as Godot does for a `.gd`. GATE reads tabs
   and spaces alike, so the output is unchanged either way.
@@ -547,6 +546,10 @@ iterate, so it pays off only if you make more than about 1.3 passes per rebuild.
 - **A `.gate` opened before GATE 1.1.0 keeps "Plain Text" highlighting.** The choice is
   remembered per file in `.godot/editor/script_editor_cache.cfg`; pick GATE once from the
   highlighter menu and it sticks.
+- **Conditional compilation has no file-local `@define`.** A custom symbol comes from the
+  project setting `gate/compiler/defines` only. A comparison operator is defined only for
+  `GODOT_VERSION`. Directives are line-based: half an expression cannot be dropped. The
+  editor shows a dropped block as ordinary code; it is not greyed out.
 - **No game has shipped with it.**
 
 ## Verification
