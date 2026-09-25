@@ -64,6 +64,78 @@ static func is_editor_only(path: String) -> bool:
 	return false
 
 
+## Rebuilt once per export, not once per file: cross-file features (structs,
+## namespaces, generics) still need to resolve during the recompile below.
+var _export_registry = null
+
+## Every `.gd` this export overwrote on disk, with its original text, so
+## `_export_end()` can put it back once Godot has packed the replacement.
+## `skip()` plus `add_file()` ships the replacement as raw source under the
+## `.gd` name, not Godot's own compiled `.gdc` - measured against the pack
+## produced with this plugin removed. Writing the file and letting Godot's own
+## default export path (never skipped) read and compile it is what makes the
+## packed file match: still `.gdc`, still whatever `script_export_mode` asks
+## for, and never Godot's default source-visible-in-the-pack request.
+var _export_restore: Dictionary = {}
+
+
+func _export_begin(_features: PackedStringArray, _is_debug: bool, _path: String, _flags: int) -> void:
+	_export_registry = null
+	_export_restore = {}
+
+
+func _export_end() -> void:
+	for path in _export_restore:
+		var f: FileAccess = FileAccess.open(path, FileAccess.WRITE)
+		if f != null:
+			f.store_string(String(_export_restore[path]))
+			f.close()
+	_export_restore = {}
+
+
+## `.gate` files never reach the pack (skipped above), so an exported `.gd`
+## still carries every `@if` block as ordinary code unless this recompiles it
+## with the preset's own symbols. `features` is the same set Godot resolved
+## for this file: the platform, "debug" or "release", and the preset's own
+## custom_features - GateDefines.overrides_from_features() turns it into the
+## table an `@if` is judged against, so a release export genuinely lacks a
+## `@if DEBUG` block rather than merely not running it.
+func _recompile_for_export(path: String, gate_path: String, features: PackedStringArray) -> void:
+	var f: FileAccess = FileAccess.open(gate_path, FileAccess.READ)
+	if f == null:
+		return
+	var src: String = f.get_as_text()
+	f.close()
+	if _export_registry == null:
+		var project: GateProject = GateProject.new()
+		_export_registry = project.index("res://")
+	var overrides: Dictionary = GateDefines.overrides_from_features(features)
+	var defines: Dictionary = GateDefines.table(overrides)
+	var compiler: GateCompiler = GateCompiler.new()
+	var res: GateCompiler._Result = compiler.compile(src, gate_path, _export_registry, defines)
+	if not res.ok:
+		return
+	var gf: FileAccess = FileAccess.open(path, FileAccess.READ)
+	if gf == null:
+		return
+	var original: String = gf.get_as_text()
+	gf.close()
+	if original == res.source:
+		return
+	_export_restore[path] = original
+	var wf: FileAccess = FileAccess.open(path, FileAccess.WRITE)
+	if wf == null:
+		_export_restore.erase(path)
+		return
+	wf.store_string(res.source)
+	wf.close()
+
+
 func _export_file(path: String, type: String, features: PackedStringArray) -> void:
 	if is_editor_only(path):
 		skip()
+		return
+	if path.ends_with(".gd"):
+		var gate_path: String = path.get_basename() + ".gate"
+		if FileAccess.file_exists(gate_path):
+			_recompile_for_export(path, gate_path, features)
