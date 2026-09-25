@@ -20,6 +20,7 @@ down to.
 - [Signals](#signals)
 - [Structs](#structs)
 - [Interfaces, traits and namespaces](#interfaces-traits-and-namespaces)
+- [Global classes](#global-classes)
 - [Generics](#generics)
 - [Operators and expressions](#operators-and-expressions)
 - [Members and methods](#members-and-methods)
@@ -44,11 +45,28 @@ Lowercase shorthands. Canonical names still work, and engine classes keep theirs
 
 These are type names, not values: `vec2.ZERO` and `vec2(1, 2)` are a compile error
 ("'vec2' is a type name, not a value") unless the project setting
-`Project Settings > Gate > Compiler > Type Names As Values` is on, in which case they mean
+`Project Settings > Gate > Features > Type Names As Values` is on, in which case they mean
 the Godot type - `vec2.ZERO` is `Vector2.ZERO`, `vec2(1, 2)` is `Vector2(1, 2)`. `str(...)`
 called as a function is always GDScript's own builtin, never affected either way. `x is
 vec2` and `x as vec2` are unaffected in both modes, since a type name is exactly what they
 expect there.
+
+Whether these are type names at all is itself a project setting:
+`Project Settings > Gate > Features > Shorthand Types`, on by default. Turned off, none of
+GATE's shorthands are type names anywhere - `str label`, `vec2 v`, `x is vec2`, `vec2[] a`
+and `Box<str>` are all a compile error ("'str' is not a type here") naming the setting and
+the Godot spelling to write instead. A file that declares its own class, struct, interface,
+trait, namespace, enum or const named like a shorthand keeps meaning that declaration either
+way - the setting only decides whether the *shorthand* meaning exists, never removes a name
+the file gave itself. (`str` is the one exception: it is also GDScript's own global
+`str()` function, so `struct str`, `interface str`, `trait str`, `namespace str` and a generic
+`class str<T>` are all refused outright, on either setting - unrelated to this flag and
+unchanged from before it existed. A plain, non-generic `class str` is not affected by this and
+keeps its meaning, like any other declared name.)
+
+The two settings do not act independently: with Shorthand Types off, Type Names As Values
+has nothing to map, so a bare shorthand used as a value stays an error and its hint offers
+Shorthand Types instead.
 
 A class, enum or constant you declare with one of these names, or a `class_name` anywhere in
 the project, means your own type, as it does in GDScript.
@@ -457,6 +475,42 @@ class Enemy extends CharacterBody2D implements Damageable with Poolable:
 - **Namespaces** lower to inner classes. A namespaced class cannot be attached to a node as
   its script.
 
+## Global classes
+
+```gdscript
+@global class Bullet extends Node2D:
+	var speed: float = 400.0
+```
+
+`@global` on a top-level `class` gives it its own Godot script, beside the file that
+declares it: `res://src/pool.gate` with `@global class Bullet` writes
+`res://src/pool.Bullet.gd`, carrying `class_name Bullet`. That makes it a real, attachable
+script - it appears in the Create Node dialog and can be dropped on a node - which a class
+nested inside a `.gate`'s own output cannot be. The name is project-wide, the same as a
+file's own `class_name`: another file uses it with no preload, and two declarations of the
+same name are an error naming both.
+
+`@global` is refused on a class nested inside another class, a struct, an interface, a
+trait, or a class inside a `namespace` (a namespaced class already cannot be attached; that
+has not changed). A generic global class, `@global class Pool<T>:`, writes one script per
+instantiation: `Pool<int>` used anywhere in the project gives that instantiation its own
+`res://src/pool.__Pool_int.gd`, carrying `class_name __Pool_int`. The generated name keeps
+the `__`-prefixed form a generic's own instantiation is already mangled to inside a file,
+rather than a shorter one made just for this - a self-referential field of the same
+instantiation (`Pool<T> next`, say) still resolves to the one name every other reference to
+it already uses, project-wide.
+
+A file's own `class_name` cannot be generic: `class_name Pool<T>` is refused, since Godot
+allows one `class_name` per file however it is spelled. Write `@global class Pool<T>:`
+instead.
+
+A `@global` class's own body - its `extends` clause, a field or parameter type, an
+expression - can only name itself, a project-wide name, or something it declares itself.
+Naming a plain sibling declared at the same file's own top level - a class, struct,
+interface, trait, namespace, enum, const, var, signal or func that is not itself `@global` -
+is refused, since that sibling is not there any more once the class is extracted into its
+own script. Mark the sibling `@global` too, or move it inside the class.
+
 ## Generics
 
 ```gdscript
@@ -680,35 +734,53 @@ A condition is a symbol, `!`, `&&`, `||`, parentheses, and a comparison against
 @if GODOT_VERSION >= 4.7 && (WINDOWS || ANDROID) && !EDITOR
 ```
 
-`>`, `<`, `>=`, `<=`, `==` and `!=` are only defined for `GODOT_VERSION`, against a literal
-like `4`, `4.7` or `4.7.2`. A missing component is treated as 0, so `4.7` means "4.7.0 or
-later within the 4.7 line."
+`>`, `<`, `>=`, `<=`, `==` and `!=` are only defined for `GODOT_VERSION`. The right side is a
+version literal such as `4`, `4.7` or `4.7.2`; a missing component reads as `0`, so `4.7`
+means the literal `4.7.0` - `GODOT_VERSION == 4.7` is false on 4.7.2, `GODOT_VERSION >= 4.7`
+is true on it. Pick the operator that says what you mean.
 
-Symbols, read from Godot itself at compile time, not from a maintained list:
+Symbols, read from Godot itself, as of the moment the file compiles - not from a maintained
+list of possible values, but the platform and architecture tags below are a fixed list of
+names GATE recognises:
 
 | Symbol | Source |
 |---|---|
-| `DEBUG` | `OS.is_debug_build()` |
-| `RELEASE` | `not OS.is_debug_build()` |
-| `EDITOR` | `Engine.is_editor_hint()` |
+| `DEBUG` | `OS.is_debug_build()`, at compile time |
+| `RELEASE` | `not OS.is_debug_build()`, at compile time |
+| `EDITOR` | `Engine.is_editor_hint()`, at compile time - true while the file is being compiled by the editor, which is what an F5 run loads, not "true while playing in the editor"; a `@if EDITOR` block is baked into the `.gd` and stays there until the file compiles again |
 | `EXPORT` | true only during an export recompile |
-| a platform or architecture tag | `OS.has_feature(tag)`, upper-cased with every non-alphanumeric character turned into `_`: `WINDOWS`, `MACOS`, `LINUX`, `BSD`, `ANDROID`, `IOS`, `WEB`, `UWP`, `PC`, `MOBILE`, `X86_32`, `X86_64`, `ARM32`, `ARM64`, `RV64`, `PPC32`, `PPC64`, `UNIVERSAL` |
+| a platform or architecture tag | `OS.has_feature(tag)`, upper-cased with every non-alphanumeric character turned into `_`, for a fixed list of 18 tags: `WINDOWS`, `MACOS`, `LINUX`, `BSD`, `ANDROID`, `IOS`, `WEB`, `UWP`, `PC`, `MOBILE`, `X86_32`, `X86_64`, `ARM32`, `ARM64`, `RV64`, `PPC32`, `PPC64`, `UNIVERSAL`. A real Godot feature tag outside this list (`threads`, `movie`, `d3d12`, `etc2`, a preset's own custom feature not also listed in `gate/compiler/defines`) is an unknown-symbol error, not silently false |
 | `GODOT_VERSION` | `Engine.get_version_info()`, usable only in a comparison |
 
-Plus any name listed in the project setting `gate/compiler/defines` (a `PackedStringArray`),
-for something Godot cannot know on its own, such as `DEMO_BUILD`. A name in that list is
-known, but defaults to false until something overrides it true - the export hook does, from
-the preset's own feature list.
+Plus any name declared in the project setting `gate/compiler/defines` (a `PackedStringArray`),
+wherever it is read - a plain compile, an F5 run in the editor, a headless build. An entry is
+either `NAME` (declared, true) or `NAME=0` / `NAME=false` (declared, false; `NAME=1` and
+`NAME=true` also work, reading the same as bare `NAME`). That is how a build without Godot's
+own knowledge of something, such as `DEMO_BUILD`, gets turned on and off without touching the
+`@if` that names it: list it, or set it to `0`. Whitespace around the `=` is ignored. Taking a
+name out of the list entirely is different from setting it to `0`: any `@if` still naming it
+becomes an unknown-symbol error, the same as never having listed it, rather than a silent
+false - a name Godot cannot see for itself is only ever on or off because the project said so
+in this one place, so an unrecognised or malformed entry is a compile error naming the
+setting too, not a guess.
 
 An unknown symbol is a compile error naming the setting: a typo does not silently delete
 code from the build.
 
 At export, `.gate` files never reach the pack; only the `.gd` they built does. GATE's export
-plugin recompiles each `.gd` that has one, with the preset's own values - `EXPORT` true,
-`DEBUG` from the preset's debug flag, `EDITOR` false, and the preset's platform and custom
-feature tags - so a release build genuinely lacks a `@if DEBUG` block rather than merely not
-running it. The `.gate` and its built `.gd` on disk are never changed by an export; only the
-packed copy differs.
+plugin recompiles each `.gd` that has one, with a table built entirely from the export
+preset - `EXPORT` true, `DEBUG` from the preset's debug flag, `EDITOR` false, and every
+platform and architecture tag decided by whether the preset names it, never by the machine
+doing the exporting. A release build genuinely lacks a `@if DEBUG` block rather than merely
+not running it, and exporting for one platform from a machine running a different one does
+not leak the host's own tags: exporting for Android from a Windows machine does not also set
+`WINDOWS`. A preset's own custom feature works the same way, with one extra step: list its
+name in `gate/compiler/defines` too. That is the only way the editor can know the name exists
+at all, since `OS.has_feature()` on the machine doing the editing has never heard of it and an
+undeclared name is an unknown-symbol error long before any export runs. In an exported build
+the preset is what decides it, so a name the preset carries is true there whatever value the
+setting gave it in the editor. The `.gate` and its built `.gd` on disk are never changed by an
+export; only the packed copy differs.
 
 ## Complete example
 

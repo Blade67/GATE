@@ -80,6 +80,15 @@ var _export_registry = null
 ## content forever.
 var _export_backups: PackedStringArray = PackedStringArray()
 
+## How many files this export could not recompile. `EditorExportPlugin` has no
+## call that aborts the export outright, so a broken `@if RELEASE` branch -
+## never parsed during ordinary editor use, since `DEBUG` is true there - used
+## to surface only as `if not res.ok: return`: the editor's own build shipped
+## silently, exit code 0, wrong branch and all. Now the file is skip()'d
+## instead of packed wrong, every error is push_error'd, and _export_end()
+## says how many files this happened to.
+var _export_failures: int = 0
+
 ## Godot 4.7 offers no way to export a compiled `.gd` without the right source
 ## being on disk first. `EditorExportPlugin.add_file()` stores the exact bytes
 ## given under the exact path given, so pairing it with `skip()` on a `.gd`
@@ -91,25 +100,30 @@ var _export_backups: PackedStringArray = PackedStringArray()
 ## `_customize_resource()` is never called for a `.gd` at all, on either
 ## `--export-debug` or `--export-release`.
 ##
-## So the swap stays, made crash-safe: only a `.gd` whose `.gate` source
-## actually has a directive in it is ever opened for writing (GatePreprocess.
-## has_directive(), the same cheap check the preprocessor's own fast path and
-## the build cache use), the original text is saved to a sibling
-## `.gate_export_bak` before the write, and `_export_end()` restores from that
-## file and deletes it. Godot runs export in-process, so a crash between the
-## write and `_export_end()` is a real path, not a theoretical one -
-## `restore_leftover_backups()` is called once, when the plugin attaches, so a
-## backup an earlier session left behind is put back and reported the next
-## time the editor opens, not left silently wrong.
+## So the working file is swapped, and the swap is made crash-safe. Only a `.gd`
+## whose `.gate` source actually has a directive in it is ever opened for
+## writing (`GatePreprocess.has_directive()`, the same cheap check the
+## preprocessor's own fast path and the build cache use), the original text is
+## saved to a sibling `.gate_export_bak` before the write, and `_export_end()`
+## restores from that file and deletes it. Godot runs export in-process, so a
+## crash between the write and `_export_end()` is a real path, not a theoretical
+## one: `restore_leftover_backups()` runs once, when the plugin attaches, so a
+## backup an earlier session left behind is put back and reported the next time
+## the editor opens, not left silently wrong.
 func _export_begin(_features: PackedStringArray, _is_debug: bool, _path: String, _flags: int) -> void:
 	_export_registry = null
 	_export_backups = PackedStringArray()
+	_export_failures = 0
 
 
 func _export_end() -> void:
 	for path in _export_backups:
 		_restore_one(path)
 	_export_backups = PackedStringArray()
+	if _export_failures > 0:
+		push_error(("[GATE] export finished with %d file(s) that failed to recompile with "
+			+ "this preset's own compile-time symbols (see the errors above) and were left "
+			+ "out of the pack rather than shipped with the wrong branch.") % _export_failures)
 
 
 ## Writes `path`'s current bytes to `path + BACKUP_SUFFIX`, returning false (and
@@ -154,6 +168,18 @@ static func restore_leftover_backups(root: String) -> void:
 			+ "finish; restored from %s.") % [real_path, bak_path])
 
 
+## Not `GateProject.walks_into()`: that rule skips any directory literally
+## named `addons`, which is right for GateProject's own file discovery (an
+## `addons/` folder holds other plugins' code, not project `.gate` sources to
+## compile) but wrong here. `_recompile_for_export()` swaps any `.gd` with a
+## directive-bearing `.gate` sibling with no such exclusion - a user's own
+## `.gate` under `res://addons/their_plugin/` swaps exactly like any other -
+## so scanning for a leftover backup skipped the one place it could most
+## plausibly be, and stranded it there forever.
+static func _walks_into_for_backups(d: DirAccess, n: String, p: String) -> bool:
+	return not n.begins_with(".") and not d.is_link(p) and not FileAccess.file_exists(p.path_join("project.godot"))
+
+
 static func _scan_for_backups(dir: String, found: Array[String]) -> void:
 	var d: DirAccess = DirAccess.open(dir)
 	if d == null:
@@ -163,7 +189,7 @@ static func _scan_for_backups(dir: String, found: Array[String]) -> void:
 	while n != "":
 		var p: String = dir.path_join(n)
 		if d.current_is_dir():
-			if GateProject.walks_into(d, n, p):
+			if _walks_into_for_backups(d, n, p):
 				_scan_for_backups(p, found)
 		elif n.ends_with(BACKUP_SUFFIX):
 			found.append(p)
@@ -175,9 +201,11 @@ static func _scan_for_backups(dir: String, found: Array[String]) -> void:
 ## exported `.gd` still carries every `@if` block as ordinary code unless this
 ## recompiles it with the preset's own symbols. `features` is the same set
 ## Godot resolved for this file: the platform, "debug" or "release", and the
-## preset's own custom_features - GateDefines.overrides_from_features() turns
-## it into the table an `@if` is judged against, so a release export genuinely
-## lacks a `@if DEBUG` block rather than merely not running it.
+## preset's own custom_features. `GateDefines.table_for_export()` builds the
+## table an `@if` is judged against entirely from `features`, never from this
+## machine's own platform, so a release export genuinely lacks a `@if DEBUG`
+## block, and an Android export never inherits `WINDOWS` from the host doing
+## the exporting.
 func _recompile_for_export(path: String, gate_path: String, features: PackedStringArray) -> void:
 	var f: FileAccess = FileAccess.open(gate_path, FileAccess.READ)
 	if f == null:
@@ -189,11 +217,24 @@ func _recompile_for_export(path: String, gate_path: String, features: PackedStri
 	if _export_registry == null:
 		var project: GateProject = GateProject.new()
 		_export_registry = project.index("res://")
-	var overrides: Dictionary = GateDefines.overrides_from_features(features)
-	var defines: Dictionary = GateDefines.table(overrides)
+	var defines: Dictionary = GateDefines.table_for_export(features)
 	var compiler: GateCompiler = GateCompiler.new()
 	var res: GateCompiler._Result = compiler.compile(src, gate_path, _export_registry, defines)
 	if not res.ok:
+		_export_failures += 1
+		for d in res.diagnostics.items:
+			if d.level == GateDiagnostics._Level.ERROR:
+				push_error("[GATE] %s: %s" % [gate_path, d.format()])
+		push_error(("[GATE] %s failed to recompile with this export preset's symbols; left out "
+			+ "of the pack rather than shipped as the editor's own build.") % gate_path)
+		# Nothing available makes a CLI export's own exit code non-zero for
+		# this, checked by experiment - but the editor's own export dialog
+		# has a message list, and this is the call that reaches it.
+		var platform: EditorExportPlatform = get_export_platform()
+		if platform != null:
+			platform.add_message(EditorExportPlatform.EXPORT_MESSAGE_ERROR, "GATE",
+				"%s failed to recompile with this export preset's symbols" % gate_path)
+		skip()
 		return
 	# An earlier export that swapped this file and never reached _export_end()
 	# leaves its backup sitting here with the true original, and `path` itself

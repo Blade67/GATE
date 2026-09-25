@@ -46,13 +46,22 @@ static func has_directive(src: String) -> bool:
 static func run(src: String, diags: GateDiagnostics, defines: Dictionary) -> String:
 	if not has_directive(src):
 		return src
+	for msg in (defines.get(GateDefines.ERRORS_KEY, []) as Array):
+		diags.error(String(msg), 1, 1, COND_HINT)
 	var inside: Dictionary = GateCompiler.lines_inside_strings(src)
 	var lines: PackedStringArray = src.split("\n")
 	var stack: Array[_Frame] = []
 	for i in lines.size():
 		if inside.has(i):
+			# Inside a triple-quoted string: never a directive, but still ordinary code as far as
+			# blanking goes - an inactive frame blanks it exactly like any other line.
+			if not _active(stack):
+				lines[i] = ""
 			continue
-		var trimmed: String = lines[i].strip_edges()
+		# Stripped before _kind_of() looks at it: GDScript needs no space before a `#`, so
+		# "@else#x" is the token "@else" plus a comment. Seen whole it matched no directive
+		# at all and was treated as ordinary code, blanking an @else branch with no error.
+		var trimmed: String = _strip_trailing_comment(lines[i].strip_edges())
 		var kind: String = _kind_of(trimmed)
 		if kind == "":
 			if not _active(stack):
@@ -64,6 +73,15 @@ static func run(src: String, diags: GateDiagnostics, defines: Dictionary) -> Str
 	for f in stack:
 		diags.error("@if on this line is never closed with a matching @endif", f.line, 1, COND_HINT)
 	return "\n".join(lines)
+
+
+## A directive line never legitimately contains `#`, so one there is always a trailing
+## comment - the one thing a GDScript user expects to be able to add anywhere.
+static func _strip_trailing_comment(trimmed: String) -> String:
+	var at: int = trimmed.find("#")
+	if at < 0:
+		return trimmed
+	return trimmed.substr(0, at).strip_edges()
 
 
 static func _kind_of(trimmed: String) -> String:

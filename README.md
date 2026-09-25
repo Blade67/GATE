@@ -20,6 +20,7 @@ Bugs and feature requests go in [issues](https://github.com/Blade67/GATE/issues)
    * [Null safety](#null-safety)
    * [Structs](#structs)
    * [Interfaces, traits and namespaces](#interfaces-traits-and-namespaces)
+   * [Global classes](#global-classes)
    * [Generics](#generics)
    * [Unions, tuples and typed callables](#unions-tuples-and-typed-callables)
    * [Type aliases and typed scenes](#type-aliases-and-typed-scenes)
@@ -217,6 +218,21 @@ trait Poolable:
 class Enemy extends CharacterBody2D implements Damageable with Poolable:
 	func take_damage(amount: int) -> void:
 		pass
+```
+
+### Global classes
+
+`@global` on a top-level class gives it its own Godot script beside the file that
+declares it, carrying `class_name` - a real, attachable script that shows up in the
+Create Node dialog, rather than an inner class of the `.gate`'s own output. The name is
+project-wide, the same as a file's own `class_name`.
+
+##### Example
+```gdscript
+# res://src/bullet.gate
+@global class Bullet extends Node2D:
+	var speed: float = 400.0
+# writes res://src/bullet.Bullet.gd, carrying `class_name Bullet`
 ```
 
 ### Generics
@@ -525,7 +541,14 @@ iterate, so it pays off only if you make more than about 1.3 passes per rebuild.
   after the file is on disk.
 - **Interfaces do not fall back to structural checks.** `x is SomeInterface` is false for a
   class GATE did not compile.
-- **Namespaced classes cannot be attached to nodes** as their script.
+- **Namespaced classes cannot be attached to nodes** as their script. A top-level class
+  marked `@global` can; `@global` does not reach inside a `namespace`.
+- **A `@global` class's own body can only name itself, a project-wide name, or something it
+  declares itself** - not a plain sibling declared at the same file's own top level: a
+  class, struct, interface, trait, namespace, enum, const, var, signal or func that is not
+  itself `@global`, since that sibling is not there any more once the class is extracted
+  into its own script. Refused at compile time, naming the sibling; mark it `@global` too,
+  or move it inside the class.
 - **Saving a `.gate` in the editor rewrites its indentation** to whatever
   *Text Editor -> Behavior -> Indent* says, as Godot does for a `.gd`. GATE reads tabs
   and spaces alike, so the output is unchanged either way.

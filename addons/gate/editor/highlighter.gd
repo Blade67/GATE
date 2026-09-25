@@ -362,12 +362,15 @@ func _prose_color(kind: int) -> Color:
 	return _string_color
 
 
-## Spans of `[start, end, colour, over_member]`. The last flag is false where layer
-## one calling the word a member access wins instead, which is what keeps
-## `xform.basis` and `pool._items` in the member colour.
+## `@if` / `@elif` / `@else` / `@endif` match `_re_annotation` too, since they
+## are `@word` like any real annotation - excluded there in `_spans()` below
+## and coloured instead by `_re_directive`, in the control-flow colour.
 const DIRECTIVE_WORDS := {"@if": true, "@elif": true, "@else": true, "@endif": true}
 
 
+## Spans of `[start, end, colour, over_member]`. The last flag is false where layer
+## one calling the word a member access wins instead, which is what keeps
+## `xform.basis` and `pool._items` in the member colour.
 func _spans(text: String, prose: Array) -> Array:
 	var out: Array = []
 	for span in prose:

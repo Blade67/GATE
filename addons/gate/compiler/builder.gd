@@ -19,6 +19,14 @@ var hashes: Dictionary = {}
 
 var out_hashes: Dictionary = {}
 
+## A `@global` extra's own last-written hash, keyed by the extra's path. Not
+## `out_hashes`, which is keyed by the *gate* path and means the main output.
+var extra_out_hashes: Dictionary = {}
+
+## The extra's own `.map` hash. `_proof` only tracks the main output's map, so an
+## extra compared against it never matches and the build never settles.
+var extra_map_hashes: Dictionary = {}
+
 var unverified: Dictionary = {}
 
 var _last_good: Dictionary = {}
@@ -97,6 +105,14 @@ var _saved_text: String = ""
 var _proof: Dictionary = {}
 var _outside: String = ""
 
+## gate_path -> Array[String], the `@global` extra paths this process last wrote.
+## In memory only, so a cold start knows of none until the source is recompiled.
+var _known_extras: Dictionary = {}
+
+## Dir path -> the `.gd` filenames it holds, for `_forget_shrunk_extras`'s scan.
+## Without it, 150 sources in one flat directory measured 2.2x slower.
+var _dir_gd_cache: Dictionary = {}
+
 
 class _Heard extends Logger:
 	var path: String = ""
@@ -116,6 +132,7 @@ class _Heard extends Logger:
 func _clear() -> void:
 	errors = PackedStringArray()
 	warnings = PackedStringArray()
+	_dir_gd_cache = {}
 	changed = 0
 	failed = 0
 	unchanged = 0
@@ -229,16 +246,15 @@ func build(root: String = "res://") -> Dictionary:
 	_dep_keys = _dependency_keys(gate_files, registry, root)
 
 	var sig: String = registry.signature()
-	# Folds in the type-names-as-values setting: flipping it changes every file's
-	# output, so it has to invalidate every file's cache entry the same way a
-	# registry change does.
+	# Folds in every feature flag: flipping one changes what a file compiles to, so it
+	# has to invalidate every cache entry the way a registry change does.
 	var reg_sig: String = "%d:%d:%s:%s" % [sig.hash(), sig.length(), _shadowing_globals(registry),
-		"1" if GateTypes.type_names_as_values() else "0"]
+		GateFeatures.cache_key()]
 
 	var deferred: Dictionary = {}
 	_skipped_now = []
 	for path in gate_files:
-		match compile_file(path, registry, deferred, reg_sig):
+		match compile_file(path, registry, deferred, reg_sig, root):
 			1: changed += 1
 			0: unchanged += 1
 			-1: failed += 1
@@ -247,7 +263,7 @@ func build(root: String = "res://") -> Dictionary:
 		_skipped_now = []
 		for path2 in again:
 			_failed_at.erase(path2)
-			match compile_file(path2, registry, deferred, reg_sig):
+			match compile_file(path2, registry, deferred, reg_sig, root):
 				1: changed += 1
 				0: unchanged += 1
 				-1: failed += 1
@@ -377,6 +393,10 @@ func build(root: String = "res://") -> Dictionary:
 		var info: Dictionary = deferred[out_path]
 		if not failed_outputs.has(out_path):
 			continue
+		# `changed`/`unchanged` are counted once per *source*, never once per extra.
+		# Decrementing here for an extra too double-counts one source and can drive
+		# `changed` negative; `plugin.gd` only rescans when `changed > 0`.
+		var is_main: bool = out_path == String(info["gate"]).get_basename() + ".gd"
 		var back: Dictionary = _last_good.get(out_path, info)
 		_last_good.erase(out_path)
 		if back["existed"]:
@@ -402,11 +422,19 @@ func build(root: String = "res://") -> Dictionary:
 				DirAccess.remove_absolute(
 					ProjectSettings.globalize_path(out_path + ".map"))
 			_resync(out_path, back["prev"])
-			out_hashes[info["gate"]] = String(back["prev"]).md5_text()
-		if info["was"] == 1:
-			changed -= 1
-		else:
-			unchanged -= 1
+			if is_main:
+				out_hashes[info["gate"]] = String(back["prev"]).md5_text()
+			else:
+				extra_out_hashes[out_path] = String(back["prev"]).md5_text()
+				if back.get("prev_map_existed", false):
+					extra_map_hashes[out_path] = String(back["prev_map"]).md5_text()
+				else:
+					extra_map_hashes.erase(out_path)
+		if is_main:
+			if info["was"] == 1:
+				changed -= 1
+			else:
+				unchanged -= 1
 		failed += 1
 		var why: String = _users_error(heard, info["source"], _read_text(info["gate"]), info.get("map", []))
 		var kept: String = ("the previous %s has been put back, and the output that does not "
@@ -533,9 +561,18 @@ func _settle(root: String, before: Dictionary, result: Dictionary, registry, def
 	var was: Dictionary = before["scripts"]
 	var now: Dictionary = after["scripts"]
 	var touched: Array = []
+	# The gate a touched file belongs to is recorded here, not derived from the
+	# filename below: that is right for a main output and wrong for an extra
+	# (`pool.Foo.gd` -> `pool.Foo.gate`, a source that does not exist).
+	var file_gate: Dictionary = {}
+	var file_is_main: Dictionary = {}
 	for o in deferred:
+		var gate_of: String = String(deferred[o]["gate"])
+		var main_out: bool = String(o) == gate_of.get_basename() + ".gd"
 		for f1 in [String(o), String(o) + ".map"]:
 			touched.append(f1)
+			file_gate[f1] = gate_of
+			file_is_main[f1] = main_out
 			if FileAccess.file_exists(f1):
 				now[f1] = FileAccess.get_md5(f1)
 			elif now.has(f1):
@@ -544,15 +581,22 @@ func _settle(root: String, before: Dictionary, result: Dictionary, registry, def
 		if was.get(f, "") == now.get(f, ""):
 			continue
 		var gd: String = String(f).trim_suffix(".map")
-		var gate: String = gd.get_basename() + ".gate"
+		var gate: String = String(file_gate.get(f, gd.get_basename() + ".gate"))
 		var proof: Dictionary = _proof.get(gate, {})
 		var h: String = String(hashes.get(gate, ""))
 		if proof.is_empty() or h == "" or String(proof["h"]) != h or String(_failed_at.get(gate, "")) == h:
 			return
+		var is_main_file: bool = bool(file_is_main.get(f, true))
 		if String(f).ends_with(".map"):
-			if String(proof["map"]) != String(now[f]):
+			if is_main_file:
+				if String(proof["map"]) != String(now[f]):
+					return
+			elif String(extra_map_hashes.get(gd, "")) != String(now[f]):
 				return
-		elif _file_hash(gd) != String(out_hashes.get(gate, "")):
+		elif is_main_file:
+			if _file_hash(gd) != String(out_hashes.get(gate, "")):
+				return
+		elif _file_hash(gd) != String(extra_out_hashes.get(gd, "")):
 			return
 	_settled_world = after
 	_settled_world["reached"] = _reached.duplicate()
@@ -1107,7 +1151,10 @@ static func _shadowing_globals(registry) -> String:
 	return ",".join(out)
 
 
-func compile_file(gate_path: String, registry = null, deferred = null, reg_sig: String = "") -> int:
+func compile_file(gate_path: String, registry = null, deferred = null, reg_sig: String = "",
+		root: String = "res://") -> int:
+	if deferred == null:
+		_dir_gd_cache = {}   ## a standalone call, outside build()'s own one-clear-per-build
 	var f: FileAccess = FileAccess.open(gate_path, FileAccess.READ)
 	if f == null:
 		errors.append("[GATE] cannot read %s" % gate_path)
@@ -1124,7 +1171,8 @@ func compile_file(gate_path: String, registry = null, deferred = null, reg_sig: 
 	var h: String = "%d:%d:%s:%s:%s%d:%s%s" % [src.hash(), src.length(), reg_sig, chain,
 		"t" if unit.begins_with(TAB) else "s", unit.length(), String(_dep_keys.get(gate_path, "")),
 		(":" + _defines_sig) if has_directive else ""]
-	if hashes.get(gate_path) == h and not unverified.has(gate_path) and _failed_at.get(gate_path, "") != h:
+	if hashes.get(gate_path) == h and not unverified.has(gate_path) and _failed_at.get(gate_path, "") != h \
+			and _extras_present(gate_path):
 		var seen: Dictionary = _world_now.get("scripts", {})
 		var proof: Dictionary = _proof.get(gate_path, {})
 		if seen.has(out_path) and seen.has(map_path) and String(proof.get("h", "")) == h:
@@ -1175,9 +1223,11 @@ func compile_file(gate_path: String, registry = null, deferred = null, reg_sig: 
 	if (hashes.get(gate_path) == h and not unverified.has(gate_path)
 			and FileAccess.file_exists(out_path)
 				and FileAccess.file_exists(map_path)
-				and _file_hash(out_path) == out_hashes.get(gate_path)):
+				and _file_hash(out_path) == out_hashes.get(gate_path)
+				and _extras_present(gate_path)):
 		return 0
-	if _saved.has(gate_path) and _saved_holds(gate_path, src, h, out_path, map_path):
+	if _saved.has(gate_path) and _saved_holds(gate_path, src, h, out_path, map_path) \
+			and _extras_present(gate_path):
 		return 0
 
 	compiled_log.append(gate_path)
@@ -1203,6 +1253,30 @@ func compile_file(gate_path: String, registry = null, deferred = null, reg_sig: 
 			said.append("[GATE] " + d.format())
 	warnings.append_array(said)
 
+	# A `@global` extra is probed the way the main output is, before either is written,
+	# so a bad one fails the whole compile and leaves nothing on disk for this source.
+	# Only for a standalone `compile_file`; a real `build()` checks extras through
+	# `deferred` instead.
+	if deferred == null:
+		for entry in res.extra:
+			var ex: Dictionary = entry
+			var ex_path: String = String(ex["path"])
+			var ex_source: String = String(ex["source"])
+			if not output_parses(ex_source, ex_path):
+				var ex_rej: String = ex_path + ".rejected"
+				var ex_rf: FileAccess = FileAccess.open(ex_rej, FileAccess.WRITE)
+				if ex_rf != null:
+					ex_rf.store_string(ex_source)
+					ex_rf.close()
+				_say_why(ex_source, ex_rej)
+				errors.append(("[GATE] %s: GATE compiled @global class %s without errors, but "
+					+ "Godot will not load the script it produced, so nothing was written for "
+					+ "this source. The rejected output is saved as %s - Godot's own parse "
+					+ "error is printed above this message. This is a GATE bug; keep the .gate "
+					+ "and .rejected files together if you report it.")
+					% [gate_path, String(ex.get("class_name", ex_path)), ex_rej])
+				return RESULT_UNLINKED
+
 	if deferred == null and not output_parses(res.source, out_path):
 		var rej: String = out_path + ".rejected"
 		var rf: FileAccess = FileAccess.open(rej, FileAccess.WRITE)
@@ -1217,6 +1291,13 @@ func compile_file(gate_path: String, registry = null, deferred = null, reg_sig: 
 			+ "keep the .gate and .rejected files together if you report it.")
 			% [gate_path, out_path, rej])
 		return RESULT_UNLINKED
+
+	# Every `@global` class's own script, before anything of the main output is
+	# written: a hand-written file already at that path fails the whole compile rather
+	# than being clobbered. Each extra also gets a `deferred` entry, so `build()`'s own
+	# validate and roll-back loop checks it exactly like the main output.
+	if not _write_global_extras(gate_path, res.extra, src, root, h, deferred):
+		return -1
 
 	hashes[gate_path] = h
 	out_hashes[gate_path] = res.source.md5_text()
@@ -1272,6 +1353,165 @@ func compile_file(gate_path: String, registry = null, deferred = null, reg_sig: 
 	_proof[gate_path]["gd"] = FileAccess.get_md5(out_path)
 	_clear_rejected(out_path)
 	return 1
+
+
+## Whether every `@global` extra this process wrote for `gate_path` is still on disk.
+## The source hash alone does not prove it: one can be deleted on its own.
+func _extras_present(gate_path: String) -> bool:
+	for p in _known_extras.get(gate_path, []):
+		if not (FileAccess.file_exists(String(p)) and FileAccess.file_exists(String(p) + ".map")):
+			return false
+	return true
+
+
+## Writes every `@global` class's own script the way the main output is written:
+## never clobbers a file GATE did not generate, adopts an orphaned banner whose
+## source is gone, and skips the write when the file already holds this text.
+## False when any extra could not be written safely.
+func _write_global_extras(gate_path: String, extras: Array, src: String, root: String,
+		h: String = "", deferred = null) -> bool:
+	var paths: Array = []
+	var ok: bool = true
+	for entry in extras:
+		var ex: Dictionary = entry
+		var ex_path: String = String(ex["path"])
+		var ex_map: String = ex_path + ".map"
+		paths.append(ex_path)
+		if FileAccess.file_exists(ex_path) and not _is_generated(ex_path, gate_path):
+			var named: String = _banner_of(ex_path)
+			if named != "":
+				errors.append(("[GATE] %s would overwrite %s, which is %s's output: its first "
+					+ "line names that file, so this looks like a copy of it. Delete %s and "
+					+ "GATE will write this class's own output.") % [gate_path, ex_path, named, ex_path])
+				ok = false
+			elif _was_ours(ex_path, gate_path):
+				_warn_once("header gone " + ex_path, ("[GATE] the GATE header is gone from %s, "
+					+ "so it is yours now and GATE leaves it alone. Delete %s when you are done; "
+					+ "until then its output is not updated.") % [ex_path, gate_path])
+			else:
+				errors.append(("[GATE] %s declares @global class %s, which would write %s - a "
+					+ "file that already exists and was not generated by GATE. Rename the class, "
+					+ "or move the existing file out of the way.")
+					% [gate_path, String(ex["class_name"]), ex_path])
+				ok = false
+			continue
+		var adopted: String = _adopted_banner(ex_path, gate_path)
+		if adopted != "":
+			warnings.append(("[GATE] %s carries a GATE banner naming %s, which no longer "
+				+ "exists, so it is being treated as %s's output and overwritten. If you meant "
+				+ "to keep it as hand-written GDScript, delete the banner from it.")
+				% [ex_path, adopted, gate_path])
+		var ex_source: String = String(ex["source"])
+		var ex_deps: Array = ex.get("deps", [])
+		var had_output: bool = FileAccess.file_exists(ex_path)
+		var prev_text: String = ""
+		if had_output:
+			var prev: FileAccess = FileAccess.open(ex_path, FileAccess.READ)
+			if prev != null:
+				prev_text = prev.get_as_text()
+				prev.close()
+			if prev_text == ex_source or _same_but_indent(prev_text, ex_source):
+				if not _map_matches(ex_map, gate_path, ex["map"], prev_text, src):
+					_write_map(ex_path, gate_path, ex["map"], prev_text, src)
+				extra_out_hashes[ex_path] = prev_text.md5_text()
+				extra_map_hashes[ex_path] = FileAccess.get_md5(ex_map)
+				if deferred != null:
+					deferred[ex_path] = {
+						"gate": gate_path, "source": prev_text, "deps": ex_deps,
+						"prev": prev_text, "prev_map": _read_text(ex_map),
+						"prev_map_existed": FileAccess.file_exists(ex_map), "map": ex["map"], "h": h,
+						"existed": true, "was": 0,
+					}
+				continue
+		var o: FileAccess = FileAccess.open(ex_path, FileAccess.WRITE)
+		if o == null:
+			errors.append("[GATE] cannot write %s" % ex_path)
+			ok = false
+			continue
+		if deferred != null:
+			deferred[ex_path] = {
+				"gate": gate_path, "source": ex_source, "deps": ex_deps,
+				"prev": prev_text, "prev_map": _read_text(ex_map),
+				"prev_map_existed": FileAccess.file_exists(ex_map), "map": ex["map"], "h": h,
+				"existed": had_output, "was": 1,
+			}
+		o.store_string(ex_source)
+		o.close()
+		_wrote_session[ex_path] = true
+		_write_map(ex_path, gate_path, ex["map"], ex_source, src)
+		extra_out_hashes[ex_path] = ex_source.md5_text()
+		extra_map_hashes[ex_path] = FileAccess.get_md5(ex_map)
+	if ok:
+		_known_extras[gate_path] = paths
+		# Always called: `_known_extras` is in memory only, so the session right after
+		# `@global` was removed has never seen the extra it now has to trash.
+		_forget_shrunk_extras(gate_path, paths, root)
+	return ok
+
+
+## A source that no longer declares a `@global` class leaves its old extra behind
+## with nothing to mark it stale, since the orphan sweep only looks at sources that
+## are gone. Scans beside the source and treats a match as any other orphan.
+func _forget_shrunk_extras(gate_path: String, current_paths: Array, root: String) -> void:
+	var dir: String = gate_path.get_base_dir()
+	var names: Variant = _gd_names_in(dir)
+	if names == null:
+		return
+	# Keyed by `same_path`, not a plain string set: that compare is case-insensitive on
+	# Windows, and a case-sensitive lookup once trashed a main output and a valid extra
+	# this same build had just written.
+	var still: Array = current_paths.duplicate()
+	still.append(gate_path.get_basename() + ".gd")   ## the main output, not an extra
+	# Every extra this source could have written is named `<basename>.<Class>.gd`
+	# (`_emit_global_class`'s convention), so a name without that prefix cannot be one -
+	# a string compare, before `_was_ours` parses a `.map` for nothing.
+	var prefix: String = gate_path.get_basename().get_file() + "."
+	# Lower-cased on Windows, matching `same_path`.
+	var prefix_cmp: String = prefix.to_lower() if _windows() else prefix
+	for n in (names as PackedStringArray):
+		var n_cmp: String = n.to_lower() if _windows() else n
+		if not n_cmp.begins_with(prefix_cmp):
+			continue
+		var p2: String = dir.path_join(n)
+		if not _path_among(p2, still) and _was_ours(p2, gate_path):
+			if _as_written(p2) and _inside(p2, root) and _trash(p2):
+				removed += 1
+				removed_paths.append(p2)
+				warnings.append(("[GATE] moved %s to the trash, with its map and .uid: %s no "
+					+ "longer declares the @global class it came from, and it was unchanged "
+					+ "since.") % [p2, gate_path])
+			else:
+				_warn_once("orphan " + p2, ("[GATE] %s was generated from a @global class "
+					+ "%s no longer declares; delete it if you no longer need it.")
+					% [p2, gate_path])
+
+
+## The `.gd` filenames directly inside `dir`, cached: without it every source in a
+## flat directory relisted it and reread every sibling's `.map`. Null if unopenable.
+func _gd_names_in(dir: String) -> Variant:
+	if _dir_gd_cache.has(dir):
+		return _dir_gd_cache[dir]
+	var d: DirAccess = DirAccess.open(dir)
+	if d == null:
+		_dir_gd_cache[dir] = null
+		return null
+	var out: PackedStringArray = PackedStringArray()
+	d.list_dir_begin()
+	var n: String = d.get_next()
+	while n != "":
+		if not d.current_is_dir() and n.get_extension().to_lower() == "gd" and not d.is_link(dir.path_join(n)):
+			out.append(n)
+		n = d.get_next()
+	d.list_dir_end()
+	_dir_gd_cache[dir] = out
+	return out
+
+
+static func _path_among(p: String, paths: Array) -> bool:
+	for q in paths:
+		if same_path(p, String(q)):
+			return true
+	return false
 
 
 static func _same_but_indent(disk: String, ours: String) -> bool:
@@ -1340,7 +1580,9 @@ func _orphans_in(dir: String, root: String) -> void:
 				_orphans_in(p, root)
 		elif n.get_extension().to_lower() == "gd" and not d.is_link(p):
 			var gate: String = _banner_of(p)
-			if (gate != "" and same_path(gate.get_basename() + ".gd", p)
+			# A `@global` class's output name does not match its source's basename
+			# (`pool.Foo.gd` from `pool.gate`), so its `.map` sidecar is what identifies it.
+			if (gate != "" and (same_path(gate.get_basename() + ".gd", p) or _was_ours(p, gate))
 					and not FileAccess.file_exists(gate)):
 				if _as_written(p) and _inside(p, root) and _trash(p):
 					removed += 1
