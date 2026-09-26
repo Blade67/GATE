@@ -54,5 +54,6 @@ func _load(path: String, original_path: String, use_sub_threads: bool, cache_mod
 	file.close()
 	var made: ScriptExtension = _Script.new()
 	made.set_source_code(text)
-	made.take_over_path(path)
+	if cache_mode != CACHE_MODE_IGNORE and cache_mode != CACHE_MODE_IGNORE_DEEP:
+		made.take_over_path(path)
 	return made

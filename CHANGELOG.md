@@ -4,6 +4,16 @@
 
 ### Added
 
+- **Attach Script creates the `.gate`.** Choosing GATE in the Scene dock's *Attach
+  Script* dialog used to be refused, with a sentence explaining that a node has to run
+  the compiled `.gd`. It now writes the `.gate` from the chosen template, compiles it
+  straight away rather than waiting for the next filesystem scan, and attaches the
+  generated `.gd` to the selected node, as one undoable step. The reason behind the old
+  refusal still holds: a `.gate` is never the script on a node, in the editor, in the
+  saved scene, or at run time. The `.gate` is what stays open in the script editor,
+  since that is the file you edit. If the build fails - most often because a
+  hand-written `.gd` already sits where the output would go - GATE puts the build's own
+  error on screen, leaves the written `.gate` on disk, and attaches nothing.
 - **Conditional compilation: `@if` / `@elif` / `@else` / `@endif`** (issue #2). Resolved
   before the lexer sees the file, so a dropped block is never parsed - it can hold code
   that would not compile at all - and is blanked rather than deleted, so every line after
@@ -145,6 +155,11 @@
 
 ### Fixed
 
+- **Loading a `.gate` with the cache ignored took the path off the open one.** The
+  loader called `take_over_path()` whatever the caller asked for, so a load that wanted
+  its own private copy left the script the editor was showing with an empty
+  `resource_path`: it went on displaying the file, and anything answered from the path
+  had nothing to work from. An ignore-mode load takes nothing over now.
 - **Dragging a node from the Scene dock into a `.gate` was refused** (issue #11). The Scene
   dock asks the script for its instance base type and nothing else before it will accept the
   drop, and a `.gate` answered nothing, so `ClassDB.is_parent_class("", "Node")` was false

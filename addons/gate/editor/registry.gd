@@ -12,7 +12,6 @@ extends RefCounted
 const LANGUAGE_PATH: String = "res://addons/gate/editor/language.gd"
 
 const ACTIVE: StringName = &"gate_active"
-const ATTACHING: StringName = &"gate_attaching"
 const LANGUAGE: StringName = &"gate_language"
 const SCRIPTS: StringName = &"gate_scripts"
 const RETIRED: StringName = &"gate_retired"
@@ -26,17 +25,6 @@ static func set_active(value: bool) -> void:
 	Engine.set_meta(ACTIVE, value)
 	if value:
 		Engine.set_meta(RETIRED, false)
-
-
-## True only while the Scene dock's Attach Script dialog is on screen. The language
-## refuses a path while it is, which is how GATE stays out of the one flow that would
-## put a `.gate` on a node.
-static func is_attaching() -> bool:
-	return bool(Engine.get_meta(ATTACHING, false))
-
-
-static func set_attaching(value: bool) -> void:
-	Engine.set_meta(ATTACHING, value)
 
 
 ## Never null. A GATEScript whose language is null crashes the editor, and the one

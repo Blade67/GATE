@@ -13,9 +13,6 @@ already released is in [CHANGELOG.md](CHANGELOG.md).
   method to a file most of the project goes through costs about 35 s on a 211-file
   project, where a body edit in the same file costs about 2 s. Tracking which member
   each file actually reads should bring the first case close to the second.
-- **Attach Script creates the `.gate`.** Choosing GATE in the Scene dock's Attach
-  Script dialog refuses today, because a node has to run the compiled `.gd`. It should
-  create the `.gate`, compile it, and attach the `.gd` that appears beside it.
 
 ## Considered
 

@@ -133,6 +133,17 @@ func compile_all() -> void:
 	set_process(_builder.indexed == 0)
 
 
+## One build, now, with the errors that name `path`. Attach Script needs the `.gd`
+## before it can put it on a node.
+func compile_for(path: String) -> PackedStringArray:
+	compile_all()
+	var said: PackedStringArray = PackedStringArray()
+	for e in _builder.errors:
+		if String(e).contains(path):
+			said.append(e)
+	return said
+
+
 func _process(_delta: float) -> void:
 	if _compiling or _builder.indexed > 0:
 		set_process(false)

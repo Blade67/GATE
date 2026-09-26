@@ -77,6 +77,7 @@ func attach(plugin: EditorPlugin) -> void:
 	_plugin.add_context_menu_plugin(EditorContextMenuPlugin.CONTEXT_SLOT_FILESYSTEM_CREATE, _context)
 
 	_dialogs = _CreateDialog.new()
+	_dialogs.integration = self
 
 	_breakpoints = _Breakpoints.new()
 	_plugin.add_debugger_plugin(_breakpoints)
@@ -197,6 +198,19 @@ func _apply_icon() -> void:
 func new_script_in(directory: String) -> void:
 	if _dialogs != null:
 		_dialogs.open_new(directory)
+
+
+## One build, now, and whatever it said about `path`. The Attach Script flow cannot
+## wait for the filesystem scan that normally starts a build: it has to put the
+## output on a node while the user is still looking at the dialog.
+func compile_now(path: String) -> PackedStringArray:
+	if _plugin == null:
+		return PackedStringArray(["%s was written, but GATE is not running." % path])
+	return _plugin.compile_for(path)
+
+
+func undo_redo() -> EditorUndoRedoManager:
+	return _plugin.get_undo_redo() if _plugin != null else null
 
 
 func _queue_refresh() -> void:

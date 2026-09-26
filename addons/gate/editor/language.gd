@@ -10,7 +10,6 @@ extends ScriptLanguageExtension
 ## everything here that would claim to execute a `.gate` refuses instead.
 
 const _Script: GDScript = preload("res://addons/gate/editor/script.gd")
-const _Registry: GDScript = preload("res://addons/gate/editor/registry.gd")
 const _Lookup: GDScript = preload("res://addons/gate/editor/lookup.gd")
 const _Complete: GDScript = preload("res://addons/gate/editor/complete.gd")
 const _Warnings: GDScript = preload("res://addons/gate/editor/warnings.gd")
@@ -312,17 +311,15 @@ func _past_comments(tokens: Array, from: int) -> int:
 	return i
 
 
-## The one place GATE says no.
+## Where GATE used to say no.
 ##
-## The Scene dock's Attach Script dialog puts the script it creates on a node, and a
-## `.gate` cannot be that script: it never instantiates and has no methods, so the
-## node would look right in the editor and do nothing at run time. The dialog asks
-## here before enabling its OK button and shows what comes back, so refusing is both
-## the block and the explanation.
+## A `.gate` still cannot be the script on a node: it never instantiates, and Godot
+## drops it. What changed is that the Scene dock's Attach Script dialog no longer
+## has to be refused to keep that true. `create_dialog.gd` watches the dialog, has
+## the `.gate` it writes compiled, and puts the generated `.gd` on the node, so the
+## node runs the `.gd` exactly as it did before. Nothing else about a path is wrong,
+## so nothing is refused here.
 func _validate_path(path: String) -> String:
-	if _Registry.is_attaching():
-		return ("GATE scripts cannot be attached to a node. Create the .gate first, "
-			+ "then attach the .gd GATE compiles beside it.")
 	return ""
 
 

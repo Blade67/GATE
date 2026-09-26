@@ -1,8 +1,8 @@
 @tool
 extends RefCounted
 
-## Puts GATE in the Script Create dialog's language list, and keeps it out of the
-## one flow that would misuse it.
+## Puts GATE in the Script Create dialog's language list, and finishes what the
+## Scene dock's Attach Script dialog starts.
 ##
 ## The three dialogs - Scene dock, FileSystem dock, Script editor - are built before
 ## any plugin loads, so their language list is already final by the time GATE
@@ -12,13 +12,17 @@ extends RefCounted
 ## walks the languages and sets an icon per index, which is out of bounds while the
 ## list is one item short. All three get the item for that reason.
 ##
-## Attaching is blocked instead, and by the language rather than by the menu. While
-## `_validate_path` refuses with a sentence the dialog puts on screen. A greyed-out
-## item would only leave the user guessing.
+## The Scene dock's dialog needs one thing more. It writes the `.gate` and hands the
+## script object to the dock, which puts it on the node - and Godot drops it, because
+## a `.gate` cannot instantiate. So GATE listens on the same signal, has the file
+## compiled, and puts the generated `.gd` on the node instead. The node runs the
+## `.gd`, which is the same place the old refusal was protecting.
 
-const _Registry: GDScript = preload("res://addons/gate/editor/registry.gd")
+const _Tabs: GDScript = preload("res://addons/gate/editor/tabs.gd")
 
 const LABEL: String = "GATE"
+
+var integration: RefCounted = null
 
 
 static func find_all(from: Node, cls: String, out: Array) -> void:
@@ -79,7 +83,6 @@ func add_language() -> void:
 
 
 func remove_language() -> void:
-	_Registry.set_attaching(false)
 	for dialog in dialogs():
 		if is_attach_dialog(dialog):
 			_unwatch(dialog as Window)
@@ -127,21 +130,89 @@ func open_new(directory: String) -> void:
 
 
 ## `add_language` runs again on every theme change, so this has to recognise its own
-## earlier connection or the second `connect` is an engine error. Godot matches a
-## connection by its method and ignores what is bound to it - checked: after
-## `connect(f.bind(w))`, `is_connected(f)` is true - so either form answers
-## correctly. The bound one is written out because `disconnect` has to name it.
+## earlier connection or the second `connect` is an engine error.
 func _watch(dialog: Window) -> void:
-	var handler: Callable = _on_attach_visibility.bind(dialog)
-	if not dialog.visibility_changed.is_connected(handler):
-		dialog.visibility_changed.connect(handler)
+	if not dialog.is_connected("script_created", _on_script_created):
+		dialog.connect("script_created", _on_script_created)
 
 
 func _unwatch(dialog: Window) -> void:
-	var handler: Callable = _on_attach_visibility.bind(dialog)
-	if dialog.visibility_changed.is_connected(handler):
-		dialog.visibility_changed.disconnect(handler)
+	if dialog.is_connected("script_created", _on_script_created):
+		dialog.disconnect("script_created", _on_script_created)
 
 
-func _on_attach_visibility(dialog: Window) -> void:
-	_Registry.set_attaching(dialog.visible)
+## Deferred, not immediate. The Scene dock connects its own handler to this signal
+## when the command is chosen, and Godot does not emit connections in the order they
+## were made, so the dock's own attach could otherwise land after this one and undo
+## it. A deferred call runs after the whole emission either way.
+func _on_script_created(created: Script) -> void:
+	if created == null or not _Tabs.is_gate(created.resource_path):
+		return
+	_finish.call_deferred(created)
+
+
+func _finish(created: Script) -> void:
+	var gate_path: String = created.resource_path
+	var nodes: Array[Node] = EditorInterface.get_selection().get_selected_nodes()
+	var problem: String = _compiled(gate_path)
+	if problem != "":
+		_say(problem)
+		return
+	var out: String = gate_path.get_basename() + ".gd"
+	var made: Script = ResourceLoader.load(out, "", ResourceLoader.CACHE_MODE_REPLACE) as Script
+	if made == null:
+		_say("GATE compiled %s, but %s would not load, so nothing was attached to the node."
+			% [gate_path, out])
+		return
+	if nodes.is_empty():
+		_say("%s was created and compiled, but no node was selected, so %s was not attached."
+			% [gate_path, out])
+		return
+	_attach(nodes, made)
+	EditorInterface.edit_script(created)
+
+
+## The build, now rather than on the next filesystem scan, and what it said about
+## this file. The `.gate` is left on disk whatever comes back: it is the user's file,
+## it is already open in the script editor, and the message names it.
+func _compiled(gate_path: String) -> String:
+	if integration == null:
+		return "%s was written, but GATE is not running, so it was not compiled." % gate_path
+	var said: PackedStringArray = integration.compile_now(gate_path)
+	if not said.is_empty():
+		return "\n".join(said)
+	if not FileAccess.file_exists(gate_path.get_basename() + ".gd"):
+		return "%s was written, but GATE produced no .gd beside it." % gate_path
+	return ""
+
+
+func _attach(nodes: Array[Node], made: Script) -> void:
+	var undo: EditorUndoRedoManager = null
+	if integration != null:
+		undo = integration.undo_redo()
+	if undo == null:
+		for node in nodes:
+			node.set_script(made)
+		return
+	undo.create_action("Attach GATE Script", UndoRedo.MERGE_DISABLE, nodes[0])
+	for node in nodes:
+		undo.add_do_method(node, "set_script", made)
+		undo.add_undo_method(node, "set_script", node.get_script())
+	undo.commit_action()
+
+
+## The dialog has already hidden by the time any of this is known, and a Window
+## child of a hidden Window is not a place to show anything, so this is GATE's own
+## dialog on the editor's base control. The Output panel gets it too.
+func _say(text: String) -> void:
+	push_error("[GATE] " + text)
+	var base: Control = EditorInterface.get_base_control()
+	if base == null:
+		return
+	var alert: AcceptDialog = AcceptDialog.new()
+	alert.title = "GATE"
+	alert.dialog_text = text
+	base.add_child(alert)
+	alert.confirmed.connect(alert.queue_free)
+	alert.canceled.connect(alert.queue_free)
+	alert.popup_centered()

@@ -459,6 +459,12 @@ With the plugin enabled, Godot treats `.gate` as a language of its own.
   CRLF; a new file, or one that used LF, stays LF.
 - **New scripts.** *Script -> New Script* and the FileSystem dock's right-click
   *Create -> New GATE Script...* both offer GATE as a language.
+- **Attach Script creates the `.gate` and attaches the `.gd`.** Choose GATE in the
+  Scene dock's *Attach Script* dialog and it writes the `.gate` from the template you
+  picked, compiles it, and puts the generated `.gd` on the node. The node runs the
+  `.gd`, as it has to; the `.gate` is what stays open in the script editor. If the
+  build fails, GATE says so on screen, leaves the `.gate` alone so you can fix it, and
+  attaches nothing.
 - **Project -> Tools -> Recompile all GATE files** forgets what the build already knows
   and looks at every `.gate` again.
 - **GATE stays out of the exported game.** `.gate` sources, their `.uid` files, the
@@ -469,11 +475,8 @@ With the plugin enabled, Godot treats `.gate` as a language of its own.
   find them prints six errors at start-up. They do nothing in a game. If you exclude
   `addons/gate/` in your export preset yourself, keep those four.
 
-Three things deliberately do not work.
+Two things deliberately do not work.
 
-- **A `.gate` cannot be attached to a node.** *Attach Script* offers GATE and then
-  refuses, because the script a node runs has to be the compiled `.gd`. Create the
-  `.gate` first and attach the `.gd` that appears beside it.
 - **Autocompletion offers nothing rather than guess.** Where the type of what is
   left of the dot cannot be worked out - a variable declared with a plain `=` and no
   type, an untyped container after an index, the return of an engine method GATE
