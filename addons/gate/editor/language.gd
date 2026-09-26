@@ -14,6 +14,7 @@ const _Registry: GDScript = preload("res://addons/gate/editor/registry.gd")
 const _Lookup: GDScript = preload("res://addons/gate/editor/lookup.gd")
 const _Complete: GDScript = preload("res://addons/gate/editor/complete.gd")
 const _Warnings: GDScript = preload("res://addons/gate/editor/warnings.gd")
+const _Index: GDScript = preload("res://addons/gate/editor/index.gd")
 
 const TYPE: String = "GATEScript"
 const EXTENSION: String = "gate"
@@ -34,6 +35,47 @@ const CONTROL_FLOW: Array[String] = [
 	"if", "elif", "else", "for", "while", "match", "when", "break", "continue",
 	"pass", "return", "await", "yield",
 ]
+
+
+## The engine class a `.gate`'s `extends` chain finally reaches, or empty when the
+## chain cannot be followed to one.
+##
+## Asked by `script.gd:_get_instance_base_type()`, which is the only caller. It lives
+## here because `script.gd` is one of the four addon files an export ships, so it may
+## not preload the editor integration or name a compiler type: doing either drags the
+## whole compiler into every exported game.
+func base_type_of(text: String, path: String) -> StringName:
+	var reg: RefCounted = _Index.registry()
+	var module: GateAST._Module = _Index.lexed_module_for(text, path, reg)
+	if module == null:
+		return &""
+	if module.extends_type == null:
+		return &"RefCounted"
+	var current: String = _Complete._extended(module.extends_type.name, path, reg)
+	var seen: Dictionary = {}
+	while current != "" and not seen.has(current):
+		seen[current] = true
+		if ClassDB.class_exists(current):
+			return StringName(current)
+		current = _next_base(current, reg)
+	return &""
+
+
+## One step up the chain: another `.gate`, a `class_name` in a hand-written `.gd`, or
+## a file a base was written as a path to. A link that extends nothing is RefCounted,
+## which is where GDScript's own chain ends.
+func _next_base(type_name: String, reg: RefCounted) -> String:
+	if type_name.begins_with("res://") or _Complete._declaration_of(type_name, reg) != null:
+		var up: String = _Complete._base_of(type_name, reg)
+		return up if up != "" else "RefCounted"
+	var script_path: String = _Complete._global_class(type_name)
+	if script_path == "":
+		return ""
+	var script: Script = ResourceLoader.load(script_path, "",
+		ResourceLoader.CACHE_MODE_REUSE) as Script
+	if script == null:
+		return ""
+	return _Complete._script_base(script, reg)
 
 
 func _get_name() -> String:
@@ -181,25 +223,93 @@ func _validate(script: String, path: String, validate_functions: bool, validate_
 		"valid": errors.is_empty(),
 		"errors": errors,
 		"warnings": warnings,
-		"functions": _functions_in(text) if validate_functions else PackedStringArray(),
+		"functions": _functions_in(tokens) if validate_functions else PackedStringArray(),
 		"safe_lines": PackedInt32Array(),
 	}
 
 
-## Feeds the script editor's function list. A line scan rather than the AST, for the
-## same reason `_validate` does not parse.
-func _functions_in(text: String) -> PackedStringArray:
+## Feeds the script editor's function list, from the tokens `_validate` has already
+## lexed rather than from the lines.
+##
+## A line scan cannot see the modifiers GATE allows in front of `func`, and cannot
+## tell a `func` written inside a block string from a declaration. The lexer settles
+## both and has already run, so this is one pass over an array. The parser would
+## settle them too and costs a parse, which is most of this callback's budget.
+##
+## The modifiers come from `GateParser.MEMBER_MODIFIERS` rather than a copy of it, so
+## a modifier added to the language reaches this list without anyone remembering to.
+func _functions_in(tokens: Array) -> PackedStringArray:
 	var out: PackedStringArray = PackedStringArray()
-	var lines: PackedStringArray = text.split("\n")
-	for i in lines.size():
-		var line: String = lines[i].strip_edges()
-		var body: String = line.trim_prefix("static ")
-		if not body.begins_with("func "):
+	var count: int = tokens.size()
+	var i: int = 0
+	var at_start: bool = true
+	while i < count:
+		var token: GateLexer._Token = tokens[i]
+		i += 1
+		if token.type == GateLexer._T.COMMENT:
 			continue
-		var name: String = body.substr(5).get_slice("(", 0).strip_edges()
+		if token.type == GateLexer._T.NEWLINE or token.type == GateLexer._T.INDENT \
+				or token.type == GateLexer._T.DEDENT:
+			at_start = true
+			continue
+		if not at_start:
+			continue
+		if token.type == GateLexer._T.ANNOTATION:
+			i = _past_arguments(tokens, i)
+			continue
+		if token.type != GateLexer._T.KEYWORD:
+			at_start = false
+			continue
+		if GateParser.MEMBER_MODIFIERS.has(token.value):
+			continue
+		if token.value != "func" and token.value != "operator":
+			at_start = false
+			continue
+		var name: String = _declared_name(tokens, i, token.value == "operator")
 		if name != "":
-			out.append("%s:%d" % [name, i + 1])
+			out.append("%s:%d" % [name, token.line])
+		at_start = false
 	return out
+
+
+## Past an annotation's bracketed arguments, when it has any. What follows is still
+## the start of the declaration the annotation is attached to.
+func _past_arguments(tokens: Array, from: int) -> int:
+	var i: int = _past_comments(tokens, from)
+	if i >= tokens.size() or not (tokens[i] as GateLexer._Token).is_op("("):
+		return from
+	var depth: int = 0
+	while i < tokens.size():
+		var token: GateLexer._Token = tokens[i]
+		i += 1
+		if token.is_op("("):
+			depth += 1
+		elif token.is_op(")"):
+			depth -= 1
+			if depth == 0:
+				break
+	return i
+
+
+## The name a `func` declares, or the symbol an `operator` overloads. Empty for
+## `func (`, which is a lambda and has no name to list.
+func _declared_name(tokens: Array, from: int, symbol: bool) -> String:
+	var i: int = _past_comments(tokens, from)
+	if i >= tokens.size():
+		return ""
+	var token: GateLexer._Token = tokens[i]
+	if symbol:
+		return token.value if token.type == GateLexer._T.OP else ""
+	if token.type == GateLexer._T.IDENT or token.type == GateLexer._T.KEYWORD:
+		return token.value
+	return ""
+
+
+func _past_comments(tokens: Array, from: int) -> int:
+	var i: int = from
+	while i < tokens.size() and (tokens[i] as GateLexer._Token).type == GateLexer._T.COMMENT:
+		i += 1
+	return i
 
 
 ## The one place GATE says no.

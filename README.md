@@ -437,7 +437,18 @@ With the plugin enabled, Godot treats `.gate` as a language of its own.
   shorthands and keywords, and the engine's classes. After `@` it offers the
   annotations, GATE's and Godot's. On another object a dot leaves out the methods that
   start with an underscore, such as `_ready`, since those are there to be overridden;
-  on `self` they are offered.
+  on `self` they are offered. A name is offered only where the caret can actually see
+  it: a parameter inside its own function, a local below its own line, a `for`
+  variable inside its loop. Typing the start of a virtual in a class body offers the
+  base's overridable methods with their signature filled in, and typing a call's
+  opening bracket shows that function's parameters.
+- **A node dragged in from the Scene dock lands as a reference**, the same line a `.gd`
+  would get. A `.gate` answers the editor with the engine class at the root of its
+  `extends` chain, which is the one question the Scene dock asks before it allows the
+  drop.
+- **The script editor's method list holds every function**, whatever it is written with:
+  `priv func`, `pub func`, `virtual func`, an operator overload, and any of those with
+  `static`, each jumping to its line in the `.gate`.
 - **Open `.gate` tabs come back next session.** Godot's own layout never holds them;
   GATE keeps them and reopens them itself. That is so a session with GATE switched off
   finds nothing to reopen: without GATE, Godot would open a `.gate` as plain text and

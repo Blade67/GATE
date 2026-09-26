@@ -41,11 +41,29 @@ static func parser_for(reg: RefCounted) -> GateParser:
 	return parser
 
 
-## The file as the compiler sees it, or null if it will not lex.
+## The file as the compiler sees it. Always a module: text the parser cannot
+## decompose is kept as source and re-emitted, so there is no refusal to report.
 static func module_for(text: String, path: String, reg: RefCounted) -> GateAST._Module:
+	return _parsed(text, path, reg, false)
+
+
+## The same, and null when the lexer refuses the text.
+##
+## The parser's own verdict is deliberately not part of that. Without the build's
+## registry it reports errors on correct code, which is why `language.gd:_validate`
+## runs the lexer and stops; a file using a generic declared in another file must
+## not read as unreadable here either.
+static func lexed_module_for(text: String, path: String, reg: RefCounted) -> GateAST._Module:
+	return _parsed(text, path, reg, true)
+
+
+static func _parsed(text: String, path: String, reg: RefCounted,
+		refuse_unlexable: bool) -> GateAST._Module:
 	var diagnostics: GateDiagnostics = GateDiagnostics.new()
 	diagnostics.file = path
 	var tokens: Array[GateLexer._Token] = GateLexer.new().tokenize(text, diagnostics)
+	if refuse_unlexable and diagnostics.error_count() > 0:
+		return null
 	GateTypes.shadow_declared(tokens, reg.script_class_names if reg != null else {},
 		reg.cross_file_type_names() if reg != null else {})
 	var module: GateAST._Module = parser_for(reg).parse(tokens, text, diagnostics)

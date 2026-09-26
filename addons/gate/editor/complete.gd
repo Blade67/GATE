@@ -49,6 +49,12 @@ const FAR: int = 1 << 10
 
 const NOTHING: Dictionary = {"result": OK, "force": false, "call_hint": "", "options": []}
 
+## Past the end of any line, so every block that spans a line counts as open around
+## it. That is what a lookup made away from the caret wants - a declaration's own
+## initialiser is inside whatever blocks hold the declaration - and it is not what
+## the caret wants, which is `complete()`'s own column.
+const ANY_COLUMN: int = 1 << 30
+
 ## How far a dotted chain is followed before giving up. Real code does not go deep,
 ## and each step costs a lookup.
 const MAX_CHAIN: int = 8
@@ -122,6 +128,11 @@ static func complete(code: String, path: String, owner: Object) -> Dictionary:
 	var line_start: int = code.rfind("\n", at) + 1
 	var head: String = code.substr(line_start, at - line_start)
 	var row: int = code.substr(0, at).count("\n")
+	# The column the caret's line starts its statement at, 1-based, which is how the
+	# parser records one. It is what tells a block the caret is inside from a block
+	# that merely ends above it: a local declared in a function is out of scope at
+	# column 1, where the next declaration goes.
+	var column: int = head.length() - head.strip_edges(true, false).length() + 1
 
 	var reg: RefCounted = _Index.registry()
 	if reg == null:
@@ -135,18 +146,21 @@ static func complete(code: String, path: String, owner: Object) -> Dictionary:
 			and head.substr(annotation).find("(") < 0:
 		return _wrap(_annotations())
 
+	# Independent of the list: a caret inside a call's arguments is in a call
+	# whatever is being typed there, including nothing at all.
+	var hint: String = _call_hint(code.substr(0, at), module, reg, row + 1, column)
 	var chain: Array = _chain_before(head)
 	if not chain.is_empty():
-		var type_name: String = _resolve_chain(chain, module, reg, row + 1)
+		var type_name: String = _resolve_chain(chain, module, reg, row + 1, column)
 		if type_name == "":
 			# The dot is real but the type behind it is not knowable. Saying nothing
 			# is the honest answer; anything else here is a list about a different
 			# object than the one on screen.
-			return NOTHING
+			return _wrap([], hint)
 		var outside: bool = chain.size() > 1 or String(chain[0]) != "self"
-		return _wrap(_members_of(type_name, reg, module, outside))
+		return _wrap(_members_of(type_name, reg, module, outside), hint)
 
-	return _wrap(_in_scope(module, reg, row + 1))
+	return _wrap(_in_scope(module, reg, row + 1, column, _after_func(head)), hint)
 
 
 static func _module(text: String, path: String, reg: RefCounted) -> GateAST._Module:
@@ -253,8 +267,8 @@ static func option(kind: int, display: String, insert: String, location: int) ->
 	}
 
 
-static func _wrap(options: Array) -> Dictionary:
-	return {"result": OK, "force": false, "call_hint": "", "options": options}
+static func _wrap(options: Array, hint: String = "") -> Dictionary:
+	return {"result": OK, "force": false, "call_hint": hint, "options": options}
 
 
 static func _annotations() -> Array:
@@ -345,13 +359,13 @@ static func _is_word(character: String) -> bool:
 
 ## The type name the chain ends on, or "".
 static func _resolve_chain(chain: Array, module: GateAST._Module, reg: RefCounted,
-		line: int) -> String:
+		line: int, column: int = ANY_COLUMN) -> String:
 	if _resolving > MAX_CHAIN:
 		return ""
 	_resolving += 1
 	var first: String = String(chain[0])
 	var current: String = first.substr(1) if first.begins_with("@") \
-		else _base_type(first, module, reg, line)
+		else _base_type(first, module, reg, line, column)
 	for i in range(1, chain.size()):
 		if current == "":
 			break
@@ -367,7 +381,7 @@ static var _resolving: int = 0
 ## What the first name in a chain stands for: a type used statically, or a value
 ## whose declared type is known.
 static func _base_type(name: String, module: GateAST._Module, reg: RefCounted,
-		line: int) -> String:
+		line: int, column: int = ANY_COLUMN) -> String:
 	if name == "self":
 		if module != null and module.class_name_decl != "":
 			return module.class_name_decl
@@ -377,11 +391,11 @@ static func _base_type(name: String, module: GateAST._Module, reg: RefCounted,
 		return name
 	if module == null:
 		return _autoload_type(name, reg)
-	var declared: String = _declared_type(module.members, name, line, module, reg)
+	var declared: String = _declared_type(module.members, name, line, module, reg, column)
 	if declared != "":
 		return declared
 	var visible: Dictionary = {}
-	_locals(module.members, line, visible)
+	_locals(module.members, line, visible, column)
 	if visible.has(name):
 		return ""
 	var own: String = module.class_name_decl if module.class_name_decl != "" else THIS_FILE
@@ -412,10 +426,11 @@ static func _file_module(type_name: String, module: GateAST._Module,
 
 
 static func _declared_type(members: Array, name: String, line: int,
-		module: GateAST._Module, reg: RefCounted) -> String:
+		module: GateAST._Module, reg: RefCounted, column: int = ANY_COLUMN) -> String:
 	var best: String = ""
 	var best_line: int = -1
-	for member in members:
+	for index in members.size():
+		var member: Variant = members[index]
 		if member is GateAST._VarDecl:
 			var vd: GateAST._VarDecl = member
 			if vd.name == name and vd.line <= line and vd.line > best_line:
@@ -423,37 +438,83 @@ static func _declared_type(members: Array, name: String, line: int,
 				if fixed != "":
 					best = fixed
 					best_line = vd.line
-		elif member is GateAST._FuncDecl:
+			continue
+		# Everything below opens a block, and a block the caret is not in declares
+		# nothing that is in scope at it.
+		if not _inside(members, index, line, column):
+			continue
+		if member is GateAST._FuncDecl:
 			var decl: GateAST._FuncDecl = member
 			for parameter in decl.params:
 				var p: GateAST._Param = parameter
-				if p.name == name and p.type != null and decl.line <= line:
+				if p.name == name and p.type != null:
 					best = _type_name(p.type)
 					best_line = decl.line
-			var inner: String = _declared_type(decl.body, name, line, module, reg)
+			var inner: String = _declared_type(decl.body, name, line, module, reg, column)
 			if inner != "":
 				best = inner
 				best_line = line
 		elif member is GateAST._ClassDecl:
 			var nested: String = _declared_type(
-				(member as GateAST._ClassDecl).members, name, line, module, reg)
-			if nested != "" and best == "":
+				(member as GateAST._ClassDecl).members, name, line, module, reg, column)
+			if nested != "":
 				best = nested
+				best_line = line
 		elif member is GateAST._ForStmt:
 			var loop: GateAST._ForStmt = member
 			var at: int = loop.var_names.find(name)
-			if at >= 0 and loop.line <= line and loop.line > best_line:
+			if at >= 0 and loop.line > best_line:
 				best = _loop_type(loop, at, module, reg)
 				best_line = loop.line
-			var within: String = _declared_type(loop.body, name, line, module, reg)
+			var within: String = _declared_type(loop.body, name, line, module, reg, column)
 			if within != "":
 				best = within
 				best_line = line
-		elif member is GateAST._ASTNode and "body" in member:
-			var deeper: String = _declared_type(member.get("body"), name, line, module, reg)
-			if deeper != "" and best == "":
-				best = deeper
+		else:
+			for block in _blocks_of(member):
+				var deeper: String = _declared_type(block, name, line, module, reg, column)
+				if deeper != "":
+					best = deeper
+					best_line = line
 	return best
+
+
+## Whether the caret is inside the block `members[index]` opens.
+##
+## Three things have to hold: the block starts at or above the caret, the caret is
+## indented past the line that opens it, and the next declaration beside it starts
+## below the caret. The AST records where a block begins and not where it ends, and
+## the next sibling's line is what stands in for the end; the column is what tells
+## the last function in a file from the class body under it, which have the same
+## span and are not the same scope.
+static func _inside(members: Array, index: int, line: int, column: int) -> bool:
+	var member: GateAST._ASTNode = members[index]
+	if member.line > line or column <= member.col:
+		return false
+	for i in range(index + 1, members.size()):
+		var next: GateAST._ASTNode = members[i]
+		if next.line > member.line:
+			return next.line > line
+	return true
+
+
+## Every list of statements a statement holds. `if` keeps its branches apart, and
+## `match` keeps one per pattern, so neither is reachable through a `body`.
+static func _blocks_of(member: Variant) -> Array:
+	if member is GateAST._IfStmt:
+		var branch: GateAST._IfStmt = member
+		var out: Array = [branch.then_body, branch.else_body]
+		for pair in branch.elifs:
+			out.append(pair[1])
+		return out
+	if member is GateAST._MatchStmt:
+		var arms: Array = []
+		for arm in (member as GateAST._MatchStmt).branches:
+			arms.append(arm[2])
+		return arms
+	if member is GateAST._ASTNode and "body" in member:
+		return [member.get("body")]
+	return []
 
 
 static func _loop_type(loop: GateAST._ForStmt, index: int, module: GateAST._Module,
@@ -1008,13 +1069,15 @@ static func _take(out: Array, taken: Dictionary, entry: Dictionary) -> void:
 
 # ───────────────────────── a bare identifier ─────────────────────────
 
-static func _in_scope(module: GateAST._Module, reg: RefCounted, line: int) -> Array:
+static func _in_scope(module: GateAST._Module, reg: RefCounted, line: int,
+		column: int = ANY_COLUMN, keyword: bool = false) -> Array:
 	var out: Array = []
 	var taken: Dictionary = {}
 
 	if module != null:
 		var locals: Dictionary = {}
-		_locals(module.members, line, locals)
+		var path: Array = []
+		_locals(module.members, line, locals, column, path)
 		for name in locals:
 			_take(out, taken, option(KIND_VARIABLE, String(name), String(name), HERE))
 		# Unqualified names in a script reach its own members and everything it
@@ -1022,6 +1085,11 @@ static func _in_scope(module: GateAST._Module, reg: RefCounted, line: int) -> Ar
 		var owner: String = module.class_name_decl if module.class_name_decl != "" else THIS_FILE
 		for entry in _members_of(owner, reg, module):
 			_take(out, taken, entry)
+		# A class body is the one place a declaration can go, so it is the one place
+		# an override belongs. Inside a function it would not compile, and on another
+		# object a virtual is not something to call.
+		if not _in_function(path):
+			_overrides(_overridden_base(path, module, reg), reg, module, out, taken, keyword)
 
 	for table in ["structs", "classes", "interfaces", "traits", "namespaces", "generics"]:
 		for name in reg.get(table):
@@ -1045,17 +1113,382 @@ static func _in_scope(module: GateAST._Module, reg: RefCounted, line: int) -> Ar
 	return out
 
 
-## Locals and parameters visible at `line`, as name -> line.
-static func _locals(members: Array, line: int, out: Dictionary) -> void:
-	for member in members:
+## Locals, parameters and `for` variables visible at `line`, as name -> line, and in
+## `path` the blocks the caret is inside, innermost last.
+##
+## Visible means declared in a block the caret is in, and above the caret. Collect
+## every function's parameters from the whole file instead and `amount` is offered
+## inside every function that has no `amount`, while a `for` variable is not
+## offered at all, even though its type is already worked out.
+static func _locals(members: Array, line: int, out: Dictionary,
+		column: int = ANY_COLUMN, path: Array = []) -> void:
+	for index in members.size():
+		var member: Variant = members[index]
+		if member is GateAST._VarDecl:
+			if (member as GateAST._VarDecl).line <= line:
+				out[(member as GateAST._VarDecl).name] = (member as GateAST._VarDecl).line
+			continue
+		if not _inside(members, index, line, column):
+			continue
 		if member is GateAST._FuncDecl:
 			var decl: GateAST._FuncDecl = member
 			for parameter in decl.params:
 				out[(parameter as GateAST._Param).name] = decl.line
-			_locals(decl.body, line, out)
-		elif member is GateAST._VarDecl and (member as GateAST._VarDecl).line <= line:
-			out[(member as GateAST._VarDecl).name] = (member as GateAST._VarDecl).line
+			path.append(decl)
+			_locals(decl.body, line, out, column, path)
+		elif member is GateAST._ForStmt:
+			var loop: GateAST._ForStmt = member
+			for loop_name in loop.var_names:
+				out[String(loop_name)] = loop.line
+			_locals(loop.body, line, out, column, path)
 		elif member is GateAST._ClassDecl:
-			_locals((member as GateAST._ClassDecl).members, line, out)
-		elif member is GateAST._ASTNode and "body" in member:
-			_locals(member.get("body"), line, out)
+			path.append(member)
+			_locals((member as GateAST._ClassDecl).members, line, out, column, path)
+		else:
+			for block in _blocks_of(member):
+				_locals(block, line, out, column, path)
+
+
+## Whether `func` has already been typed on the caret's line, under any of the words
+## that may come before it. GDScript only offers an override after it, so that is
+## the one case where the signature is inserted without one.
+static func _after_func(head: String) -> bool:
+	for word in head.strip_edges().split(" ", false):
+		if word == "func":
+			return true
+	return false
+
+
+static func _in_function(path: Array) -> bool:
+	for node in path:
+		if node is GateAST._FuncDecl:
+			return true
+	return false
+
+
+## The type whose virtuals a declaration written at the caret would override: what
+## the innermost class body the caret is in extends. "" where an override does not
+## belong at all, which is a struct, an interface, a trait or a namespace, and also
+## a file whose `extends` GATE cannot place - guessing RefCounted there would offer
+## a list about a class the file does not extend.
+static func _overridden_base(path: Array, module: GateAST._Module, reg: RefCounted) -> String:
+	var enclosing: GateAST._ClassDecl = null
+	for node in path:
+		if node is GateAST._ClassDecl:
+			enclosing = node
+	if enclosing == null:
+		if module == null:
+			return ""
+		return "RefCounted" if module.extends_type == null else _base_of(THIS_FILE, reg, module)
+	if enclosing.form != "class":
+		return ""
+	if enclosing.extends_type == null:
+		return "RefCounted"
+	return _extended(enclosing.extends_type.name, _editing, reg)
+
+
+## Everything the class at the caret could override: a `virtual` or abstract method
+## declared anywhere up its base chain, then every virtual method the engine class
+## the chain ends on declares. Each carries its whole signature, because an override
+## that does not match the base is an error, and filling it in is the point.
+static func _overrides(base: String, reg: RefCounted, module: GateAST._Module,
+		out: Array, taken: Dictionary, keyword: bool) -> void:
+	var current: String = base
+	var seen: Dictionary = {}
+	while current != "" and not seen.has(current):
+		seen[current] = true
+		var declared: GateAST._ClassDecl = null
+		if current == THIS_FILE or _is_file(current):
+			declared = _as_decl(_file_module(current, module, reg))
+			if declared == null:
+				return
+		else:
+			declared = _declaration_of(current, reg)
+		if declared != null:
+			for member in declared.members:
+				if member is GateAST._FuncDecl:
+					var fd: GateAST._FuncDecl = member
+					if fd.is_virtual or fd.is_abstract:
+						_take(out, taken, _override(_signature_of_decl(fd), keyword))
+			current = _base_of(current, reg, module)
+			continue
+		# A `class_name` in a hand-written `.gd` declares no virtuals of its own that
+		# GATE can see, but what it extends does.
+		var script_path: String = _global_class(current)
+		if script_path == "":
+			break
+		var script: Script = ResourceLoader.load(script_path, "", ResourceLoader.CACHE_MODE_REUSE) as Script
+		if script == null:
+			return
+		current = _script_base(script, reg)
+	if current == "" or not ClassDB.class_exists(current):
+		return
+	for method in ClassDB.class_get_method_list(current, false):
+		if (int(method["flags"]) & METHOD_FLAG_VIRTUAL) != 0:
+			_take(out, taken, _override(_signature_of_info(method), keyword))
+
+
+## The signature on its own is what the popup shows and what GDScript hands back,
+## because GDScript only offers one after `func` has been typed. Here it is offered
+## on the word alone as well, which is what the caret is usually sitting on, so the
+## `func` goes into the text that replaces that word rather than being assumed.
+static func _override(signature: String, keyword: bool) -> Dictionary:
+	return option(KIND_FUNCTION, signature,
+		signature if keyword else "func " + signature, PARENT)
+
+
+## A parameter, as GATE writes one.
+##
+## Always `name: Type`, and `gate/features/type_first` does not enter into it: the
+## flag governs declarations, and a parameter list is not a declaration site.
+## `_parse_params` reads a name and then an optional `: Type`, so `func f(float x)`
+## is "expected ')' to close the parameter list, found 'x'" in every project,
+## whatever the flag says. Offering a signature spelled that way would be offering
+## one that does not compile.
+static func _typed(name: String, type: String) -> String:
+	return name if type == "" else "%s: %s" % [name, type]
+
+
+static func _returned(type: String) -> String:
+	return type if type != "" else "void"
+
+
+static func _signature_of_decl(decl: GateAST._FuncDecl) -> String:
+	var parts: PackedStringArray = PackedStringArray()
+	for parameter in decl.params:
+		var p: GateAST._Param = parameter
+		parts.append(_typed(p.name, _type_name(p.type)))
+	return "%s(%s) -> %s:" % [decl.name, ", ".join(parts),
+		_returned(_type_name(decl.return_type))]
+
+
+static func _signature_of_info(method: Dictionary) -> String:
+	var parts: PackedStringArray = PackedStringArray()
+	for argument in Array(method["args"]):
+		var arg: Dictionary = argument
+		parts.append(_typed(_plain(String(arg["name"])), _engine_type(arg, true)))
+	return "%s(%s) -> %s:" % [_plain(String(method["name"])), ", ".join(parts),
+		_engine_type(method.get("return", {}), false)]
+
+
+## A name the engine wrote a hint into, as in `_gui_input(event:InputEvent)`.
+static func _plain(name: String) -> String:
+	return name.get_slice(":", 0)
+
+
+## An engine argument or return as it is written in a signature. A nil argument is a
+## Variant; a nil return is void, unless the engine marked it as holding one.
+static func _engine_type(info: Dictionary, is_argument: bool) -> String:
+	var named: String = String(info.get("class_name", ""))
+	if named != "":
+		return named
+	var type: int = int(info.get("type", TYPE_NIL))
+	if type != TYPE_NIL:
+		return type_string(type)
+	if is_argument or (int(info.get("usage", 0)) & PROPERTY_USAGE_NIL_IS_VARIANT) != 0:
+		return "Variant"
+	return "void"
+
+
+# ───────────────────────── the call the caret is in ─────────────────────────
+
+## How far back the opening parenthesis of a call is looked for. An argument list
+## longer than this goes without a hint, which costs a hint; scanning the whole file
+## on every request would cost the editor.
+const HINT_LINES: int = 8
+
+
+## The signature of the call the caret is inside, with the argument it is on wrapped
+## in U+FFFF, or "" when the caret is in no call or the callee cannot be placed.
+##
+## U+FFFF is the engine's own mark for a position inside a string - it is how Godot
+## hands this file the caret in the first place - and it is what GDScript puts
+## around the argument being edited. That half could not be checked from a headless
+## session: `CodeEdit` binds `set_code_hint` and no getter, `ScriptLanguage` exposes
+## nothing at all to scripts, and the engine's own class reference documents
+## neither, so the text here is right by the cases and the highlight inside it wants
+## a windowed editor to confirm.
+static func _call_hint(prefix: String, module: GateAST._Module, reg: RefCounted,
+		line: int, column: int) -> String:
+	var call: Dictionary = _call_at(prefix)
+	if call.is_empty():
+		return ""
+	var chain: Array = call["chain"]
+	var last: int = chain.size() - 1
+	var owner: String = ""
+	if last == 0:
+		if module == null:
+			return ""
+		owner = module.class_name_decl if module.class_name_decl != "" else THIS_FILE
+	else:
+		owner = _resolve_chain(chain.slice(0, last), module, reg, line, column)
+	if owner == "":
+		return ""
+	var index: int = int(call["argument"])
+	var found: Variant = _method_of(owner, String(chain[last]), reg, module, index)
+	if found is GateAST._FuncDecl:
+		return _hint_of_decl(found, index)
+	if found is Dictionary:
+		return _hint_of_info(found, index)
+	return ""
+
+
+## The call the caret is in: its callee as a dotted path, and which argument the
+## caret is on. {} when a bracket that is not a call opens around it, when the
+## parentheses are balanced, or when what is left of the `(` is not a name.
+static func _call_at(prefix: String) -> Dictionary:
+	var lines: PackedStringArray = prefix.split("\n")
+	var text: String = _without_text("\n".join(lines.slice(maxi(0, lines.size() - HINT_LINES))))
+	var depth: int = 0
+	var argument: int = 0
+	var at: int = text.length()
+	var opened: bool = false
+	while at > 0:
+		at -= 1
+		var character: String = text[at]
+		if character == ")" or character == "]" or character == "}":
+			depth += 1
+		elif character == "(":
+			if depth == 0:
+				opened = true
+				break
+			depth -= 1
+		elif character == "[" or character == "{":
+			# An array or a dictionary is being written, not arguments.
+			if depth == 0:
+				return {}
+			depth -= 1
+		elif character == "," and depth == 0:
+			argument += 1
+	if not opened:
+		return {}
+	var chain: Array = _chain_before(text.substr(0, at) + ".")
+	return {} if chain.is_empty() else {"chain": chain, "argument": argument}
+
+
+## The same text with everything inside a string or a comment blanked, and every
+## other character, the quotes included, left where it was. A `(` or a `,` in a
+## string is not punctuation, and reading it as punctuation is how a hint ends up
+## describing a call that is not there.
+static func _without_text(text: String) -> String:
+	var out: PackedStringArray = PackedStringArray()
+	for line in text.split("\n"):
+		var kept: String = ""
+		var quote: String = ""
+		var i: int = 0
+		while i < line.length():
+			var character: String = line[i]
+			if quote != "":
+				if character == "\\" and i + 1 < line.length():
+					kept += "  "
+					i += 2
+					continue
+				kept += character if character == quote else " "
+				if character == quote:
+					quote = ""
+			elif character == "\"" or character == "'":
+				quote = character
+				kept += character
+			elif character == "#":
+				kept += " ".repeat(line.length() - i)
+				break
+			else:
+				kept += character
+			i += 1
+		out.append(kept)
+	return "\n".join(out)
+
+
+## The method `owner.method` names, as the `_FuncDecl` that declares it or as the
+## engine's own MethodInfo, or null. The same walk as `_member_type`, which answers
+## a type rather than a declaration and so cannot hand one back.
+##
+## `index` picks between arity overloads: the one still taking an argument where the
+## caret is, is the one being written.
+static func _method_of(owner: String, method: String, reg: RefCounted,
+		module: GateAST._Module, index: int) -> Variant:
+	var seen: Dictionary = {}
+	var current: String = owner
+	while current != "" and not seen.has(current):
+		seen[current] = true
+		var declared: GateAST._ClassDecl = null
+		if current == THIS_FILE or _is_file(current):
+			declared = _as_decl(_file_module(current, module, reg))
+			if declared == null:
+				return null
+		else:
+			declared = _declaration_of(current, reg)
+		if declared != null:
+			var found: GateAST._FuncDecl = null
+			for entry in declared.members:
+				if entry is GateAST._FuncDecl and (entry as GateAST._FuncDecl).name == method:
+					var fd: GateAST._FuncDecl = entry
+					if found == null or (found.params.size() <= index
+							and fd.params.size() > index):
+						found = fd
+			if found != null:
+				return found
+			current = _base_of(current, reg, module)
+			continue
+		var script_path: String = _global_class(current)
+		if script_path == "":
+			break
+		var script: Script = ResourceLoader.load(script_path, "", ResourceLoader.CACHE_MODE_REUSE) as Script
+		if script == null:
+			return null
+		for info in script.get_script_method_list():
+			if String(info["name"]) == method:
+				return info
+		current = _script_base(script, reg)
+	if current == "" or not ClassDB.class_exists(current):
+		return null
+	for info in ClassDB.class_get_method_list(current, false):
+		if String(info["name"]) == method:
+			return info
+	return null
+
+
+static func _hint_of_decl(decl: GateAST._FuncDecl, index: int) -> String:
+	var parts: PackedStringArray = PackedStringArray()
+	for i in decl.params.size():
+		var p: GateAST._Param = decl.params[i]
+		var text: String = _typed(p.name, _type_name(p.type))
+		var default: String = _written(p.default)
+		if default != "":
+			text += " = " + default
+		parts.append(_marked(text, i == index))
+	return "%s %s(%s)" % [_returned(_type_name(decl.return_type)), decl.name, ", ".join(parts)]
+
+
+static func _hint_of_info(method: Dictionary, index: int) -> String:
+	var args: Array = Array(method.get("args", []))
+	var defaults: Array = Array(method.get("default_args", []))
+	var first_default: int = args.size() - defaults.size()
+	var parts: PackedStringArray = PackedStringArray()
+	for i in args.size():
+		var arg: Dictionary = args[i]
+		var text: String = _typed(_plain(String(arg["name"])), _engine_type(arg, true))
+		if i >= first_default:
+			text += " = " + var_to_str(defaults[i - first_default])
+		parts.append(_marked(text, i == index))
+	return "%s %s(%s)" % [_engine_type(method.get("return", {}), false),
+		_plain(String(method["name"])), ", ".join(parts)]
+
+
+static func _marked(text: String, current: bool) -> String:
+	return (CURSOR + text + CURSOR) if current else text
+
+
+## A default argument as the file writes it, where that can be read back off the
+## AST: a literal, a name, or a name on something. Anything else is left off rather
+## than printed as something the file does not say.
+static func _written(value: Variant) -> String:
+	if value is GateAST._Literal:
+		return (value as GateAST._Literal).raw
+	if value is GateAST._Ident:
+		return (value as GateAST._Ident).name
+	if value is GateAST._Member:
+		var member: GateAST._Member = value
+		var through: String = _written(member.target)
+		return "%s.%s" % [through, member.name] if through != "" else ""
+	return ""

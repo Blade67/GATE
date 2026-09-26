@@ -103,6 +103,20 @@
   Nullcheck's own flow narrowing is what a store is checked against, not a value's bare
   declared type. A nullable value already guarded by a null check, `if f != null:
   xs.append(f)` say, is not refused either.
+- **Completion offers the base's virtuals in a class body** (issue #11). Typing `_pro`
+  where a declaration goes offers `_process(delta: float) -> void:` and the rest of what
+  the base declares for overriding, signature filled in, the way GDScript does. The list
+  comes from the resolved base, so it is right for `extends Node2D`, for a base that is
+  another `.gate` - including its own `virtual func` declarations - and for
+  `extends "res://x.gd"`. It is offered in a class body only, never inside a function and
+  never on another object, where a virtual is not something to call. The text inserted
+  carries the `func` the caret has not typed yet, and a case compiles it to prove it.
+- **A call shows the signature of what is being called** (issue #11). The caret inside an
+  argument list produces a parameter hint - return type, name, every parameter with its
+  type and its default - for a function in the same file, in another `.gate`, in a `.gd`
+  of the project, and for an engine method, with the argument the caret is on marked. It
+  is not offered where the callee cannot be placed, and a parenthesis inside a string or a
+  comment does not open a call.
 
 ### Changed
 
@@ -131,6 +145,46 @@
 
 ### Fixed
 
+- **Dragging a node from the Scene dock into a `.gate` was refused** (issue #11). The Scene
+  dock asks the script for its instance base type and nothing else before it will accept the
+  drop, and a `.gate` answered nothing, so `ClassDB.is_parent_class("", "Node")` was false
+  and the drop was turned down with "script does not inherit Node". A `.gate` now answers
+  the engine class at the root of its `extends` chain, resolved from the buffer being edited
+  and the project's registry: `extends Node2D` answers `Node2D`, `extends Player` where
+  `Player` is another `.gate` that extends `CharacterBody2D` answers `CharacterBody2D`, a
+  `class_name` in a hand-written `.gd` and a path base (`extends "res://x.gd"`, absolute or
+  relative) both resolve, and a file with no `extends` answers `RefCounted`, which is what
+  GDScript answers. A chain that cannot be followed all the way to an engine class, text the
+  lexer refuses included, still answers nothing rather than guessing. A `.gate` still cannot
+  instantiate and still declares no global class name: the `.gd` beside it stays the
+  runnable half and stays the holder of the `class_name`.
+- **Private functions were missing from the script editor's method list** (issue #11). The
+  list is built by scanning for declarations, and the scan trimmed a leading `static ` and
+  then looked for `func`, so it saw `func` and `static func` and nothing else. Every other
+  spelling GATE allows was absent: `priv func`, which is how a private function is written,
+  along with `pub`, `virtual`, `override`, `final`, `abstract`, operator overloads and every
+  combination of those with `static`. The scan reads the tokens the editor's validation pass
+  has already produced, so it now sees every spelling in any order, an annotation in front
+  of the declaration on the same line, and the line number in the `.gate`. It also stopped
+  listing a `func` written inside a block string, which the line scan could not tell from a
+  declaration.
+- **Completion offered every function's parameters everywhere in the file** (issue #11).
+  The walk that collects locals had no test of where the caret is: inside `run(d: Damage)`
+  it offered `amount` and `label`, the parameters of another function, and typing `label.`
+  answered with String's members for a name that is not in scope. A parameter is now
+  offered only inside its own function, a local only below its own line and inside the
+  block that declares it, a `for` variable only inside the loop, and a local in an inner
+  `class` does not leak out of it. Members of the class the caret is in are offered
+  everywhere in it, as before. Locals in an `if`, `else`, `match` or `while` block are now
+  reached by the same walk, so a declaration in one is in scope inside it.
+- **A `for` variable was never offered by name** (issue #11). `for i in 3:` and then
+  typing `i` offered no `i`, although the type behind it was already worked out: the loop
+  variable was the one declaration the walk did not collect. Loop variables over a range,
+  an integer, a string, a typed array, a typed `Dictionary` and `enumerate` are now
+  offered, each with the type the iterable gives it, and the innermost one wins where a
+  loop shadows an outer name. An iterable whose type GATE cannot establish still offers
+  nothing, and `i.` on an integer still offers nothing, because the engine gives `int` no
+  members of its own.
 - **A type-first constant named its own type as taken.** `const str NAME = "abc"` failed
   with "unknown type 'str'", and so did every other use of `str` in the same file: the scan
   that works out which shorthands a file has declared for itself read the token straight

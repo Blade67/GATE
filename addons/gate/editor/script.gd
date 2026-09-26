@@ -3,9 +3,14 @@ extends ScriptExtension
 
 ## A `.gate` file, as the editor sees it.
 ##
-## It is a Script so the script editor will open it, and nothing more: it cannot
-## instantiate, has no members and reports no methods. The runnable half of a `.gate`
-## is the `.gd` GATE writes beside it, and that file is an ordinary GDScript.
+## It is a Script so the script editor will open it, and one question more: what its
+## `extends` chain finally reaches. It still cannot instantiate and still reports no
+## members. The runnable half of a `.gate` is the `.gd` GATE writes beside it, and
+## that file is an ordinary GDScript.
+##
+## Godot never asks a `.gate` for its method list, its members, its constants, its
+## properties, its signals or a member's line, so those answers stay empty. The
+## script editor's method list comes from `language.gd:_validate` instead.
 
 const _Registry: GDScript = preload("res://addons/gate/editor/registry.gd")
 
@@ -48,6 +53,8 @@ func _editor_can_reload_from_file() -> bool:
 	return true
 
 
+## False, whatever `_get_instance_base_type()` answers. Answering questions about a
+## `.gate` must never make one runnable: the `.gd` beside it is the runnable half.
 func _can_instantiate() -> bool:
 	return false
 
@@ -68,6 +75,9 @@ func _get_base_script() -> Script:
 	return null
 
 
+## Empty even when the file declares a `class_name`. Godot resolves a global class
+## before it asks the language, so a `.gate` holding the name would shadow the `.gd`
+## that actually runs. That is what made Ctrl-click open the generated file once.
 func _get_global_name() -> StringName:
 	return &""
 
@@ -76,8 +86,24 @@ func _inherits_script(script: Script) -> bool:
 	return false
 
 
+## The engine class at the root of the `extends` chain.
+##
+## The Scene dock asks this and nothing else before it lets a node be dragged into
+## the file: an empty answer fails `ClassDB.is_parent_class("", "Node")` and the drop
+## is refused. The answer comes from the live buffer and the project's registry, the
+## way completion and lookup answer.
+##
+## Empty whenever the chain cannot be followed all the way to an engine class, text
+## the lexer refuses included. This fires while you type, so a half-typed file is the
+## normal state, and a base type nothing can back up is worse than none.
 func _get_instance_base_type() -> StringName:
-	return &""
+	if not _Registry.is_active():
+		return &""
+	var language: ScriptLanguage = _Registry.language()
+	if language == null:
+		return &""
+	var answer: Variant = language.call("base_type_of", _source, resource_path)
+	return answer if answer is StringName else &""
 
 
 func _instance_create(for_object: Object) -> int:
