@@ -4,6 +4,23 @@
 
 ### Added
 
+- **A language server for `.gate` files, off by default.** GATE speaks LSP over a
+  loopback socket from inside the Godot editor, the way Godot's own GDScript language
+  server does, so a `.gate` can be edited in Neovim, Helix, Zed or VS Code. Turn it on
+  with the project setting `gate/lsp/enabled`; `gate/lsp/port` is 6100, it binds
+  `127.0.0.1` and nothing else, and a port already taken is reported rather than swapped
+  for another one. What it answers so far is diagnostics: the errors and warnings for the
+  file you are editing, published as you type and on save, with GATE's hint carried as
+  related information rather than glued onto the message. They are the same errors and
+  warnings Godot's script editor shows on the same file, because both come from one pass
+  over one set of tokens. The whole project's errors still go to the Output panel - what
+  the socket carries is what the script editor underlines. Requests GATE does not answer
+  yet, such as completion, definition and hover, are answered "method not found" rather
+  than with an empty result, so a client falls back to its own word list instead of
+  believing GATE has nothing to offer. While your editor holds a file open, everything
+  GATE says about that file is computed from your buffer; anything it has to read from
+  another file comes from disk, so an unsaved change in a base class is not taken into
+  account while it looks at the file that extends it.
 - **Attach Script creates the `.gate`.** Choosing GATE in the Scene dock's *Attach
   Script* dialog used to be refused, with a sentence explaining that a node has to run
   the compiled `.gd`. It now writes the `.gate` from the chosen template, compiles it

@@ -187,9 +187,24 @@ func _get_built_in_templates(object: StringName) -> Array[Dictionary]:
 ## Everything past that - unknown types, null analysis, the superset checks - needs
 ## the whole project and is left to the build, which already pushes its errors to the
 ## Output panel with the `.gate` line on them.
-func _validate(script: String, path: String, validate_functions: bool, validate_errors: bool,
-		validate_warnings: bool, validate_safe_lines: bool) -> Dictionary:
-	var text: String = script.replace("\r\n", "\n").replace("\r", "\n")
+## The text the lexer sees. The script editor hands over whatever its buffer holds
+## and a client sends whatever its own file holds, so both come through here.
+static func normalized(script: String) -> String:
+	return script.replace("\r\n", "\n").replace("\r", "\n")
+
+
+## Every problem one file's text has: the errors the editor underlines, each with
+## the hint GATE wrote for it, and the warnings beside them.
+##
+## `_validate` is one caller and the language server is the other, so a squiggle in
+## Godot's script editor and a diagnostic sent to an external editor come from one
+## pass over one set of tokens.
+##
+## The tokens come back with the problems because the caller that wants the
+## function list has them already, and lexing twice is most of this callback's
+## budget.
+static func problems(script: String, path: String, want_warnings: bool) -> Dictionary:
+	var text: String = normalized(script)
 	var diagnostics: GateDiagnostics = GateDiagnostics.new()
 	diagnostics.file = path
 	var tokens: Array = GateLexer.new().tokenize(text, diagnostics)
@@ -202,27 +217,44 @@ func _validate(script: String, path: String, validate_functions: bool, validate_
 			"line": item.line,
 			"column": item.col,
 			"message": item.message,
+			"hint": item.hint,
 			"path": path,
 		})
 	if not errors.is_empty():
 		var first: int = int(errors[0]["line"])
 		for item in diagnostics.items:
-			if item.level == GateDiagnostics._Level.WARNING and item.line < first 					and item.message.begins_with("string literal spans more than one line"):
+			if item.level == GateDiagnostics._Level.WARNING and item.line < first \
+					and item.message.begins_with("string literal spans more than one line"):
 				errors = [{
 					"line": item.line,
 					"column": item.col,
 					"message": "string is not closed on this line",
+					"hint": item.hint,
 					"path": path,
 				}]
 				break
 	var warnings: Array = []
-	if validate_warnings and errors.is_empty():
+	if want_warnings and errors.is_empty():
 		warnings = _Warnings.new().collect(path, tokens)
+	return {"errors": errors, "warnings": warnings, "tokens": tokens}
+
+
+func _validate(script: String, path: String, validate_functions: bool, validate_errors: bool,
+		validate_warnings: bool, validate_safe_lines: bool) -> Dictionary:
+	var found: Dictionary = problems(script, path, validate_warnings)
+	var errors: Array = []
+	for item in found["errors"]:
+		errors.append({
+			"line": item["line"],
+			"column": item["column"],
+			"message": item["message"],
+			"path": item["path"],
+		})
 	return {
 		"valid": errors.is_empty(),
 		"errors": errors,
-		"warnings": warnings,
-		"functions": _functions_in(tokens) if validate_functions else PackedStringArray(),
+		"warnings": found["warnings"],
+		"functions": _functions_in(found["tokens"]) if validate_functions else PackedStringArray(),
 		"safe_lines": PackedInt32Array(),
 	}
 

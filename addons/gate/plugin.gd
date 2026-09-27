@@ -6,6 +6,7 @@ extends EditorPlugin
 const _SourceFollow := preload("res://addons/gate/source_follow.gd")
 const _Integration := preload("res://addons/gate/editor/integration.gd")
 const _Tabs := preload("res://addons/gate/editor/tabs.gd")
+const _LspServer := preload("res://addons/gate/editor/lsp_server.gd")
 
 const RECOMPILE_ITEM: String = "Recompile all GATE files"
 
@@ -18,6 +19,7 @@ var _swept_after_scan: bool = false
 var _rescan_pending: bool = false
 var _removed: PackedStringArray = PackedStringArray()
 var _told: Dictionary = {}
+var _lsp: Node = null
 
 
 func _enter_tree() -> void:
@@ -31,6 +33,12 @@ func _enter_tree() -> void:
 		_fs.filesystem_changed.connect(_on_fs_changed)
 	_follow.attach()
 	_integration.attach(self)
+	# Its own node, with its own _process: this plugin's _process is the project
+	# warm-up and switches itself off, so a listener polled from there would go
+	# quiet a few seconds into the session. Off unless gate/lsp/enabled says
+	# otherwise, which the node reads for itself.
+	_lsp = _LspServer.new()
+	add_child(_lsp)
 	add_tool_menu_item(RECOMPILE_ITEM, _recompile_all)
 	compile_all.call_deferred()
 
@@ -61,6 +69,12 @@ func _disable_plugin() -> void:
 
 func _exit_tree() -> void:
 	remove_tool_menu_item(RECOMPILE_ITEM)
+	# Removed before anything else, so the port is back the moment GATE is switched
+	# off rather than whenever the editor gets around to freeing this node.
+	if _lsp != null:
+		remove_child(_lsp)
+		_lsp.free()
+		_lsp = null
 	# Before GATE's saver goes inactive. On the way out Godot converts each open tab's
 	# indentation and saves the tabs that changed; a `.gate` tab it cannot save makes it
 	# open an error dialog while the tree shuts down, twice per tab. The layout already

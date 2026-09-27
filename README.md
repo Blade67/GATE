@@ -30,6 +30,7 @@ Bugs and feature requests go in [issues](https://github.com/Blade67/GATE/issues)
    * [Conditional compilation](#conditional-compilation)
    * [Expressions](#expressions)
 - [In the editor](#in-the-editor)
+- [Editing a `.gate` in another editor](#editing-a-gate-in-another-editor)
 - [Performance](#performance)
 - [Known limitations](#known-limitations)
 - [Verification](#verification)
@@ -485,6 +486,48 @@ Two things deliberately do not work.
 - **Ctrl-click only follows what GATE can type.** A member reached through a value
   whose type GATE cannot see is not underlined, and neither is a member of an engine
   class.
+
+## Editing a `.gate` in another editor
+
+GATE speaks LSP, so a `.gate` can be edited in Neovim, Helix, Zed or VS Code. The server
+runs inside the Godot editor, the way Godot's own GDScript language server does, which is
+what makes what it tells your editor and what the script editor shows you come from the
+same code rather than from two implementations that drift apart.
+
+It is off unless you ask for it. In *Project -> Project Settings -> GATE*:
+
+- `gate/lsp/enabled` - off by default. Nobody gets a listening socket they did not want.
+- `gate/lsp/port` - 6100 by default. It binds `127.0.0.1` and nothing else. If that port
+  is already taken, GATE says so and stops instead of moving to another one: a client is
+  configured with a fixed port, and a server that quietly moves is a server the client
+  never finds.
+
+Godot has to be running with the project open for anything to answer.
+
+**What it answers today.** Errors and warnings for `.gate` files, published as you type
+and again when you save, and cleared when the file is fixed or closed. Where GATE has a
+hint it arrives as related information, so your editor can show the message on the line
+and the hint on demand. Completion, go-to-definition, hover, signature help and a document
+outline are not answered yet; a client asking for one is told the method is not there,
+which is what makes it fall back to its own word list rather than conclude GATE has
+nothing to say.
+
+**What it does not carry.** The whole project's errors are not here. Unknown types, the
+null analysis and the superset checks need the build, and the build reports them to
+Godot's Output panel, where an external editor cannot see them. What comes over the socket
+is what the script editor underlines while you type, and no more.
+
+**Unsaved changes count for the file you are in, and only that one.** While your editor
+holds a file open, everything GATE says about that file is computed from your buffer.
+Anything it has to read from another file - a base class, when it is working out whether a
+local shadows a member of it - is read from disk. So a member you added to a base class
+and have not saved is not taken into account while GATE looks at the file that extends it.
+Saving fixes it once Godot has noticed the file changed, which happens the next time the
+editor scans the filesystem.
+
+**One file, one editor.** A `.gate` open in Godot's script editor and in an external
+editor at the same time is two buffers over one file, and GATE does not arbitrate between
+them. Pick one.
 
 ## Performance
 
