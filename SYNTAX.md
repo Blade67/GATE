@@ -10,6 +10,7 @@ down to.
 - [Type names](#type-names)
 - [Declarations](#declarations)
 - [Statements and lines](#statements-and-lines)
+- [Comments](#comments)
 - [Nullable types](#nullable-types)
 - [Unions and tuples](#unions-and-tuples)
 - [Typed callables](#typed-callables)
@@ -235,6 +236,38 @@ carries into the next line.
 
 An indented block under a header GATE does not read - a Godot 3 `remote func`, for instance -
 is kept whole, as the source text it was, and comes out exactly as it went in.
+
+## Comments
+
+`#` and `##` mean what they mean in GDScript, and both are carried into the generated
+`.gd`. A `##` block above a declaration is the documentation Godot builds its class
+reference from, so it has to stay against the declaration with no blank line between:
+GATE keeps it there.
+
+```gdscript
+## The damage one hit does.
+##
+## Capped at `Combat.MAX_DAMAGE`.
+int power = 3            # a note on the line it belongs to
+```
+
+A comment on its own line is put back above whatever follows it, at that block's
+indentation. A blank line between the comment and the declaration is kept if you wrote
+one, and never added if you did not. A comment written on the end of a line of code is
+put back on that line, with the spacing you gave it.
+
+Two cases are dropped, and both are reported here rather than left to be discovered:
+
+- **Inside an unclosed bracket.** A comment in the middle of a wrapped argument list or
+  array literal does not survive. GATE's lexer discards it before a token exists, and
+  the expression is rebuilt from the syntax tree rather than copied, so there is nowhere
+  to put it back.
+- **On a line that became more than one line, or none.** `@rpc func f()` written on a
+  single line comes out on two, and a trailing comment on it has no single right home,
+  so it is dropped rather than guessed at.
+
+A comment is part of the file's content, so editing one recompiles that file. It does
+not rebuild the files that use it, because nothing they read has changed.
 
 ## Nullable types
 

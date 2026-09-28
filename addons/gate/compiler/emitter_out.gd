@@ -22,6 +22,16 @@ var _indent: int = 0
 ## the only rule stable in both directions.
 var _blank_before: Dictionary = {}
 
+var _src_lines: PackedStringArray = []
+
+var _leading_comment: Dictionary = {}   ## source line -> text, comment alone on its line
+
+var _trailing_comment: Dictionary = {}   ## source line -> the gap and text to append
+
+var _claimed_comment: Dictionary = {}   ## source lines already put back, never twice
+
+var _run_stopped_at_claimed: bool = false
+
 var _pending_line_src: Array = []
 
 var _coll_depth: int = 0
@@ -31,6 +41,7 @@ func set_source(src: String) -> void:
 	_src_text = src
 	_blank_before.clear()
 	var lines: PackedStringArray = src.split("\n")
+	_src_lines = lines
 	for i in range(lines.size()):
 		var j: int = i - 1
 		var saw_blank: bool = false
@@ -51,9 +62,7 @@ func set_source(src: String) -> void:
 			_blank_before[i + 1] = true
 
 
-static func _is_annotation_only_line(t: String) -> bool:
-	if not t.begins_with("@"):
-		return false
+static func _after_annotation(t: String) -> int:
 	var i: int = 1
 	while i < t.length() and _is_name_char_out(t[i]):
 		i += 1
@@ -77,7 +86,23 @@ static func _is_annotation_only_line(t: String) -> bool:
 					i += 1
 					break
 			i += 1
-	return t.substr(i).strip_edges() == ""
+	return i
+
+
+static func _is_annotation_only_line(t: String) -> bool:
+	if not t.begins_with("@"):
+		return false
+	return t.substr(_after_annotation(t)).strip_edges() == ""
+
+
+## The same, but a trailing comment does not disqualify the line: `@warning_ignore(...)
+## # why` above a `##` block is still the declaration's own annotation, and stopping
+## there orphaned the whole doc block on the second compile.
+static func _is_annotation_line_above(t: String) -> bool:
+	if not t.begins_with("@"):
+		return false
+	var rest: String = t.substr(_after_annotation(t)).strip_edges()
+	return rest == "" or rest.begins_with("#")
 
 
 static func _is_name_char_out(c: String) -> bool:
@@ -85,10 +110,170 @@ static func _is_name_char_out(c: String) -> bool:
 		or (c >= "0" and c <= "9") or c == "_")
 
 
-func _blank_gap(src_line: int) -> void:
-	if not _blank_before.has(src_line):
+func set_comments(tokens: Array) -> void:
+	_leading_comment.clear()
+	_trailing_comment.clear()
+	_claimed_comment.clear()
+	# Output opens with the generated banner, which is comments. Reading GATE's own output
+	# back must not take that in as the file's own, or every compile reprints it.
+	var skip_to: int = HEADER_LINES.size() if _src_text.begins_with(HEADER_MARKER) else 0
+	var code_on: Dictionary = {}
+	for t in tokens:
+		var tok: GateLexer._Token = t
+		if tok.type == GateLexer._T.COMMENT or tok.type == GateLexer._T.NEWLINE \
+				or tok.type == GateLexer._T.INDENT or tok.type == GateLexer._T.DEDENT \
+				or tok.type == GateLexer._T.EOF:
+			continue
+		code_on[tok.line] = true
+	for t in tokens:
+		var tok2: GateLexer._Token = t
+		if tok2.type != GateLexer._T.COMMENT or tok2.line <= skip_to:
+			continue
+		if code_on.has(tok2.line):
+			_trailing_comment[tok2.line] = _gap_before(tok2.line, tok2.col) + tok2.value
+		else:
+			_leading_comment[tok2.line] = tok2.value
+
+
+## The whitespace the author left between the code and the `#`, so a trailing comment
+## keeps its own spacing rather than a house style GATE does not otherwise impose.
+func _gap_before(line: int, col: int) -> String:
+	if line < 1 or line > _src_lines.size():
+		return "  "
+	var text: String = _src_lines[line - 1]
+	var at: int = mini(col - 1, text.length())
+	var start: int = at
+	while start > 0 and (text[start - 1] == " " or text[start - 1] == "\t"):
+		start -= 1
+	var gap: String = text.substr(start, at - start)
+	return gap if gap != "" else " "
+
+
+## Puts a trailing comment back on the line it was written on.
+##
+## Only where one source line produced exactly one real output line. A source
+## line can become several - `@rpc func f()` on one line comes out on two - or
+## none at all, and there is then no single right place for the comment, so it is
+## dropped rather than guessed at. Trailing comments are about 5% of the
+## comments in real code, and the part of that dropped here is smaller again.
+func emit_inline_comments() -> void:
+	if _trailing_comment.is_empty():
 		return
-	_blank_line(src_line)
+	var real: Dictionary = {}
+	for i in range(mini(_out.size(), _map.size())):
+		var t: String = _out[i].strip_edges()
+		# Blank and comment lines do not count, or the eight-line banner - all of
+		# which map to source line 1 - would stop line 1 ever qualifying.
+		if t == "" or t.begins_with("#"):
+			continue
+		real[_map[i]] = int(real.get(_map[i], 0)) + 1
+	var inside: Dictionary = GateCompiler.lines_inside_strings("\n".join(_out))
+	for i in range(mini(_out.size(), _map.size())):
+		var src_line: int = _map[i]
+		if not _trailing_comment.has(src_line) or int(real.get(src_line, 0)) != 1:
+			continue
+		# A region copied out as written already carries its own trailing comment. Appending
+		# again doubled it, and the lexer reads everything after the first `#` as one comment,
+		# so the next compile doubled the doubled one.
+		if _claimed_comment.has(src_line):
+			continue
+		# A line that opens a multi-line string is not itself marked as inside one,
+		# but anything appended to it lands in the string.
+		if inside.has(i) or inside.has(i + 1):
+			continue
+		var text: String = _out[i]
+		var stripped: String = text.strip_edges()
+		if stripped == "" or stripped.begins_with("#") or text.ends_with("\\"):
+			continue
+		_out[i] = text + String(_trailing_comment[src_line])
+
+
+func first_code_line() -> int:
+	for i in range(_src_lines.size()):
+		var t: String = _src_lines[i].strip_edges()
+		if t != "" and not t.begins_with("#"):
+			return i + 1
+	return 0
+
+
+func emit_trailing_comments() -> void:
+	var last_code: int = 0
+	for i in range(_src_lines.size()):
+		var t: String = _src_lines[i].strip_edges()
+		if t != "" and not t.begins_with("#"):
+			last_code = i + 1
+	var run: Array = []
+	for line in range(last_code + 1, _src_lines.size() + 1):
+		if _leading_comment.has(line) and not _claimed_comment.has(line):
+			run.append(line)
+	_emit_comment_run(run)
+
+
+func _blank_gap(src_line: int) -> void:
+	var run: Array = _comment_run_above(src_line)
+	if run.is_empty():
+		# An annotated statement gaps twice, once for itself and once for what it wraps, and
+		# `_blank_before` reads a blank straight through the comments above it.
+		if _run_stopped_at_claimed:
+			return
+		if _blank_before.has(src_line):
+			_blank_line(src_line)
+		return
+	var prev: int = _emit_comment_run(run)
+	if _blank_between(prev, src_line):
+		_blank_line(src_line)
+
+
+## Emits a block of comment lines as one unit. Asking `_blank_before` per line instead
+## reads a blank through the comments above and separates every line of a block.
+func _emit_comment_run(run: Array) -> int:
+	if run.is_empty():
+		return 0
+	if _blank_before.has(int(run[0])):
+		_blank_line(int(run[0]))
+	var prev: int = 0
+	for entry in run:
+		var line: int = int(entry)
+		if prev > 0 and _blank_between(prev, line):
+			_blank_line(line)
+		_claimed_comment[line] = true
+		_line(String(_leading_comment[line]), line)
+		prev = line
+	return prev
+
+
+func _comment_run_above(src_line: int) -> Array:
+	var out: Array = []
+	_run_stopped_at_claimed = false
+	var i: int = src_line - 1
+	while i >= 1 and i <= _src_lines.size():
+		if _leading_comment.has(i):
+			if _claimed_comment.has(i):
+				_run_stopped_at_claimed = true
+				break
+			out.push_front(i)
+			i -= 1
+			continue
+		var t: String = _src_lines[i - 1].strip_edges()
+		# An annotation on its own line belongs to the declaration below it, so a
+		# doc comment above `@export` documents the `var`, not the annotation.
+		if t == "" or _is_annotation_line_above(t):
+			i -= 1
+			continue
+		break
+	return out
+
+
+func _claim_lines(from_line: int, to_line: int) -> void:
+	for i in range(from_line, to_line + 1):
+		_claimed_comment[i] = true
+
+
+func _blank_between(after: int, before: int) -> bool:
+	for i in range(after + 1, before):
+		if i >= 1 and i <= _src_lines.size() and _src_lines[i - 1].strip_edges() == "":
+			return true
+	return false
 
 
 func _blank_line(src_line: int) -> void:

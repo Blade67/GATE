@@ -419,10 +419,10 @@ With the plugin enabled, Godot treats `.gate` as a language of its own.
   underlining it.
 - **Breakpoints work.** Set one in a `.gate` and the running game stops there, and
   the stop is shown in the `.gate` with the line marked, not in the generated `.gd`.
-  Stepping follows. A breakpoint on a line that compiles to nothing - a comment, a
-  blank, a declaration that lowers away - is taken back with a toast saying why,
-  rather than left sitting there never firing. Godot's own debugger panels still name
-  the `.gd`.
+  Stepping follows. A breakpoint on a line the game can never stop on - a blank, a
+  declaration that lowers away, or a comment, which is carried through but is still
+  not something Godot breaks on - is taken back with a toast saying why, rather than
+  left sitting there never firing. Godot's own debugger panels still name the `.gd`.
 - **Autocompletion knows GATE's own forms.** After a dot it offers the members of
   whatever is on the left - a struct from another `.gate`, a `T?` field, a
   `class_name`, a hand-written `.gd` class, an autoload, an engine class - including
@@ -621,8 +621,14 @@ iterate, so it pays off only if you make more than about 1.3 passes per rebuild.
 
 ## Known limitations
 
-- **Comments are dropped**, including `##` doc comments. Renaming a documented `.gd` to
-  `.gate` strips the documentation Godot's class reference is built from.
+- **A comment written inside brackets is dropped.** Comments are carried into the output,
+  `##` docs included, but not one written inside an unclosed `(`, `[` or `{`. GATE's
+  lexer discards those before a token exists, and the expression around them is rebuilt
+  from the syntax tree rather than copied, so there is no line to put them back on. About
+  2% of the comments in a real corpus. A comment written on the end of a line of code is
+  also dropped in the one case where that line became more than one line of output, or
+  none: `@rpc func f()` written on a single line comes out on two, and there is then no
+  single right place for it.
 - **Godot's debugger panels name the generated `.gd`.** The game runs the `.gd`, so the
   Stack Frames list and a runtime error point at it; a toast names the `.gate` line each
   came from. Breakpoints and stepping are shown in the `.gate`. A stop on a generated line

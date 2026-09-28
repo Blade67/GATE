@@ -90,6 +90,11 @@ func emit(mod: GateAST._Module, diags: GateDiagnostics, path: String) -> Diction
 
 	for hl in HEADER_LINES:
 		_line((hl as String) % path if (hl as String).contains("%s") else hl, 1)
+	# A licence header or a file-level doc sits above `class_name`/`extends`, and
+	# neither of those goes through `_emit_member`, so nothing else would claim it.
+	var head: int = first_code_line()
+	if head > 0:
+		_blank_gap(head)
 	for ha in mod.header_annotations:
 		_emit_annotation(ha)
 	if mod.class_name_decl != "":
@@ -117,6 +122,9 @@ func emit(mod: GateAST._Module, diags: GateDiagnostics, path: String) -> Diction
 
 	if _init_helper_scopes.has("."):
 		_emit_init_helper()
+
+	emit_trailing_comments()
+	emit_inline_comments()
 
 	var pl: Array = _preload_lines()
 	if not pl.is_empty():
@@ -276,6 +284,8 @@ func _emit_member(m) -> void:
 
 func _emit_raw(r: GateAST._RawStmt) -> void:
 	var lines: PackedStringArray = r.text.split("\n")
+	# Kept whole, comments included, so nothing downstream may claim them again.
+	_claim_lines(r.line, r.line + lines.size() - 1)
 	var i: int = 0
 	for l in lines:
 		var stripped: String = l.strip_edges(true, false)
@@ -1505,6 +1515,11 @@ func _emit_accessor_tail(vd: GateAST._VarDecl) -> void:
 		if d > 0:
 			unit = d if unit == 0 else _gcd(unit, d)
 	var src0: int = vd.setter_line if vd.setter_line > 0 else vd.line
+	# Every line of an accessor is accounted for here, copied as written or
+	# compiled through the statement emitter, so a comment inside one has already
+	# been dealt with. Left unclaimed, the next member's gap picks it up and
+	# prints it a second time at column 0.
+	_claim_lines(src0, src0 + lines.size() - 1)
 	var blocks: Array = []
 	if vd.get_ast != null:
 		blocks.append([int(vd.get_span[0]), int(vd.get_span[1]), vd.get_ast, false])

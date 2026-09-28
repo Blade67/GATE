@@ -23,9 +23,11 @@ already released is in [CHANGELOG.md](CHANGELOG.md).
   grammar does. Not ruled out, not started.
 - **A pipe operator.** Something like `value |> f() |> g()`. Nothing is designed yet,
   and it has to earn its place against the confusion of a new operator.
-- **Keeping `##` doc comments.** Comments are dropped today, which means renaming a
-  documented `.gd` strips the documentation Godot builds its class reference from. Doc
-  comments are the ones worth carrying through.
+- **Carrying a comment written inside brackets.** Comments are kept now, `##` docs
+  included, but not one written inside an unclosed `(`, `[` or `{`: the lexer drops
+  those before a token exists, and the expression around them is rebuilt from the
+  syntax tree rather than copied. About 2% of the comments in a real corpus, and the
+  awkward 2%.
 - **Faster first opens after converting a project.** Converting 211 files costs about
   130 s on the first open and about 50 s on the second, because Godot registers the
   classes GATE has just written. Once it settles, opening it unchanged is about 10 s.

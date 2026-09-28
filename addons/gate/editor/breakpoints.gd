@@ -173,28 +173,51 @@ func unwatch() -> void:
 	_clear_executing()
 
 
+## Whether a `.gate` line can carry a breakpoint, and why not when it cannot.
+##
+## A line that generated nothing never stops the game, and neither does one that
+## generated only a comment. Comments are carried into the output now, so a
+## comment line does have a mapping - and sending a breakpoint there would leave
+## exactly the armed-but-never-firing dot this refusal exists to prevent.
+static func breakable(gate_path: String, gate_line: int) -> Dictionary:
+	var out_path: String = _Sourcemap.output_for(gate_path)
+	var mapped: Dictionary = _Sourcemap.to_output(gate_path, gate_line)
+	if mapped.is_empty():
+		if not FileAccess.file_exists(out_path):
+			return {"ok": false, "reason": "%s has not been compiled yet" % out_path.get_file()}
+		if _Sourcemap.read(out_path).is_empty():
+			return {"ok": false, "reason": "the sourcemap beside %s is out of date" % out_path.get_file()}
+		return {"ok": false, "reason": "nothing is generated from that line"}
+	var gd: String = String(mapped.get("gd", ""))
+	var at: int = int(mapped.get("line", 0))
+	if gd != "" and at > 0 and FileAccess.file_exists(gd):
+		var lines: PackedStringArray = FileAccess.get_file_as_string(gd).split("\n")
+		if at <= lines.size():
+			var text: String = lines[at - 1].strip_edges()
+			if text == "" or text.begins_with("#"):
+				return {"ok": false, "reason": "that line is a comment"}
+	return {"ok": true, "reason": ""}
+
+
 func _on_toggled(line: int, edit: CodeEdit, gate_path: String) -> void:
 	var enabled: bool = edit.is_line_breakpointed(line)
 	if not enabled:
 		_refused.erase("%s:%d" % [gate_path, line])
 		_send_one(gate_path, line + 1, false)
 		return
-	if not _Sourcemap.to_output(gate_path, line + 1).is_empty():
+	var verdict: Dictionary = breakable(gate_path, line + 1)
+	if bool(verdict["ok"]):
 		_send_one(gate_path, line + 1, true)
 		return
-	# Nothing was generated from this line, so nothing can ever stop on it. Taking
-	# the dot straight back is the only honest answer; leaving it would be a
-	# breakpoint that looks set and never fires.
+	# Nothing the game can stop on came from this line - it generated nothing, or
+	# only a comment. Taking the dot straight back is the only honest answer;
+	# leaving it would be a breakpoint that looks set and never fires.
 	edit.set_line_as_breakpoint(line, false)
 	var key: String = "%s:%d" % [gate_path, line]
 	if _refused.has(key):
 		return
 	_refused[key] = true
-	var reason: String = "nothing is generated from that line"
-	if not FileAccess.file_exists(_Sourcemap.output_for(gate_path)):
-		reason = "%s has not been compiled yet" % _Sourcemap.output_for(gate_path).get_file()
-	elif _Sourcemap.read(_Sourcemap.output_for(gate_path)).is_empty():
-		reason = "the sourcemap beside %s is out of date" % _Sourcemap.output_for(gate_path).get_file()
+	var reason: String = String(verdict["reason"])
 	EditorInterface.get_editor_toaster().push_toast(
 		"GATE: no breakpoint on %s:%d - %s" % [gate_path.get_file(), line + 1, reason],
 		EditorToaster.SEVERITY_WARNING,
