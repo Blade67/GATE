@@ -32,6 +32,7 @@ class _Doc extends RefCounted:
 
 var _open: Dictionary = {}
 var _waiting: Dictionary = {}
+var _full: Dictionary = {}
 
 
 ## A document URI as a `res://` path, or why it is not one, as
@@ -64,6 +65,23 @@ static func path_of(uri: String) -> Dictionary:
 		return _fault("GATE's language server answers for .gate files only, and \"%s\" is not one"
 			% relative)
 	return {"path": "res://" + relative, "fault": ""}
+
+
+## A `res://` path as a document URI, which is the way back out of `path_of`.
+static func uri_of_path(path: String) -> String:
+	var full: String = ProjectSettings.globalize_path(path).replace("\\", "/")
+	var parts: PackedStringArray = PackedStringArray()
+	for part in full.split("/"):
+		var piece: String = String(part)
+		parts.append(piece if _is_drive(piece) else piece.uri_encode())
+	var joined: String = "/".join(parts)
+	if joined.begins_with("/"):
+		return "file://" + joined
+	return "file:///" + joined
+
+
+static func _is_drive(part: String) -> bool:
+	return part.length() == 2 and part[1] == ":"
 
 
 ## The client's text for a file it holds open, or the file on disk.
@@ -128,22 +146,41 @@ func close(uri: String) -> Dictionary:
 	var path: String = String(found["path"])
 	_open.erase(path)
 	_waiting.erase(path)
+	_full.erase(path)
 	return found
 
 
 func clear() -> void:
 	_open.clear()
 	_waiting.clear()
+	_full.clear()
 
 
 ## This file is due for diagnostics in `polls` polls. Asked again before it comes
 ## due, the count starts over, which is what makes it a debounce.
-func wait(path: String, polls: int) -> void:
+##
+## `full` asks for the tier that costs a compile as well as the one that costs a
+## lex. It is set by a save and by nothing else: the compile is measured at twenty
+## times the lexer pass, and a file that is being typed into would pay it on every
+## pause.
+func wait(path: String, polls: int, full: bool = false) -> void:
 	_waiting[path] = maxi(1, polls)
+	if full:
+		_full[path] = true
+
+
+## Whether the publish about to go out is a full one. Asked once: the next change
+## is a keystroke again.
+func take_full(path: String) -> bool:
+	if not _full.has(path):
+		return false
+	_full.erase(path)
+	return true
 
 
 func forget(path: String) -> void:
 	_waiting.erase(path)
+	_full.erase(path)
 
 
 ## One poll: the files whose count has run out, which is usually none.

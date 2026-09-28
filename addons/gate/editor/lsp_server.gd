@@ -16,6 +16,7 @@ const _Protocol: GDScript = preload("res://addons/gate/editor/lsp_protocol.gd")
 const _Positions: GDScript = preload("res://addons/gate/editor/lsp_positions.gd")
 const _Documents: GDScript = preload("res://addons/gate/editor/lsp_documents.gd")
 const _Diagnostics: GDScript = preload("res://addons/gate/editor/lsp_diagnostics.gd")
+const _Editing: GDScript = preload("res://addons/gate/editor/lsp_complete.gd")
 
 const NODE_NAME: String = "GateLanguageServer"
 const ENABLED_SETTING: String = "gate/lsp/enabled"
@@ -343,6 +344,16 @@ func _answer(method: String, id: Variant, params: Dictionary) -> Dictionary:
 					# change it, so there is nothing to read back.
 					"save": {"includeText": false},
 				},
+				"completionProvider": {
+					"triggerCharacters": _Editing.COMPLETION_TRIGGERS,
+					"resolveProvider": false,
+				},
+				"signatureHelpProvider": {
+					"triggerCharacters": _Editing.SIGNATURE_TRIGGERS,
+				},
+				"definitionProvider": true,
+				"hoverProvider": true,
+				"documentSymbolProvider": true,
 			},
 			"serverInfo": {"name": "GATE", "version": _plugin_version()},
 		})
@@ -355,6 +366,22 @@ func _answer(method: String, id: Variant, params: Dictionary) -> Dictionary:
 	if method == "shutdown":
 		_shutting_down = true
 		return _Protocol.result(id, null)
+
+	# --- capability dispatch: one lane's entries go here, nothing else moves ---
+	if method == _Editing.COMPLETION or method == _Editing.SIGNATURE_HELP:
+		return _Editing.answer(method, id, params, _docs, _encoding)
+	# preload here rather than a file-level const so every line this adds to this
+	# file sits between the two markers.
+	if (method == "textDocument/definition" or method == "textDocument/hover"
+			or method == "textDocument/documentSymbol"):
+		var navigation: GDScript = preload("res://addons/gate/editor/lsp_navigation.gd")
+		var about: Dictionary = _Documents.path_of(String(_document_of(params).get("uri", "")))
+		if String(about.get("fault", "")) != "":
+			return _Protocol.failure(id, _Protocol.INVALID_PARAMS, String(about["fault"]))
+		var document: String = String(about["path"])
+		return _Protocol.result(id, navigation.answer(method, _docs.text_of(document),
+			document, params, _encoding))
+	# --- end capability dispatch ---
 	return _Protocol.failure(id, _Protocol.METHOD_NOT_FOUND,
 		"GATE's language server does not answer %s yet" % method)
 
@@ -415,7 +442,7 @@ func _did_save(params: Dictionary) -> void:
 	if not _taken(uri, got):
 		return
 	if _docs.is_open(String(got["path"])):
-		_docs.wait(String(got["path"]), DIAGNOSTIC_AT_ONCE)
+		_docs.wait(String(got["path"]), DIAGNOSTIC_AT_ONCE, true)
 
 
 ## Closing drops the overlay, so the file goes back to being served from disk, and
@@ -468,7 +495,8 @@ func _publish(path: String) -> void:
 	_push("textDocument/publishDiagnostics", {
 		"uri": uri,
 		"version": _docs.version_of(path),
-		"diagnostics": _Diagnostics.of_text(_docs.text_of(path), path, uri, _encoding),
+		"diagnostics": _Diagnostics.of_text(_docs.text_of(path), path, uri, _encoding,
+			_docs.take_full(path)),
 	})
 
 

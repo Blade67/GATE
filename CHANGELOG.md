@@ -9,18 +9,50 @@
   server does, so a `.gate` can be edited in Neovim, Helix, Zed or VS Code. Turn it on
   with the project setting `gate/lsp/enabled`; `gate/lsp/port` is 6100, it binds
   `127.0.0.1` and nothing else, and a port already taken is reported rather than swapped
-  for another one. What it answers so far is diagnostics: the errors and warnings for the
-  file you are editing, published as you type and on save, with GATE's hint carried as
-  related information rather than glued onto the message. They are the same errors and
-  warnings Godot's script editor shows on the same file, because both come from one pass
-  over one set of tokens. The whole project's errors still go to the Output panel - what
-  the socket carries is what the script editor underlines. Requests GATE does not answer
-  yet, such as completion, definition and hover, are answered "method not found" rather
-  than with an empty result, so a client falls back to its own word list instead of
-  believing GATE has nothing to offer. While your editor holds a file open, everything
-  GATE says about that file is computed from your buffer; anything it has to read from
-  another file comes from disk, so an unsaved change in a base class is not taken into
-  account while it looks at the file that extends it.
+  for another one.
+
+  **Diagnostics, in two tiers.** As you type, the errors and warnings Godot's script
+  editor shows on the same file, because both come from one pass over one set of tokens,
+  with GATE's hint carried as related information rather than glued onto the message.
+  When you save, the errors a compile finds as well: unknown types, the null analysis and
+  the superset checks, which used to reach you only through Godot's Output panel, where an
+  external editor cannot see them. A type another `.gate` declares resolves, because the
+  editor already holds the project's registry. The tiers are split because they cost
+  different amounts: the lexer pass is 0.2 ms on a small file and 12.5 ms on a 238-line
+  one, and a compile of the same two is 5.8 ms and 259 ms, on the editor's own main
+  thread. A problem both tiers find is reported once.
+
+  **Completion and signature help.** The same list Godot's script editor offers, in the
+  same order, with GATE's kinds mapped to your editor's icons. Where GATE cannot work out
+  the type of what is left of the dot it offers nothing, exactly as it does in Godot: a
+  confidently wrong list costs more than an empty one. Signature help names the call you
+  are inside and highlights the argument you are on, including after a comma inside a
+  nested call. A method of a Variant built-in such as `String` or `Array` gets no
+  signature, because Godot's own API dump records those methods without their parameters
+  and a signature with an empty parameter list would say the method takes none.
+
+  A callable is offered under its bare name, with the bracket Godot's own completion
+  shows carried in what gets inserted instead. A client filters and sorts on the label,
+  so `hurt(` sorted away from plain names and narrowed worse as you typed.
+
+  **Go-to-definition, hover and an outline.** Definition asks the same code Ctrl-click
+  asks, so it lands in the same place: a local, a parameter, a member, a function, a
+  signal, an enum, a type declared in another `.gate`, a `class_name` in a hand-written
+  `.gd`, an autoload, and anything inherited, including from a base written as a path. A
+  word it cannot place answers nothing rather than the nearest name that looks similar,
+  and the answer is always a location in a file you wrote, never in the `.gd` GATE
+  generated from your `.gate`. Hover returns the declaration as you wrote it and the type
+  GATE has declared for it, as markdown, and nothing at all rather than an empty tooltip
+  where it has nothing to say. The outline is a tree rather than a list: a class holds its
+  members, a namespace holds its classes, an enum holds its keys, and a file that is
+  mid-edit still gets one.
+
+  Requests GATE does not answer yet are answered "method not found" rather than with an
+  empty result, so a client falls back to its own word list instead of believing GATE has
+  nothing to offer. While your editor holds a file open, everything GATE says about that
+  file is computed from your buffer; anything it has to read from another file comes from
+  disk, so an unsaved change in a base class is not taken into account while it looks at
+  the file that extends it.
 - **Attach Script creates the `.gate`.** Choosing GATE in the Scene dock's *Attach
   Script* dialog used to be refused, with a sentence explaining that a node has to run
   the compiled `.gd`. It now writes the `.gate` from the chosen template, compiles it
@@ -144,6 +176,11 @@
   of the project, and for an engine method, with the argument the caret is on marked. It
   is not offered where the callee cannot be placed, and a parenthesis inside a string or a
   comment does not open a call.
+- **Ctrl-click and F1 place an enum's members.** `Mood.CALM`, and `CALM` on its own where
+  the enum is in scope, used to be the one member kind that was not underlined. They now
+  go to the enum that declares them. The key itself has no line of its own - GATE's parser
+  keeps an enum's keys as names on the declaration - so a one-line enum lands on the key
+  and a multi-line one lands at the top of the body.
 
 ### Changed
 

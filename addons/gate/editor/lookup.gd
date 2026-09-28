@@ -11,8 +11,8 @@ extends RefCounted
 ## What it resolves, in the order it tries:
 ##
 ##   1. a local or parameter in the function the caret is in
-##   2. a field, method, signal or enum of the class the caret is in, then of each
-##      of its bases that GATE compiled
+##   2. a field, method, signal, enum or enum member of the class the caret is in,
+##      then of each of its bases that GATE compiled
 ##   3. `X.member`, where `X` is a type name or a variable whose declared type is
 ##      known - the one case where the word alone is not enough, read back off the
 ##      line to the left of the caret
@@ -279,6 +279,8 @@ static func _member_line(members: Array, name: String) -> int:
 		elif member is GateAST._SignalDecl and (member as GateAST._SignalDecl).name == name:
 			found = (member as GateAST._SignalDecl).line
 		elif member is GateAST._EnumDecl and (member as GateAST._EnumDecl).name == name:
+			found = (member as GateAST._EnumDecl).line
+		elif member is GateAST._EnumDecl and (member as GateAST._EnumDecl).keys.has(name):
 			found = (member as GateAST._EnumDecl).line
 		elif member is GateAST._ClassDecl and (member as GateAST._ClassDecl).name == name:
 			found = (member as GateAST._ClassDecl).line

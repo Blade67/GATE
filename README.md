@@ -504,18 +504,88 @@ It is off unless you ask for it. In *Project -> Project Settings -> GATE*:
 
 Godot has to be running with the project open for anything to answer.
 
-**What it answers today.** Errors and warnings for `.gate` files, published as you type
-and again when you save, and cleared when the file is fixed or closed. Where GATE has a
-hint it arrives as related information, so your editor can show the message on the line
-and the hint on demand. Completion, go-to-definition, hover, signature help and a document
-outline are not answered yet; a client asking for one is told the method is not there,
-which is what makes it fall back to its own word list rather than conclude GATE has
-nothing to say.
+### Pointing an editor at it
 
-**What it does not carry.** The whole project's errors are not here. Unknown types, the
-null analysis and the superset checks need the build, and the build reports them to
-Godot's Output panel, where an external editor cannot see them. What comes over the socket
-is what the script editor underlines while you type, and no more.
+The server is a socket rather than a program, so a client has to connect to it rather
+than start it. That is the same shape as Godot's own GDScript server, and it is why an
+editor that can only launch a language server needs something in between.
+
+**Neovim** connects to a socket on its own:
+
+```lua
+vim.lsp.start({
+  name = "gate",
+  cmd = vim.lsp.rpc.connect("127.0.0.1", 6100),
+  root_dir = vim.fs.dirname(vim.fs.find({ "project.godot" }, { upward = true })[1]),
+})
+```
+
+**VS Code** has no built-in way to attach to a language server at all; every language
+there arrives through an extension. There is one for GATE in the `GateVsCode` repository
+beside this one, unpublished and installed by copying a folder.
+
+**Helix and Zed** launch a language server as a child process and talk to it over its
+standard input and output, so they need a bridge that forwards stdio to the socket. Any
+of `nc`, `socat` or a three-line script will do it; none of them is installed on Windows
+by default.
+
+**What it answers today.** Diagnostics, completion, signature help, go-to-definition,
+hover and a document outline. Anything else is answered "method not there", which is what
+makes a client fall back to its own word list rather than conclude GATE has nothing to
+say.
+
+**Go-to-definition refuses rather than guesses.** It answers exactly where Ctrl-click in
+the script editor answers, because it asks the same code: a local, a parameter, a member,
+a function, a signal, an enum, a type declared in another `.gate`, a `class_name` in a
+hand-written `.gd`, an autoload, and anything inherited from a base, including a base
+written as a path. A word it cannot place answers nothing at all rather than the nearest
+name that looks similar. An engine class answers nothing too, since there is no file to
+open; hover still describes it. The answer is always a location in something you wrote -
+the `.gate`, or a `.gd` you wrote yourself - never in the `.gd` GATE generated.
+
+**An enum member takes you to its enum.** GATE's parser keeps an enum's keys as names on
+the declaration and gives them no line of their own, so `Mood.CALM` opens the line `enum
+Mood` is on. On a one-line enum that puts the caret on the key itself; on an enum whose
+body runs over several lines it puts you at the top of it.
+
+**Hover shows the declaration and its declared type.** The line as you wrote it, and the
+type GATE has for it. A `var` with no type on it gets no type line, because the type of
+one of those comes out of the build, against the whole project, and a hover is answered
+from one file. It says nothing at all rather than showing an empty tooltip.
+
+**The outline is the file's own declarations.** Classes, structs, interfaces, traits,
+namespaces, enums and their members, functions, signals, constants and fields, nested the
+way you wrote them. A file that is mid-edit still gets an outline: a half-typed
+declaration costs its own entry and nothing else.
+
+**Diagnostics come in two tiers, and the difference matters.** As you type, you get what
+Godot's script editor underlines on the same file: the lexer's errors and Godot's own
+unused and shadowed-variable warnings. When you save, you also get what a compile finds -
+unknown types, the null analysis, the superset checks - which is everything GATE knows
+about that file. A type declared in another `.gate` resolves, because the editor already
+holds the project's registry. Where GATE has a hint it arrives as related information, so
+your editor can show the message on the line and the hint on demand, and a problem both
+tiers find is reported once.
+
+The split is not arbitrary. The lexer pass takes 0.2 ms on a small file and 12.5 ms on a
+238-line one; compiling the same two takes 5.8 ms and 259 ms, and it runs on the editor's
+main thread, which means Godot is not doing anything else while it does. Paying that on
+every pause in your typing would be paying it dozens of times a minute for an answer that
+has usually not changed. So a keystroke buys the fast tier and a save buys both. If you
+want GATE's full opinion on a file, save it.
+
+**What it still does not carry.** The rest of the project. You get every diagnostic for
+the file you saved, not for the files that depend on it, and a build still reports those
+to Godot's Output panel.
+
+**Completion offers nothing rather than guess, here too.** The list is the one the script
+editor gives, in the same order, with GATE's kinds mapped to your editor's icons. Where
+GATE cannot establish the type of what is left of the dot, the answer is an empty list.
+Signature help names the call you are inside and highlights the argument you are on,
+including after a comma inside a nested call. A method of a Variant built-in such as
+`String` or `Array` gets no signature at all: Godot's own API dump records those methods
+with a name and a return type and no parameters, so there is no argument list to show, and
+an empty one would say the method takes none.
 
 **Unsaved changes count for the file you are in, and only that one.** While your editor
 holds a file open, everything GATE says about that file is computed from your buffer.
