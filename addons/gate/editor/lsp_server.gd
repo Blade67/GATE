@@ -50,6 +50,26 @@ const DIAGNOSTIC_POLLS: int = 3
 ## rather than waiting for the debounce.
 const DIAGNOSTIC_AT_ONCE: int = 1
 
+
+## How long the editor is allowed to sleep between frames while a client is
+## attached, in microseconds. ~60 Hz.
+##
+## The editor sleeps its unfocused period between frames - 100,000 us on the
+## machine this was measured on, against 6,900 focused - and unfocused is what it
+## is the whole time somebody is typing in another editor, which is exactly when
+## this server is answering. That is up to 10 Hz for completion and diagnostics.
+##
+## `OS.low_processor_usage_mode_sleep_usec` is a runtime property, not an editor
+## setting: GATE never writes one of those. The editor does not put its own value
+## back, measured at 0 reversions in 2,032 frames, and this is written every poll
+## rather than once, so an editor that re-applied its own on a focus change would
+## lose it again on the next frame.
+##
+## 6,900 would be the editor's own focused figure, ~145 Hz, and nothing here needs
+## that: it would spin the editor at full rate for as long as an external editor
+## is attached. 10 Hz is what makes completion feel late; 60 Hz does not.
+const HELD_SLEEP_USEC: int = 16000
+
 ## LSP's TextDocumentSyncKind.Full. The whole text arrives on every change: GATE
 ## lexes a file in about 18 ms per thousand lines, so there is nothing to win from
 ## applying ranges, and a range applied wrongly is a file the server and the client
@@ -73,6 +93,9 @@ var _encoding: String = _Positions.UTF16
 var _port: int = 0
 var _failed_port: int = -1
 var _polls: int = 0
+## The period the editor itself last asked for, to be put back on release.
+var _editor_usec: int = 0
+var _holding: bool = false
 
 
 func _init() -> void:
@@ -147,10 +170,12 @@ func stop() -> void:
 	if _server.is_listening():
 		_server.stop()
 	_port = 0
+	_release_rate()
 
 
 func _process(_delta: float) -> void:
 	_polls += 1
+	_hold_rate()
 	if _polls % SETTING_POLL_FRAMES == 0:
 		_apply_settings()
 	if not _server.is_listening():
@@ -161,6 +186,31 @@ func _process(_delta: float) -> void:
 	_pump()
 	_accept()
 	_drain_refusals()
+
+
+## Keep the editor's loop quick enough to answer while it is not the focused
+## window. Only ever shortens the period: a focused editor is already faster than
+## this, and slowing it down to 60 Hz would be a bug rather than a fix.
+func _hold_rate() -> void:
+	var now: int = OS.low_processor_usage_mode_sleep_usec
+	# Any value that is not the one being held is the editor speaking, which is
+	# what a focus change looks like from here.
+	if not _holding or now != HELD_SLEEP_USEC:
+		_editor_usec = now
+	if has_client() and _editor_usec > HELD_SLEEP_USEC:
+		OS.low_processor_usage_mode_sleep_usec = HELD_SLEEP_USEC
+		_holding = true
+		return
+	_release_rate()
+
+
+## Hand the loop back to whatever the editor last wanted, rather than to whatever
+## it wanted when the client connected, which may be a whole focus change ago.
+func _release_rate() -> void:
+	if not _holding:
+		return
+	OS.low_processor_usage_mode_sleep_usec = _editor_usec
+	_holding = false
 
 
 func _apply_settings() -> void:

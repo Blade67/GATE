@@ -383,9 +383,7 @@ static var _resolving: int = 0
 static func _base_type(name: String, module: GateAST._Module, reg: RefCounted,
 		line: int, column: int = ANY_COLUMN) -> String:
 	if name == "self":
-		if module != null and module.class_name_decl != "":
-			return module.class_name_decl
-		return THIS_FILE if module != null else ""
+		return _owner_at(module, line, column)
 	if _declaration_of(name, reg) != null or ClassDB.class_exists(name) \
 			or _global_class(name) != "":
 		return name
@@ -403,6 +401,33 @@ static func _base_type(name: String, module: GateAST._Module, reg: RefCounted,
 	if inherited != "":
 		return inherited
 	return _autoload_type(name, reg)
+
+
+## The type `self` stands for at the caret, and the type a bare name is looked up
+## on. The file's own `class_name`, or the file itself, is only the answer at the
+## file's own level: inside a nested `class`, `struct`, `interface` or `trait`,
+## `self` is that declaration. Reading the file's owner everywhere was one fault
+## wearing two faces - inside `class Unit` the members of Unit were missing from
+## `self.`, and the file's own top-level declarations were offered in their place.
+static func _owner_at(module: GateAST._Module, line: int, column: int) -> String:
+	if module == null:
+		return ""
+	var path: Array = []
+	var ignored: Dictionary = {}
+	_locals(module.members, line, ignored, column, path)
+	return _owner_of(path, module)
+
+
+## The same answer, from a walk that has already been made.
+static func _owner_of(path: Array, module: GateAST._Module) -> String:
+	var enclosing: GateAST._ClassDecl = null
+	for node in path:
+		if node is GateAST._ClassDecl:
+			enclosing = node
+	# A namespace holds no instance, so `self` inside one belongs to the file.
+	if enclosing != null and enclosing.name != "" and enclosing.form != "namespace":
+		return enclosing.name
+	return module.class_name_decl if module.class_name_decl != "" else THIS_FILE
 
 
 static func _autoload_type(name: String, reg: RefCounted) -> String:
@@ -1082,7 +1107,7 @@ static func _in_scope(module: GateAST._Module, reg: RefCounted, line: int,
 			_take(out, taken, option(KIND_VARIABLE, String(name), String(name), HERE))
 		# Unqualified names in a script reach its own members and everything it
 		# inherits, exactly as `self.` does.
-		var owner: String = module.class_name_decl if module.class_name_decl != "" else THIS_FILE
+		var owner: String = _owner_of(path, module)
 		for entry in _members_of(owner, reg, module):
 			_take(out, taken, entry)
 		# A class body is the one place a declaration can go, so it is the one place
@@ -1319,7 +1344,7 @@ static func _call_hint(prefix: String, module: GateAST._Module, reg: RefCounted,
 	if last == 0:
 		if module == null:
 			return ""
-		owner = module.class_name_decl if module.class_name_decl != "" else THIS_FILE
+		owner = _owner_at(module, line, column)
 	else:
 		owner = _resolve_chain(chain.slice(0, last), module, reg, line, column)
 	if owner == "":

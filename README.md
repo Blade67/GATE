@@ -504,6 +504,13 @@ It is off unless you ask for it. In *Project -> Project Settings -> GATE*:
 
 Godot has to be running with the project open for anything to answer.
 
+While a client is attached, GATE keeps the editor's main loop at about 60 Hz. Godot
+sleeps 100 ms between frames when its window is not focused, and not focused is what it
+is the whole time you are typing somewhere else, which is exactly when this is answering:
+the server polls the socket once a frame, so that period is how long a reply can sit
+waiting. It is handed back the moment the client disconnects, and a focused editor, which
+is already quicker than 60 Hz, is left alone.
+
 ### Pointing an editor at it
 
 The server is a socket rather than a program, so a client has to connect to it rather

@@ -289,7 +289,10 @@ static func _declaration_markdown(target: String, line: int, word: String,
 		return ""
 	var out: String = "```gate\n" + written + "\n```"
 	var described: String = _type_markdown(file, target, line, word)
-	if described != "":
+	# A function's declaration and its signature are the same text, give or take
+	# the colon that opens the body, so printing both prints it twice. For a
+	# `var` the second line is its type, and is worth having.
+	if described != "" and described != written.trim_suffix(":"):
 		out += "\n\n`" + described + "`"
 	if target != current:
 		out += "\n\nDeclared in `" + target + "`."
@@ -363,7 +366,8 @@ static func describe(node: Object) -> String:
 		return field.type.describe() if field.type != null else ""
 	if node is GateAST._FuncDecl:
 		var method: GateAST._FuncDecl = node
-		var out: String = "func %s(%s)" % [method.name, _describe_params(method.params)]
+		var heading: String = _heading_of(method)
+		var out: String = "%s(%s)" % [heading, _describe_params(method.params)]
 		if method.return_type != null:
 			out += " -> %s" % method.return_type.describe()
 		return out
@@ -433,11 +437,13 @@ static func _symbol_of(node: Object, lines: PackedStringArray, inside_class: boo
 		if method.name == "" or method.accessor:
 			return {}
 		var kind: int = KIND_FUNCTION
+		var shown: String = method.name
 		if method.is_operator:
 			kind = KIND_OPERATOR
+			shown = _operator_name(method)
 		elif inside_class:
 			kind = KIND_METHOD
-		return _entry(method.name, kind, method, lines, _last_line(method), [], encoding)
+		return _entry(shown, kind, method, lines, _last_line(method), [], encoding)
 	if node is GateAST._SignalDecl:
 		var event: GateAST._SignalDecl = node
 		if event.name == "":
@@ -456,6 +462,23 @@ static func _symbol_of(node: Object, lines: PackedStringArray, inside_class: boo
 		return _entry(alias.name, KIND_TYPE_PARAMETER, alias, lines, _last_line(alias),
 			[], encoding)
 	return {}
+
+
+## What an overload is called in the file it was written in. The parser renames
+## one to the symbol GATE generates for the output, so the node's own name is
+## `__op_add` where the source says `operator +`. An outline and a hover are read
+## against the source, so they get the source's word.
+static func _operator_name(method: GateAST._FuncDecl) -> String:
+	if method.operator_symbol == "":
+		return method.name
+	return "operator " + method.operator_symbol
+
+
+## A function's heading, as the line that declares it opens.
+static func _heading_of(method: GateAST._FuncDecl) -> String:
+	if method.is_operator:
+		return _operator_name(method)
+	return "func " + method.name
 
 
 static func _class_kind(form: String) -> int:
