@@ -29,6 +29,8 @@ var extra_map_hashes: Dictionary = {}
 
 var unverified: Dictionary = {}
 
+var _last_deps: Dictionary = {}
+
 var _last_good: Dictionary = {}
 
 static var _probe_seq: int = 0
@@ -1149,6 +1151,16 @@ static func _shadowing_globals(registry) -> String:
 			out.append(n)
 	out.sort()
 	return ",".join(out)
+func _can_reverify(gate_path: String, h: String, out_path: String, map_path: String) -> bool:
+	if not unverified.has(gate_path) or hashes.get(gate_path) != h:
+		return false
+	if not _last_deps.has(gate_path) or not _extras_present(gate_path):
+		return false
+	if not FileAccess.file_exists(out_path) or not FileAccess.file_exists(map_path):
+		return false
+	return _file_hash(out_path) == out_hashes.get(gate_path)
+
+
 
 
 func compile_file(gate_path: String, registry = null, deferred = null, reg_sig: String = "",
@@ -1230,6 +1242,16 @@ func compile_file(gate_path: String, registry = null, deferred = null, reg_sig: 
 			and _extras_present(gate_path):
 		return 0
 
+	if _can_reverify(gate_path, h, out_path, map_path):
+		if deferred != null:
+			var kept: String = _read_text(out_path)
+			deferred[out_path] = {
+				"gate": gate_path, "source": kept, "deps": _last_deps[gate_path],
+				"prev": kept, "prev_map": _read_text(map_path),
+				"prev_map_existed": true, "map": [], "h": h,
+				"existed": true, "was": 0,
+			}
+		return 0
 	compiled_log.append(gate_path)
 	var compiler: GateCompiler = GateCompiler.new()
 	compiler.indent = unit
@@ -1331,6 +1353,7 @@ func compile_file(gate_path: String, registry = null, deferred = null, reg_sig: 
 						"prev_map_existed": FileAccess.file_exists(map_path), "map": res.map, "h": h,
 						"existed": true, "was": 0,
 					}
+				_last_deps[gate_path] = res.deps
 				return 0
 
 	var o: FileAccess = FileAccess.open(out_path, FileAccess.WRITE)
@@ -1345,6 +1368,7 @@ func compile_file(gate_path: String, registry = null, deferred = null, reg_sig: 
 			"prev_map_existed": FileAccess.file_exists(map_path), "map": res.map, "h": h,
 			"existed": had_output, "was": 1,
 		}
+	_last_deps[gate_path] = res.deps
 	o.store_string(res.source)
 	o.close()
 	_wrote_session[out_path] = true

@@ -86,7 +86,7 @@ func emit(mod: GateAST._Module, diags: GateDiagnostics, path: String) -> Diction
 	_close_instantiations()
 	_mono_template.clear()
 	for mg in _instantiations:
-		_mono_template[mg] = ((_instantiations[mg] as Array)[0] as GateAST._ClassDecl).name
+		_mono_template[mg] = String(((_instantiations[mg] as Array)[0] as Object).get("name"))
 
 	for hl in HEADER_LINES:
 		_line((hl as String) % path if (hl as String).contains("%s") else hl, 1)
@@ -234,6 +234,25 @@ static func _bound_in(node, out: Dictionary) -> void:
 func _emit_monomorphised() -> void:
 	for mangled in _instantiations:
 		var pair: Array = _instantiations[mangled]
+		if pair[0] is GateAST._FuncDecl:
+			_subst = pair[1]
+			_subst_depth = pair[2] if pair.size() > 2 else {}
+			_subst_types = pair[3] if pair.size() > 3 else {}
+			_subst_nullable = pair[4] if pair.size() > 4 else {}
+			var gfd: GateAST._FuncDecl = pair[0]
+			var kept_name: String = gfd.name
+			var kept_params: Array = gfd.generic_params
+			gfd.name = mangled
+			gfd.generic_params = []
+			_blank_line(gfd.line)
+			_emit_func(gfd)
+			gfd.name = kept_name
+			gfd.generic_params = kept_params
+			_subst = {}
+			_subst_depth = {}
+			_subst_types = {}
+			_subst_nullable = {}
+			continue
 		var cd: GateAST._ClassDecl = pair[0]
 		_subst = pair[1]
 		_subst_depth = pair[2] if pair.size() > 2 else {}
@@ -269,6 +288,8 @@ func _emit_member(m) -> void:
 	elif m is GateAST._ClassDecl:
 		_emit_class(m)
 	elif m is GateAST._FuncDecl:
+		if not (m as GateAST._FuncDecl).generic_params.is_empty() and _subst.is_empty():
+			return
 		_emit_func(m)
 	elif m is GateAST._VarDecl:
 		_emit_var(m)
@@ -322,7 +343,32 @@ func _emit_enum(e: GateAST._EnumDecl) -> void:
 			parts.append("%s = %s" % [e.keys[i], _expr(e.values[i])])
 		else:
 			parts.append(e.keys[i])
-	_line("enum %s { %s }" % [e.name, ", ".join(parts)], e.line)
+	var notes: Dictionary = {"above": {}, "trail": {}, "tail": [], "open": "", "any": false}
+	if e.key_lines.size() == parts.size() and not parts.is_empty() and e.end_line > int(e.key_lines[0]):
+		var key_lines: PackedInt32Array = PackedInt32Array()
+		for kl in e.key_lines:
+			key_lines.append(int(kl))
+		notes = _bracket_notes(key_lines, e.end_line, e.line)
+	if not bool(notes["any"]):
+		_line("enum %s { %s }" % [e.name, ", ".join(parts)], e.line)
+		return
+	var pad: String = "	".repeat(_indent + 1)
+	var body: PackedStringArray = PackedStringArray()
+	var srcs: Array = []
+	body.append("enum %s {%s" % [e.name, String(notes["open"])])
+	for i in parts.size():
+		for text in Array((notes["above"] as Dictionary).get(i, [])):
+			body.append(pad + String(text))
+			srcs.append(int(e.key_lines[i]))
+		body.append(pad + parts[i] + "," + String((notes["trail"] as Dictionary).get(i, "")))
+		srcs.append(int(e.key_lines[i]))
+	for text2 in Array(notes["tail"]):
+		body.append(pad + String(text2))
+		srcs.append(int(e.key_lines[e.key_lines.size() - 1]))
+	body.append("	".repeat(_indent) + "}")
+	srcs.append(e.end_line)
+	_pending_line_src = srcs
+	_line("\n".join(body), e.line)
 
 
 static func _gate_written(cd: GateAST._ClassDecl) -> bool:

@@ -40,6 +40,8 @@ var _saw_gate_type: bool = false
 var known_generics: Dictionary = {}
 var known_aliases: Dictionary = {}
 var _generic_names: Dictionary = {}
+## Of those, the ones declared `func NAME<...>` rather than class or struct.
+var _generic_func_names: Dictionary = {}
 
 
 var _names_scanned: bool = false
@@ -55,9 +57,11 @@ func _is_generic_name(n: String) -> bool:
 		_templates = known_generics.duplicate()
 		for i in _toks.size() - 2:
 			var t: GateLexer._Token = _toks[i]
-			if t.type == GateLexer._T.KEYWORD and (t.value == "class" or t.value == "struct") \
-					and _toks[i + 1].type == GateLexer._T.IDENT and _toks[i + 2].is_op("<"):
+			if t.type == GateLexer._T.KEYWORD and (t.value == "class" or t.value == "struct"
+					or t.value == "func") and _toks[i + 1].type == GateLexer._T.IDENT and _toks[i + 2].is_op("<"):
 				_templates[_toks[i + 1].value] = true
+				if t.value == "func":
+					_generic_func_names[_toks[i + 1].value] = true
 	if not _templates.has(n):
 		return false
 	if not _names_scanned:
@@ -116,6 +120,9 @@ func _prescan_names() -> void:
 			_enum_keys(i + 1, shadows)
 		if t.value == "func":
 			header_func = true
+			if i + 2 < n and _toks[i + 1].type == GateLexer._T.IDENT and _toks[i + 2].is_op("<"):
+				_generic_names[_toks[i + 1].value] = true
+				_generic_func_names[_toks[i + 1].value] = true
 			_param_names(i + 1, attach)
 			continue
 		if t.value == "for":

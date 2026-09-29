@@ -148,7 +148,10 @@ static func complete(code: String, path: String, owner: Object) -> Dictionary:
 
 	# Independent of the list: a caret inside a call's arguments is in a call
 	# whatever is being typed there, including nothing at all.
-	var hint: String = _call_hint(code.substr(0, at), module, reg, row + 1, column)
+	var call_info: Dictionary = _call_info(code.substr(0, at), text, module, reg,
+		row + 1, column)
+	var hint: String = String(call_info.get("hint", ""))
+	var doc: String = String(call_info.get("doc", ""))
 	var chain: Array = _chain_before(head)
 	if not chain.is_empty():
 		var type_name: String = _resolve_chain(chain, module, reg, row + 1, column)
@@ -156,11 +159,11 @@ static func complete(code: String, path: String, owner: Object) -> Dictionary:
 			# The dot is real but the type behind it is not knowable. Saying nothing
 			# is the honest answer; anything else here is a list about a different
 			# object than the one on screen.
-			return _wrap([], hint)
+			return _wrap([], hint, doc)
 		var outside: bool = chain.size() > 1 or String(chain[0]) != "self"
-		return _wrap(_members_of(type_name, reg, module, outside), hint)
+		return _wrap(_members_of(type_name, reg, module, outside), hint, doc)
 
-	return _wrap(_in_scope(module, reg, row + 1, column, _after_func(head)), hint)
+	return _wrap(_in_scope(module, reg, row + 1, column, _after_func(head)), hint, doc)
 
 
 static func _module(text: String, path: String, reg: RefCounted) -> GateAST._Module:
@@ -267,8 +270,9 @@ static func option(kind: int, display: String, insert: String, location: int) ->
 	}
 
 
-static func _wrap(options: Array, hint: String = "") -> Dictionary:
-	return {"result": OK, "force": false, "call_hint": hint, "options": options}
+static func _wrap(options: Array, hint: String = "", doc: String = "") -> Dictionary:
+	return {"result": OK, "force": false, "call_hint": hint, "call_doc": doc,
+		"options": options}
 
 
 static func _annotations() -> Array:
@@ -1333,29 +1337,65 @@ const HINT_LINES: int = 8
 ## nothing at all to scripts, and the engine's own class reference documents
 ## neither, so the text here is right by the cases and the highlight inside it wants
 ## a windowed editor to confirm.
-static func _call_hint(prefix: String, module: GateAST._Module, reg: RefCounted,
-		line: int, column: int) -> String:
+static func _call_info(prefix: String, source: String, module: GateAST._Module,
+		reg: RefCounted, line: int, column: int) -> Dictionary:
 	var call: Dictionary = _call_at(prefix)
 	if call.is_empty():
-		return ""
+		return {}
 	var chain: Array = call["chain"]
 	var last: int = chain.size() - 1
 	var owner: String = ""
 	if last == 0:
 		if module == null:
-			return ""
+			return {}
 		owner = _owner_at(module, line, column)
 	else:
 		owner = _resolve_chain(chain.slice(0, last), module, reg, line, column)
 	if owner == "":
-		return ""
+		return {}
 	var index: int = int(call["argument"])
 	var found: Variant = _method_of(owner, String(chain[last]), reg, module, index)
 	if found is GateAST._FuncDecl:
-		return _hint_of_decl(found, index)
+		return {"hint": _hint_of_decl(found, index),
+			"doc": _doc_of_decl(found, owner, reg, source)}
 	if found is Dictionary:
-		return _hint_of_info(found, index)
-	return ""
+		return {"hint": _hint_of_info(found, index), "doc": ""}
+	return {}
+
+
+static func _doc_of_decl(decl: GateAST._FuncDecl, owner: String, reg: RefCounted,
+		source: String) -> String:
+	var text: String = source
+	if owner != THIS_FILE and reg != null:
+		var path: String = String(reg.script_class_names.get(owner, reg.origin.get(owner, "")))
+		if path != "" and path != _editing:
+			if not FileAccess.file_exists(path):
+				return ""
+			text = FileAccess.get_file_as_string(path)
+	return _doc_above(text, decl.line, decl.name)
+
+
+static func _doc_above(source: String, line: int, name: String) -> String:
+	if source == "" or line <= 1:
+		return ""
+	var lines: PackedStringArray = source.split("
+")
+	if line > lines.size() or not lines[line - 1].contains("func " + name):
+		return ""
+	var i: int = mini(line, lines.size()) - 2
+	var out: PackedStringArray = PackedStringArray()
+	while i >= 0:
+		var t: String = lines[i].strip_edges()
+		if t.begins_with("@"):
+			i -= 1
+			continue
+		if not t.begins_with("##"):
+			break
+		out.append(t.substr(2).strip_edges(true, false))
+		i -= 1
+	out.reverse()
+	return "
+".join(out).strip_edges()
 
 
 ## The call the caret is in: its callee as a dotted path, and which argument the

@@ -4,6 +4,143 @@
 
 ### Added
 
+- **Generic functions** (issue #8). `func first<T>(xs: T[]) -> T` is a template, and
+  `first<int>(ns)` emits one monomorphised copy per set of type arguments, exactly as a
+  generic class does. The template itself is never emitted, and one nothing calls emits
+  nothing.
+
+  Type arguments are written out rather than inferred, which is what generic classes
+  already require, and the call must be a plain call to a function of the same class.
+  `Helper.box<int>(3)` is not a generic call and means what GDScript means by it.
+
+  Almost all of it was already there: the parser mangles `Name<Args>` in expression
+  position for `Pool<Bullet>.new()`, so teaching it that `func NAME<` declares a template
+  and that a generic span before `(` is a call rewrote every call site; and the emitter's
+  instantiation path reads only `generic_params` and `name`, so one table serves classes
+  and functions both.
+
+  Checked before building rather than after: `ident<Type>(` occurs 9 times in 3,495 real
+  files and every one is inside a comment or a doc string, so no valid GDScript changes
+  meaning.
+
+- **Comments written inside an array literal, a dictionary literal or an `enum` body are
+  carried into the output.** Measured over 3,495 real files: of the 764 comments written
+  inside brackets, 614 now survive where none did. The rest are inside a call's argument
+  list, which is rebuilt from the syntax tree onto one line and so has no line to put one
+  back on.
+
+  The lexer never makes these tokens - it cannot, because the parser only skips comments
+  where an operand may appear and not where an operator may, which is why they were
+  dropped in the first place - so they travel beside the token stream in a table keyed by
+  line. The token stream is unchanged, which matters: the build cache is keyed on a hash
+  that skips comments, and a comment edit must not look like a code edit.
+
+  A construct that carries a comment takes its one-per-line form so that each comment has
+  a line of its own. One that carries none is emitted exactly as before, including an
+  `enum`, so no project is reformatted for a feature it is not using. `##` on an enum
+  member is how Godot documents enum values, which is the same reason comments are
+  carried at all.
+
+  Three rules, each found by the corpus rather than designed:
+
+  - A trailing comment goes on its element's **first** line. After the whole element, it
+    migrates from the `[` it was written beside to the matching `]`, and the next compile
+    finds it on a line no element claims and drops it.
+  - Only a construct written across several lines claims anything. After one compile a
+    nested literal and the element holding it share a line, and the inner one would take
+    a comment written beside the outer.
+  - A construct claims only what was written between its own brackets. Without that
+    floor, an inner literal took a comment written above it and the comment descended one
+    nesting level on every compile - six files in the corpus, none of them in corpus4.
+
+### Changed
+
+- **Converting a project compiles each file once, not three times.** Pixelorama, 212
+  files, measured before and after on the same tree with the same harness: the first open
+  went from 114 s and 424 compiles to 80 s and 212, which is one per file. Two causes,
+  both of them GATE reacting to its own output.
+
+  The first was deliberate and documented in the builder: a file whose output could not be
+  verified yet - because Godot had not registered the classes GATE had just written - was
+  recompiled so that it landed in the deferred set again, which is where verification
+  happens. The output it produced the second time was identical to the first. It now
+  re-enters that set directly, reusing the dependency list it recorded rather than
+  recovering one from the finished text, which the dependency graph explicitly does not do
+  because it misses every relatively-written preload.
+
+  The second was a defect. `gd_class_names` is "the `class_name` a **plain** `.gd`
+  declares", and the index walked every `.gd` in the project, GATE's own outputs included.
+  The moment Godot registered one of them the table gained an entry, that changed the
+  registry signature, and the signature is part of every file's cache key - so the build
+  after the one that wrote the outputs recompiled the whole project for a name it already
+  knew by another path. `_name_owners` had skipped outputs for this reason all along.
+
+  What has **not** changed is the second open, still about 60 s on that project: a file
+  that could not be verified is not saved as proved, so the next session compiles it again
+  to check it. The first open is measured, and pinned against regressing.
+
+### Added
+
+- **Multidimensional arrays, `int[,]`, off by default** (issue #3). Turn on
+  `gate/features/multidim_arrays` to use it. `int[,]` is another spelling of `int[][]` and
+  `a[i, j]` another spelling of `a[i][j]`; they are the same type and interchange freely,
+  because both are the same `array_depth` and the parser builds the same nested index
+  nodes. Nothing downstream learns that the spelling exists. More than two dimensions is
+  refused for the reason `int[][][]` already was, since GDScript nests typed arrays only
+  one level deep. Off by default because it is a second way to write something the
+  language already has, and that should be asked for rather than met by surprise; with the
+  flag off, both spellings are an error naming the setting.
+
+- **A pipe operator, `x |> f()`, experimental and off by default.** Turn on
+  `gate/experiments/pipe_operator` to use it. `x |> f()` is `f(x)` and `x |> f(a, b)` is
+  `f(x, a, b)`: the piped value becomes the first argument and everything else keeps its
+  order. Left-associative, so `a |> f() |> g()` is `g(f(a))`. It binds looser than every
+  arithmetic and bitwise operator and tighter than a ternary, which is what makes
+  `a + 1 |> f()` pipe the sum and `a |> f() if c else d` choose between two pipelines;
+  ordinary bitwise or is untouched. The right side must be a call, brackets included, and
+  anything else is an error saying so. Desugared in the parser into the call that was
+  written the other way round, so no pass downstream knows pipes exist.
+
+  It is experimental rather than shipped because it is the one thing on the roadmap that
+  solves nothing specific to Godot, and a new operator has to earn its place against the
+  confusion of one. Writing `|>` with the flag off is an error naming the setting rather
+  than a syntax error, which is why the flag is checked at the operator and not at the
+  lexer. `|>` cannot occur in valid GDScript (`a | > b` has a bare `>` where an operand
+  goes), so recognising it takes nothing away from the superset rule either way.
+
+- **A call hint carries the callee's documentation.** The caret inside an argument list
+  already showed the full signature; it now also carries the `##` block written above that
+  function, for a callee in the file being edited and for one in another `.gate`. Carrying
+  comments into the output is what made this possible: before it, the text existed only in
+  the `.gate` and reached nothing Godot or an LSP client could read. It is still not in the
+  syntax tree, since no pass has a use for it, so it is read back out of the source by line
+  number - and the line is checked to really hold that declaration before it is trusted,
+  because a line number taken from one file and applied to another is exactly how the first
+  version answered one call with another function's documentation. An engine method carries
+  none: ClassDB has no documentation and Godot's class reference is not reachable from a
+  script at editor run time, so nothing is the honest answer. Part of issue #11.
+
+- **Arrow lambdas.** `nums.map((x: int) => x + 1)` instead of
+  `nums.map(func(x: int): return x + 1)`. The parentheses are always required, because
+  `(x)` on its own is a group and only the `=>` past the closing bracket tells the two
+  apart; the parser decides by scanning to the matching bracket and looking at what
+  follows, which is the one place in the grammar that needs to. `=>` cannot appear in
+  valid GDScript (`a => b` would have to be `a = > b`, and a bare `>` is not an
+  expression), so adding it takes nothing away from the superset rule. Parameters follow
+  exactly the rules a `func` lambda's do, and the arrow is desugared to a single `return`
+  in the parser, so the checker, the null analysis and the effect summaries never learn
+  that arrow lambdas exist.
+
+  The expression is the lambda's value, so it compiles to `return` - except over a call
+  that returns nothing, which GDScript refuses outright ("Cannot get return value of call
+  to 'f()' because it returns void") and which would have made
+  `tween_callback(() => queue_free())` emit a script that does not load. GATE reads
+  voidness from the method's own declared return type, and from ClassDB for an engine
+  method, and treats anything it cannot establish as a value. The one case it knows it
+  cannot answer is a method declared by a base written in GATE: the base chain records
+  the name but not the return type, so ClassDB is deliberately not consulted there rather
+  than risk matching an unrelated engine method of the same name.
+
 - **A language server for `.gate` files, off by default.** GATE speaks LSP over a
   loopback socket from inside the Godot editor, the way Godot's own GDScript language
   server does, so a `.gate` can be edited in Neovim, Helix, Zed or VS Code. Turn it on

@@ -721,6 +721,8 @@ static func is_utf8(path: String) -> bool:
 
 func _index_gd_class_names(root: String) -> void:
 	for path in find_gd_files(root):
+		if FileAccess.file_exists(path.get_basename() + ".gate"):
+			continue
 		var name: String = gd_class_name_of(path)
 		if name != "" and not registry.gd_class_names.has(name):
 			registry.gd_class_names[name] = path

@@ -58,8 +58,11 @@ it could not check yet: about 1,600 lines for Pixelorama, 200 for GodSVG. Nothin
 wrong. Close the editor and open it again; the second session is quiet.
 
 On a large project the first two opens are also slow, while GATE builds every file and
-Godot registers the classes it wrote. Pixelorama, 211 files, took about 130 s the first
-time and about 50 s the second, measured; after that, opening it unchanged takes about 10 s.
+Godot registers the classes it wrote. Pixelorama, 212 files, measured: about 80 s the first
+time and about 60 s the second; after that, opening it unchanged takes about 11 s. The
+first open compiles each file once. The second still recompiles most of them, because a
+file GATE could not verify before Godot registered the classes is not remembered as proved
+and has to be built again to be checked.
 
 Leave `script_templates/` alone. Godot keeps a `.gdignore` in that folder, and GATE does
 not compile anything under a `.gdignore`, so a template renamed to `.gate` is never turned
@@ -253,6 +256,17 @@ class Pool<T> extends Node:
 var bullets = Pool<Bullet>.new()
 ```
 
+A function takes type parameters the same way, and one copy is emitted per set of type
+arguments used. They are written out rather than inferred, and the call has to be a plain
+call to a function of the same class.
+
+```gdscript
+func first<T>(xs: T[]) -> T:
+	return xs[0]
+
+print(first<int>(ns))    # __first_int(ns)
+```
+
 ### Unions, tuples and typed callables
 
 All three compile to plain GDScript types and are checked at compile time. A union holds
@@ -379,7 +393,21 @@ var msg = f"{player} scored {pts}"      # f-string
 a, b = b, a                             # swap
 for i, item in enumerate(items):        # index and value
 for k, v in scores:                     # dictionary key and value
+nums.map((x: int) => x + 1)             # arrow lambda
 ```
+
+An arrow lambda is a one-expression `func` lambda with the noise removed: the parentheses
+are always required, and the parameters follow the same rules a `func` lambda's do.
+
+Two spellings are behind a project setting, both off by default, because each is a second
+way to write something GATE already has:
+
+```gdscript
+int[,] grid = [[1, 2]]                  # gate/features/multidim_arrays, = int[][]
+var shown = raw |> roundi() |> mini(99) # gate/experiments/pipe_operator, = mini(roundi(raw), 99)
+```
+
+Writing either with its flag off is an error naming the setting.
 
 ## In the editor
 
@@ -621,14 +649,16 @@ iterate, so it pays off only if you make more than about 1.3 passes per rebuild.
 
 ## Known limitations
 
-- **A comment written inside brackets is dropped.** Comments are carried into the output,
-  `##` docs included, but not one written inside an unclosed `(`, `[` or `{`. GATE's
-  lexer discards those before a token exists, and the expression around them is rebuilt
-  from the syntax tree rather than copied, so there is no line to put them back on. About
-  2% of the comments in a real corpus. A comment written on the end of a line of code is
-  also dropped in the one case where that line became more than one line of output, or
-  none: `@rpc func f()` written on a single line comes out on two, and there is then no
-  single right place for it.
+- **A comment written inside a call's brackets is dropped.** Comments are carried into
+  the output, `##` docs included, and that now covers one written inside an array
+  literal, a dictionary literal or an `enum` body - such a construct takes its
+  one-per-line form so each comment has a line of its own, and one carrying no comment is
+  emitted exactly as before. A call is the exception: it is rebuilt from the syntax tree
+  onto one line, so there is no line to put a comment back on. Measured over 3,495 real
+  files, 614 of the 764 comments written inside brackets are carried and these 150 are
+  not. A comment written on the end of a line of code is also dropped in the one case
+  where that line became more than one line of output, or none: `@rpc func f()` written
+  on a single line comes out on two, and there is then no single right place for it.
 - **Godot's debugger panels name the generated `.gd`.** The game runs the `.gd`, so the
   Stack Frames list and a runtime error point at it; a toast names the `.gate` line each
   came from. Breakpoints and stepping are shown in the `.gate`. A stop on a generated line

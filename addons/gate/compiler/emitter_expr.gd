@@ -258,7 +258,7 @@ func _expr(e) -> String:
 		for el in al.elements:
 			lines.append((el as GateAST._Expr).line)
 		_coll_depth -= 1
-		return _collection("[", parts, "]", lines)
+		return _collection("[", parts, "]", lines, al.end_line, al.line)
 
 	if e is GateAST._DictLit:
 		var dl: GateAST._DictLit = e
@@ -295,7 +295,7 @@ func _expr(e) -> String:
 			parts2.append(("%s = %s" if lua else "%s: %s") % [ktext, texts[at]])
 			at += 1
 		_coll_depth -= 1
-		return _collection("{", parts2, "}", lines2)
+		return _collection("{", parts2, "}", lines2, dl.end_line, dl.line)
 
 	if e is GateAST._AwaitExpr:
 		return "await " + _expr((e as GateAST._AwaitExpr).operand)
@@ -2942,22 +2942,41 @@ func _lambda_block(head: String, hoisted: PackedStringArray, last: String, outer
 const MAX_COLLECTION_WIDTH := 96
 
 
-func _collection(open_b: String, parts: PackedStringArray, close_b: String, elem_lines: PackedInt32Array = PackedInt32Array()) -> String:
+func _collection(open_b: String, parts: PackedStringArray, close_b: String,
+		elem_lines: PackedInt32Array = PackedInt32Array(), end_line: int = 0,
+		start_line: int = 0) -> String:
+	var notes: Dictionary = {"above": {}, "trail": {}, "tail": [], "open": "", "any": false}
+	if elem_lines.size() == parts.size() and not elem_lines.is_empty():
+		if end_line > elem_lines[0]:
+			notes = _bracket_notes(elem_lines, end_line, start_line)
 	var one_line: String = open_b + ", ".join(parts) + close_b
-	if parts.size() < 2 or one_line.length() <= MAX_COLLECTION_WIDTH:
+	if not bool(notes["any"]) and (parts.size() < 2 or one_line.length() <= MAX_COLLECTION_WIDTH):
 		return one_line
 	var base: int = _indent + _coll_depth
 	var pad: String = "	".repeat(base + 1)
 	var lines: PackedStringArray = PackedStringArray()
-	lines.append(open_b)
+	var srcs: Array = []
+	var mapped: bool = elem_lines.size() == parts.size()
+	var above: Dictionary = notes["above"]
+	var trail: Dictionary = notes["trail"]
+	lines.append(open_b + String(notes["open"]))
 	for i in parts.size():
-		lines.append(pad + parts[i] + ("," if i < parts.size() - 1 else ","))
+		for text in Array(above.get(i, [])):
+			lines.append(pad + String(text))
+			srcs.append(elem_lines[i] if mapped else 0)
+		var body: String = parts[i] + ","
+		var note: String = String(trail.get(i, ""))
+		if note != "":
+			var nl: int = body.find("\n")
+			body = (body + note) if nl < 0 else (body.substr(0, nl) + note + body.substr(nl))
+		lines.append(pad + body)
+		srcs.append(elem_lines[i] if mapped else 0)
+	for text2 in Array(notes["tail"]):
+		lines.append(pad + String(text2))
+		srcs.append(elem_lines[elem_lines.size() - 1] if mapped else 0)
 	lines.append("	".repeat(base) + close_b)
-	if elem_lines.size() == parts.size():
-		var srcs: Array = []
-		for ln in elem_lines:
-			srcs.append(ln)
-		srcs.append(elem_lines[elem_lines.size() - 1])
+	srcs.append(elem_lines[elem_lines.size() - 1] if mapped else 0)
+	if mapped:
 		_pending_line_src = srcs
 	return "\n".join(lines)
 
@@ -3000,6 +3019,49 @@ func _capture_copies(l: GateAST._Lambda) -> Dictionary:
 		_hoist("var %s = %s" % [t, ctext])
 		out[String(n)] = t
 	return out
+
+
+func _arrow_void(e) -> bool:
+	if not (e is GateAST._Call):
+		return false
+	var c: GateAST._Call = e
+	var name: String = ""
+	var owner: String = ""
+	var own: bool = false
+	if c.callee is GateAST._Ident:
+		name = (c.callee as GateAST._Ident).name
+		owner = _scope_class
+		own = true
+	elif c.callee is GateAST._Member:
+		var m: GateAST._Member = c.callee
+		if m.safe:
+			return false
+		name = m.name
+		own = m.target is GateAST._SelfExpr
+		owner = _scope_class if own else GateTypes.canonical(_declared_type_of(m.target))
+	else:
+		return false
+	if name == "":
+		return false
+	var decls: Array = (_class_funcs.get(owner, {}) as Dictionary).get(name, [])
+	if not decls.is_empty():
+		for d in decls:
+			var fd: GateAST._FuncDecl = d
+			if fd.return_type != null and GateTypes.canonical(fd.return_type.name) != "void":
+				return false
+		return true
+	if own and (_base_chain.get("funcs", {}) as Dictionary).has(name):
+		return false
+	return _engine_void(String(_base_chain.get("engine", "")) if own else owner, name)
+
+
+func _engine_void(cls: String, method: String) -> bool:
+	if cls == "" or not ClassDB.class_exists(cls) or not ClassDB.class_has_method(cls, method):
+		return false
+	for m in ClassDB.class_get_method_list(cls, false):
+		if String(m["name"]) == method:
+			return int((m["return"] as Dictionary)["type"]) == TYPE_NIL
+	return false
 
 
 func _emit_lambda(l: GateAST._Lambda) -> String:
@@ -3074,9 +3136,10 @@ func _emit_lambda_inner(l: GateAST._Lambda, outer: int) -> String:
 		var rv: String = _copy_value(r.value)
 		var hoisted: PackedStringArray = entry + _pending
 		_pending = saved_pending
+		var give: String = "" if l.arrow and _arrow_void(r.value) else "return "
 		if hoisted.is_empty():
-			return "%s: return %s" % [head, rv]
-		return _lambda_block(head, hoisted, "return " + rv, outer)
+			return "%s: %s%s" % [head, give, rv]
+		return _lambda_block(head, hoisted, give + rv, outer)
 	elif (l.body.size() == 1 and l.body[0] is GateAST._ExprStmt
 			and not _discards_safe_call(l)):
 		var saved_pending2: PackedStringArray = _pending

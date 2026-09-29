@@ -234,6 +234,7 @@ func compile(src_in: String, path: String, registry = null, defines = null) -> _
 	var emitter: GateEmitter = GateEmitter.new()
 	emitter.set_source(src)
 	emitter.set_comments(tokens)
+	emitter.set_bracket_comments(lexer.bracket_comments)
 	emitter.set_interfaces(checker.interfaces.keys())
 	emitter.set_erased_types(checker.interfaces.keys() + checker.traits.keys())
 	if registry != null:

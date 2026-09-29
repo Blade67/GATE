@@ -256,12 +256,36 @@ indentation. A blank line between the comment and the declaration is kept if you
 one, and never added if you did not. A comment written on the end of a line of code is
 put back on that line, with the spacing you gave it.
 
+A comment written **inside** an array literal, a dictionary literal or an `enum` body is
+carried too, and the construct takes its one-per-line form so that each comment has a
+line of its own:
+
+```gdscript
+enum Blend {
+	NORMAL,          ## The usual one.
+	## Lightens the image.
+	ADD,
+}
+
+var spawn = [
+	Vector2(0, 0),   # the door
+	# the far corner
+	Vector2(9, 9),
+]
+```
+
+Only a construct you wrote across several lines takes any, and only comments written
+between its own brackets: one on a single line is left as it was, and a nested literal
+never takes a comment belonging to the one around it. An `enum` with no comment inside it
+is still emitted on one line, so nothing is reformatted for a feature you are not using.
+
 Two cases are dropped, and both are reported here rather than left to be discovered:
 
-- **Inside an unclosed bracket.** A comment in the middle of a wrapped argument list or
-  array literal does not survive. GATE's lexer discards it before a token exists, and
-  the expression is rebuilt from the syntax tree rather than copied, so there is nowhere
-  to put it back.
+- **Inside a call's brackets.** A comment in the middle of a wrapped argument list does
+  not survive. GATE's lexer discards it before a token exists, and a call is rebuilt from
+  the syntax tree onto one line, so there is no line to put it back on. Measured over
+  3,495 real files: of the 764 comments written inside brackets, 614 are carried and the
+  150 that are not are these.
 - **On a line that became more than one line, or none.** `@rpc func f()` written on a
   single line comes out on two, and a trailing comment on it has no single right home,
   so it is dropped rather than guessed at.
@@ -344,6 +368,37 @@ keep.call(3)                                        # checked: one int
 
 Assigned lambdas and methods must match the signature, and `.call(...)` is checked for arity
 and argument types.
+
+### Arrow lambdas
+
+A lambda that is one expression can be written with `=>` instead of `func`:
+
+```gdscript
+nums.map((x: int) => x + 1)             # func(x: int): return x + 1
+nums.filter((x) => x >= 2)              # untyped, as in GDScript
+var add = (a: int, b: int = 10) => a + b
+var now = () => Time.get_ticks_msec()
+```
+
+The parentheses are always required, even for one parameter, because `(x)` on its own is a
+group and only the `=>` after the closing bracket tells the two apart. Parameters follow
+exactly the rules a `func` lambda's do: a bare name, `name: Type`, a default, or `...rest`.
+
+The expression is the lambda's value, so it compiles to `return`. The exception is a call
+that returns nothing, which GDScript refuses to `return`, so it compiles to a bare statement
+instead and the callback works as written:
+
+```gdscript
+tween.tween_callback(() => queue_free())   # func(): queue_free()
+```
+
+GATE reads that from the method's declared return type, or from ClassDB for an engine
+method. Where it cannot tell, it emits `return`. The one case it knows it cannot answer is a
+method declared by a base class written in GATE, since the base chain records the name but
+not the type; if that method returns `void`, write the `func` form.
+
+A body that needs more than one expression is still a `func` lambda. `=>` takes a single
+expression and stops at a comma, so an arrow lambda can be an argument among others.
 
 ## Type aliases
 
@@ -584,6 +639,30 @@ Each instantiation is monomorphised into a concrete class, so `Pool<Bullet>` hol
 The body is checked again for each instantiation. A problem only one type argument causes,
 such as `x is T` with `T` a union, is reported where that instantiation is written.
 
+### Generic functions
+
+A function takes type parameters the same way, and is monomorphised the same way:
+
+```gdscript
+func first<T>(xs: T[]) -> T:
+	return xs[0]
+
+static func box<T>(v: T) -> T[]:
+	return [v]
+
+print(first<int>(ns))        # __first_int(ns)
+print(box<str>("a"))         # __box_String("a")
+```
+
+The type arguments are always written out. They are not inferred from the arguments, so
+`first(ns)` is a call to a function called `first`, not an instantiation of this one. One
+copy is emitted per set of type arguments actually used, and a generic function nothing
+calls emits nothing at all.
+
+The call has to be a plain call to a function of the same class: `Helper.box<int>(3)` is
+not a generic call, and means what it means in GDScript, which is a pair of comparisons.
+Calling another class's generic function is not supported.
+
 ## Operators and expressions
 
 ```gdscript
@@ -598,6 +677,49 @@ for k, v in scores:                     # dictionary key and value
 
 Comparison is left-associative, as in GDScript: `a == b == c` means `(a == b) == c`. There
 is no comparison chaining, so write `0 < hp and hp < max_hp`.
+
+### Multidimensional arrays
+
+Off by default. Turn on `Project Settings > Gate > Features > Multidim Arrays`
+(`gate/features/multidim_arrays`) to use it.
+
+```gdscript
+int[,] grid = [[1, 2], [3, 4]]   # exactly int[][]
+grid[1, 0] = 9                   # exactly grid[1][0]
+```
+
+`int[,]` is another spelling of `int[][]`, and `a[i, j]` another spelling of `a[i][j]`.
+The two are the same type and interchange freely, so a value declared one way can be
+assigned to the other. Nothing else changes: the output is the array of arrays GATE
+already emitted.
+
+More than two dimensions is refused for the same reason `int[][][]` is, since GDScript
+nests typed arrays only one level deep. It is off by default because it is a second way to
+write something the language already has, and writing `int[,]` with the flag off is an
+error naming the setting.
+
+### Pipe operator (experimental)
+
+Off by default. Turn on `Project Settings > Gate > Experiments > Pipe Operator`
+(`gate/experiments/pipe_operator`) to use it.
+
+```gdscript
+var shown = raw |> roundi() |> clampi(0, 99)   # clampi(roundi(raw), 0, 99)
+var label = name |> _strip() |> _title()       # _title(_strip(name))
+```
+
+`x |> f()` is `f(x)`, and `x |> f(a, b)` is `f(x, a, b)`: the piped value becomes the first
+argument and whatever else you wrote keeps its order. It is left-associative, so a chain
+reads left to right.
+
+The right side has to be a call, brackets included, even when it takes nothing else. `|>`
+binds looser than every arithmetic and bitwise operator and tighter than a ternary, so
+`a + 1 |> f()` is `f(a + 1)` and `a |> f() if c else d` chooses between two pipelines.
+Ordinary bitwise or, `a | b`, is untouched.
+
+It is experimental because it has to earn a new operator against the confusion of one, and
+unlike the rest of GATE it solves nothing specific to Godot. Writing `|>` with the flag off
+is an error naming the setting, not a syntax error.
 
 Where `??`, `?.` or `?[` need part of an expression computed first, anything to its left that
 could run code is computed first too, so evaluation order and count match GDScript.

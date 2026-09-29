@@ -49,6 +49,14 @@ func _parse_ternary() -> GateAST._Expr:
 		return e
 	if _in_inline_lambda > 0 and _check_kw("if") and _if_opens_a_block():
 		return e
+	while _check_op("|>"):
+		var pt: GateLexer._Token = _advance()
+		if not GateFeatures.enabled("pipe_operator"):
+			_err("the pipe operator is experimental",
+				"turn on Project Settings > Gate > Experiments > Pipe Operator, or "
+				+ "write the call the ordinary way")
+			return e
+		e = _piped(e, _parse_coalesce(), pt)
 	if _check_kw("if"):
 		_advance()
 		var t: GateAST._Ternary = GateAST._Ternary.new()
@@ -61,6 +69,18 @@ func _parse_ternary() -> GateAST._Expr:
 			_err("expected 'else' in a ternary expression")
 		return t
 	return e
+
+
+func _piped(value: GateAST._Expr, right: GateAST._Expr, t: GateLexer._Token) -> GateAST._Expr:
+	if not (right is GateAST._Call):
+		_err("the right of '|>' has to be a call",
+			"`x |> f()` is `f(x)`, so the right side needs its own brackets even when "
+			+ "it takes nothing else")
+		return value
+	var call: GateAST._Call = right
+	call.args.insert(0, value)
+	call.at(t.line, t.col)
+	return call
 
 
 func _parse_coalesce() -> GateAST._Expr:
@@ -427,6 +447,19 @@ func _parse_postfix() -> GateAST._Expr:
 			_skip_newlines()
 			ix.index = _parse_expr()
 			_skip_newlines()
+			while _check_op(","):
+				_advance()
+				if not GateFeatures.enabled("multidim_arrays"):
+					_err("multidimensional indexing is off",
+						"write `a[i][j]` instead, or turn on Project Settings > Gate > "
+						+ "Features > Multidim Arrays")
+				_skip_newlines()
+				var outer: GateAST._Index = ix
+				ix = GateAST._Index.new()
+				ix.at(t3.line, t3.col)
+				ix.target = outer
+				ix.index = _parse_expr()
+				_skip_newlines()
 			_expect_op("]", "to close the index")
 			e = ix
 		elif _check_op("?["):
@@ -565,6 +598,8 @@ func _parse_primary() -> GateAST._Expr:
 		id.at(t.line, t.col); id.name = t.value
 		return id
 	if t.is_op("("):
+		if _arrow_ahead():
+			return _parse_arrow_lambda()
 		_advance()
 		_skip_newlines()
 		var inner: GateAST._Expr = _parse_expr()
@@ -584,6 +619,7 @@ func _parse_primary() -> GateAST._Expr:
 			if not _match_op(","):
 				break
 			_skip_newlines()
+		arr.end_line = _cur().line
 		_expect_op("]", "to close the array literal")
 		return arr
 	if t.is_op("{"):
@@ -613,6 +649,7 @@ func _parse_primary() -> GateAST._Expr:
 			if not _match_op(","):
 				break
 			_skip_newlines()
+		d.end_line = _cur().line
 		_expect_op("}", "to close the dictionary literal")
 		return d
 	if t.is_kw("func"):
@@ -655,6 +692,40 @@ func _parse_lambda() -> GateAST._Expr:
 	else:
 		var limit: int = colon.line if _cur().line == colon.line else 0
 		lam.body = _parse_lambda_inline_body(limit)
+	return lam
+
+
+## Whether the `(` at the cursor opens an arrow lambda rather than a group.
+func _arrow_ahead() -> bool:
+	var depth: int = 0
+	var i: int = 0
+	while true:
+		var t: GateLexer._Token = _peek(i)
+		if t.type == GateLexer._T.EOF:
+			return false
+		if t.is_op("(") or t.is_op("[") or t.is_op("{"):
+			depth += 1
+		elif t.is_op(")") or t.is_op("]") or t.is_op("}"):
+			depth -= 1
+			if depth == 0:
+				break
+		i += 1
+	return _peek(i + 1).is_op("=>")
+
+
+func _parse_arrow_lambda() -> GateAST._Expr:
+	var open: GateLexer._Token = _advance()
+	var lam: GateAST._Lambda = GateAST._Lambda.new()
+	lam.at(open.line, open.col)
+	lam.arrow = true
+	lam.params = _parse_params()
+	_expect_op(")", "to close the arrow lambda's parameters")
+	_expect_op("=>", "before the arrow lambda's value")
+	var value: GateAST._Expr = _parse_ternary()
+	var r: GateAST._ReturnStmt = GateAST._ReturnStmt.new()
+	r.at(value.line, value.col)
+	r.value = value
+	lam.body = [r]
 	return lam
 
 

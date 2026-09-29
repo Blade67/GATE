@@ -44,8 +44,8 @@ static func is_contextual_keyword(v: String) -> bool:
 
 const OPS3 := ["**=", "<<=", ">>=", "..."]
 const OPS2 := [
-	"==", "!=", "<=", ">=", "->", ":=", "+=", "-=", "*=", "/=", "%=",
-	"**", "<<", ">>", "&&", "||", "??", "?.", "?[", "&=", "|=", "^=", "..",
+	"==", "!=", "<=", ">=", "->", "=>", ":=", "+=", "-=", "*=", "/=", "%=",
+	"**", "<<", ">>", "&&", "||", "??", "?.", "?[", "&=", "|=", "|>", "^=", "..",
 ]
 
 
@@ -164,7 +164,7 @@ func tokenize(src: String, diags: GateDiagnostics, first_line: int = 1) -> Array
 			continue
 		if c == "#":
 			if _depth > 0:
-				_skip_comment()
+				_note_bracket_comment()
 			else:
 				_lex_comment()
 			continue
@@ -287,6 +287,20 @@ func _indent_chars_agree(ws: String) -> bool:
 func _skip_comment() -> void:
 	while _i < _n and _src[_i] != "\n":
 		_i += 1
+
+
+## Comments found inside brackets: {line, col, text, own_line}.
+var bracket_comments: Array = []
+
+
+func _note_bracket_comment() -> void:
+	var line: int = _line
+	var col: int = _col()
+	var start: int = _i
+	_skip_comment()
+	var own: bool = not tokens.is_empty() and tokens[tokens.size() - 1].line == line
+	bracket_comments.append({"line": line, "col": col,
+		"text": _src.substr(start, _i - start), "own_line": not own})
 
 
 func _lex_comment() -> void:

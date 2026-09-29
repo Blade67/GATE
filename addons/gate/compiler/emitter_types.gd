@@ -425,6 +425,10 @@ func _index_generics(members: Array) -> void:
 			if not cd.generic_params.is_empty():
 				_generics[cd.name] = cd
 			_index_generics(cd.members)
+		elif m is GateAST._FuncDecl:
+			var fd: GateAST._FuncDecl = m
+			if not fd.generic_params.is_empty():
+				_generics[fd.name] = fd
 
 
 func _collect_instantiations(members: Array) -> void:
@@ -623,7 +627,14 @@ func _close_instantiations() -> void:
 			_subst_depth = entry[2] if entry.size() > 2 else {}
 			_subst_types = entry[3] if entry.size() > 3 else {}
 			_subst_nullable = entry[4] if entry.size() > 4 else {}
-			_collect_instantiations((entry[0] as GateAST._ClassDecl).members)
+			if entry[0] is GateAST._FuncDecl:
+				var efd: GateAST._FuncDecl = entry[0]
+				_note_type(efd.return_type)
+				for ep in efd.params:
+					_note_type((ep as GateAST._Param).type)
+				_collect_instantiations(efd.body)
+			else:
+				_collect_instantiations((entry[0] as GateAST._ClassDecl).members)
 			_subst = saved
 			_subst_depth = saved_depth
 			_subst_types = saved_types
@@ -643,29 +654,29 @@ func _note_type(t: GateAST._TypeRef) -> void:
 		var st: GateAST._TypeRef = _substituted(t)
 		var mangled: String = _generic_name(st)
 		if not _instantiations.has(mangled):
-			var cd: GateAST._ClassDecl = _generics[t.name]
+			var decl = _generics[t.name]
 			var sub: Dictionary = {}
 			var depths: Dictionary = {}
 			var full: Dictionary = {}
 			# param -> whether the argument itself was written `T?`, since
 			# `_subst_value` below only keeps the bare type name.
 			var nullables: Dictionary = {}
-			for i in cd.generic_params.size():
+			for i in decl.generic_params.size():
 				if i < st.generic_args.size():
 					var ga: GateAST._TypeRef = st.generic_args[i]
-					sub[cd.generic_params[i]] = _subst_value(ga)
-					depths[cd.generic_params[i]] = ga.array_depth
-					nullables[cd.generic_params[i]] = ga.nullable
+					sub[decl.generic_params[i]] = _subst_value(ga)
+					depths[decl.generic_params[i]] = ga.array_depth
+					nullables[decl.generic_params[i]] = ga.nullable
 					if _is_shape(ga):
-						full[cd.generic_params[i]] = _normalized(GateChecker.copy_type(ga))
+						full[decl.generic_params[i]] = _normalized(GateChecker.copy_type(ga))
 			if not _names_template_param(st):
-				_instantiations[mangled] = [cd, sub, depths, full, nullables]
+				_instantiations[mangled] = [decl, sub, depths, full, nullables]
 		else:
 			var prev: Array = _instantiations[mangled]
 			var prev_sub: Dictionary = prev[1]
 			var prev_nullable: Dictionary = prev[4] if prev.size() > 4 else {}
 			var same: bool = true
-			var cd2: GateAST._ClassDecl = _generics[t.name]
+			var cd2 = _generics[t.name]
 			for i2 in cd2.generic_params.size():
 				if i2 >= st.generic_args.size():
 					continue

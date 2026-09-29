@@ -60,11 +60,15 @@ static func answer(method: String, id: Variant, params: Dictionary, docs: RefCou
 		var signature: Dictionary = signature_of(String(got.get("call_hint", "")), encoding)
 		if signature.is_empty():
 			return _Protocol.result(id, null)
+		var info: Dictionary = {
+			"label": signature["label"],
+			"parameters": signature["parameters"],
+		}
+		var doc: String = String(got.get("call_doc", ""))
+		if doc != "":
+			info["documentation"] = {"kind": "markdown", "value": doc}
 		return _Protocol.result(id, {
-			"signatures": [{
-				"label": signature["label"],
-				"parameters": signature["parameters"],
-			}],
+			"signatures": [info],
 			"activeSignature": 0,
 			"activeParameter": signature["activeParameter"],
 		})

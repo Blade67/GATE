@@ -149,21 +149,87 @@ func _gap_before(line: int, col: int) -> String:
 	return gap if gap != "" else " "
 
 
-## Puts a trailing comment back on the line it was written on.
-##
-## Only where one source line produced exactly one real output line. A source
-## line can become several - `@rpc func f()` on one line comes out on two - or
-## none at all, and there is then no single right place for the comment, so it is
-## dropped rather than guessed at. Trailing comments are about 5% of the
-## comments in real code, and the part of that dropped here is smaller again.
+## Comments written inside a bracket, by the source line they were on.
+var _brk_above: Dictionary = {}
+var _brk_trail: Dictionary = {}
+
+
+func set_bracket_comments(found: Array) -> void:
+	_brk_above.clear()
+	_brk_trail.clear()
+	for entry in found:
+		var c: Dictionary = entry
+		var line: int = int(c["line"])
+		if bool(c["own_line"]):
+			if not _brk_above.has(line):
+				_brk_above[line] = []
+			(_brk_above[line] as Array).append(String(c["text"]))
+		else:
+			_brk_trail[line] = _gap_before(line, int(c["col"])) + String(c["text"])
+
+
+## The comments belonging to a collection literal whose elements sit on `elem_lines`.
+## Claimed as read, so a nested literal cannot take one its parent already placed.
+func _bracket_notes(elem_lines: PackedInt32Array, end_line: int,
+		start_line: int) -> Dictionary:
+	var above: Dictionary = {}
+	var trail: Dictionary = {}
+	var tail: Array = []
+	var opened: String = ""
+	var any: bool = false
+	if _brk_above.is_empty() and _brk_trail.is_empty():
+		return {"above": above, "trail": trail, "tail": tail, "open": "", "any": false}
+	if start_line > 0 and start_line < elem_lines[0] and _brk_trail.has(start_line):
+		opened = String(_brk_trail[start_line])
+		_brk_trail.erase(start_line)
+		any = true
+	var floor_line: int = start_line
+	for i in elem_lines.size():
+		var at: int = elem_lines[i]
+		var mine: Array = []
+		for line in _brk_above.keys():
+			var ln: int = int(line)
+			if ln <= at and ln > floor_line:
+				mine.append([ln, _brk_above[ln]])
+		mine.sort_custom(func(a, b): return int(a[0]) < int(b[0]))
+		var texts: Array = []
+		for pair in mine:
+			for t in (pair[1] as Array):
+				texts.append(String(t))
+			_brk_above.erase(int(pair[0]))
+		if not texts.is_empty():
+			above[i] = texts
+			any = true
+		if _brk_trail.has(at):
+			trail[i] = String(_brk_trail[at])
+			_brk_trail.erase(at)
+			any = true
+		floor_line = at
+	if end_line > floor_line:
+		var last: Array = []
+		for line2 in _brk_above.keys():
+			var ln2: int = int(line2)
+			if ln2 > floor_line and ln2 <= end_line:
+				last.append([ln2, _brk_above[ln2]])
+		last.sort_custom(func(a, b): return int(a[0]) < int(b[0]))
+		for pair2 in last:
+			for t2 in (pair2[1] as Array):
+				tail.append(String(t2))
+			_brk_above.erase(int(pair2[0]))
+		if not tail.is_empty():
+			any = true
+	return {"above": above, "trail": trail, "tail": tail, "open": opened, "any": any}
+
+
+## Puts a trailing comment back on the line it was written on, where one source line
+## produced exactly one real output line. A source line can become several
+## (`@rpc func f()`) or none, and there is then no right place for it, so it is dropped.
 func emit_inline_comments() -> void:
 	if _trailing_comment.is_empty():
 		return
 	var real: Dictionary = {}
 	for i in range(mini(_out.size(), _map.size())):
 		var t: String = _out[i].strip_edges()
-		# Blank and comment lines do not count, or the eight-line banner - all of
-		# which map to source line 1 - would stop line 1 ever qualifying.
 		if t == "" or t.begins_with("#"):
 			continue
 		real[_map[i]] = int(real.get(_map[i], 0)) + 1

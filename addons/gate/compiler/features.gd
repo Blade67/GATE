@@ -13,6 +13,8 @@ const ROWS := [
 	{"id": "shorthand_types", "group": GROUP_FEATURES, "default": true},
 	{"id": "type_names_as_values", "group": GROUP_FEATURES, "default": false},
 	{"id": "type_first", "group": GROUP_FEATURES, "default": true},
+	{"id": "multidim_arrays", "group": GROUP_FEATURES, "default": false},
+	{"id": "pipe_operator", "group": GROUP_EXPERIMENTS, "default": false},
 ]
 
 ## Settings that are not compiler flags: they change how the plugin behaves, not

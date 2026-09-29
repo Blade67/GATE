@@ -231,10 +231,12 @@ class _Widen extends _Call:
 
 
 class _ArrayLit extends _Expr:
+	var end_line: int = 0
 	var elements: Array = []           ## Array[_Expr]
 
 
 class _DictLit extends _Expr:
+	var end_line: int = 0
 	var keys: Array = []               ## Array[_Expr]
 	var values: Array = []             ## Array[_Expr]
 	var lua_keys: Array = []           ## Array[bool]
@@ -248,6 +250,10 @@ class _Lambda extends _Expr:
 	var is_expression_body: bool = false
 	var expr_body: _Expr = null
 	var block_body: bool = false
+	## Written `(x) => x + 1` rather than `func(x): return x + 1`. The body is the
+	## same single return either way; this only records which spelling was read,
+	## because an arrow's value is its expression and a `func`'s is not.
+	var arrow: bool = false
 
 
 class _AwaitExpr extends _Expr:
@@ -327,6 +333,7 @@ class _Annotation extends _ASTNode:
 
 class _FuncDecl extends _Stmt:
 	var name: String = ""
+	var generic_params: Array = []     ## Array[String]
 	var params: Array = []             ## Array[_Param]
 	var return_type: _TypeRef = null
 	var body: Array = []               ## Array[_Stmt]
@@ -357,6 +364,8 @@ class _SignalDecl extends _Stmt:
 class _EnumDecl extends _Stmt:
 	var name: String = ""
 	var keys: Array = []               ## Array[String]
+	var key_lines: Array = []          ## Array[int]
+	var end_line: int = 0
 	var values: Array = []             ## Array[_Expr] (may hold nulls)
 	var annotations: Array = []
 

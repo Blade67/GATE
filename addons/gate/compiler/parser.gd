@@ -523,6 +523,14 @@ func _parse_func() -> GateAST._FuncDecl:
 			return null
 		fd.name = _advance().value
 
+	if _check_op("<") and _closes_generic_args():
+		_advance()
+		while not _at_end() and not _check_op(">"):
+			if _check(GateLexer._T.IDENT):
+				fd.generic_params.append(_advance().value)
+			if not _match_op(","):
+				break
+		_expect_op(">", "to close generic parameters")
 	if not _expect_op("(", "after the function name"):
 		_skip_to_statement_end()
 		return null
@@ -598,6 +606,7 @@ func _parse_enum() -> GateAST._EnumDecl:
 		while not _at_end() and not _check_op("}"):
 			_skip_newlines()
 			if _at_name():
+				ed.key_lines.append(_cur().line)
 				ed.keys.append(_advance().value)
 				if _match_op("="):
 					ed.values.append(_parse_expr())
@@ -607,6 +616,7 @@ func _parse_enum() -> GateAST._EnumDecl:
 			if not _match_op(","):
 				break
 			_skip_newlines()
+		ed.end_line = _cur().line
 		_expect_op("}", "to close the enum body")
 	return ed
 

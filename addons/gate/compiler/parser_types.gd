@@ -78,6 +78,21 @@ func _parse_type() -> GateAST._TypeRef:
 			_expect_op("]", "to close the type argument")
 
 	while true:
+		if _check_op("[") and _peek(1).is_op(","):
+			var commas: int = 0
+			while _peek(commas + 1).is_op(","):
+				commas += 1
+			if not _peek(commas + 1).is_op("]"):
+				break
+			if not GateFeatures.enabled("multidim_arrays"):
+				_err("multidimensional array types are off",
+					"write `%s%s` instead, or turn on Project Settings > Gate > "
+						% [t.name, "[]".repeat(commas + 1)]
+					+ "Features > Multidim Arrays")
+			for _k in commas + 2:
+				_advance()
+			t.array_depth += commas + 1
+			continue
 		if _check_op("[") and _peek(1).is_op("]"):
 			_advance(); _advance()
 			t.array_depth += 1
@@ -437,13 +452,16 @@ func _check_generic_instantiation() -> bool:
 	var nx: GateLexer._Token = _peek(1)
 	if nx.type != GateLexer._T.OP or not (nx.value == "<" or nx.value == "<<"):
 		return false
-	return _is_generic_name(_cur().value) and _generic_after(_i + 1, nx.value == "<<")
+	return _is_generic_name(_cur().value) and _generic_after(_i + 1, nx.value == "<<",
+		_generic_func_names.has(_cur().value))
 
 
-func _generic_after(from: int, strict: bool) -> bool:
+func _generic_after(from: int, strict: bool, callable_name: bool = false) -> bool:
 	var close: int = _generic_span_end(from, strict)
 	if close < 0 or close + 2 >= _toks.size():
 		return false
+	if callable_name and _toks[close + 1].is_op("("):
+		return true
 	return _toks[close + 1].is_op(".") and _is_name_token(_toks[close + 2])
 
 
