@@ -4,7 +4,7 @@ GATE is a [GDScript](https://docs.godotengine.org/en/stable/tutorials/scripting/
 superset for the [Godot Engine](https://godotengine.org/) that adds [extra features](#features)
 while compiling down to plain GDScript.
 
-###### Requires Godot 4.7. MIT licensed.
+###### Requires Godot 4.7+. MIT licensed.
 
 Valid GDScript is valid GATE. Rename a `.gd` to `.gate` and it compiles with no errors,
 loads, and behaves identically. Recompiling GATE's own output gives back the same bytes.

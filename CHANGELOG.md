@@ -37,6 +37,23 @@ again compiles nothing. On Pixelorama, 212 files, the two opens that matter went
   files and every one is inside a comment or a doc string, so no valid GDScript changes
   meaning.
 
+- **Comments are carried into the generated `.gd`, `##` docs included.** A comment
+  written in a `.gate` reaches the output, so Godot's class reference survives a rename
+  rather than being lost the first time the file compiles, and a `##` block above a
+  function is there for the script editor and for an LSP client to read.
+
+  Most of this already existed and none of it ran. The lexer emits a COMMENT token, the
+  syntax tree has a node for one and the emitter has a case for that node in both its
+  member and statement funnels, but `parser_cursor.gd`'s `_skip_newlines()` advances
+  past a COMMENT and is called from 55 places, among them before every member and every
+  statement. Teaching all 55 to keep what they skip does not work: the parser backtracks,
+  so a pending buffer collects the same comment more than once. The table is built once
+  from the token list instead, keyed by source line, and put back from the three
+  `_blank_gap` calls the emitter already makes. The parser is untouched.
+
+  The token stream is unchanged, and that matters. The build cache is keyed on a hash
+  that skips comments, so editing a comment must not look like editing code.
+
 - **Comments written inside an array literal, a dictionary literal, an `enum` body or a
   call's argument list are carried into the output.** Measured over 3,495 real files: of
   the 764 comments written inside brackets, 626 now survive where none did. The 138 that
