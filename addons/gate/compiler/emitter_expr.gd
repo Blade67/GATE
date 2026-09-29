@@ -2063,8 +2063,8 @@ func _emit_call(c: GateAST._Call) -> String:
 				return "%s(%s)" % [st["vector"], ", ".join(_vec_args(st, args))]
 			var salias: String = _extern_alias(n)
 			if salias != "":
-				return "%s.%s.new(%s)" % [salias, n, ", ".join(args)]
-			return "%s.new(%s)" % [n, ", ".join(args)]
+				return "%s.%s.new(%s)" % [salias, n, _arg_list(c, args)]
+			return "%s.new(%s)" % [n, _arg_list(c, args)]
 
 	if c.callee is GateAST._Member and (c.callee as GateAST._Member).name == "new":
 		var nm: GateAST._Member = c.callee
@@ -2090,13 +2090,13 @@ func _emit_call(c: GateAST._Call) -> String:
 				if args.is_empty():
 					return _build_struct(qst, "", [], [], c)
 				return "%s(%s)" % [qst["vector"], ", ".join(_vec_args(qst, args))]
-			return "%s.%s.new(%s)" % [_expr(qm.target), qm.name, ", ".join(args)]
+			return "%s.%s.new(%s)" % [_expr(qm.target), qm.name, _arg_list(c, args)]
 
 	if c.callee is GateAST._Ident:
 		var base: String = (c.callee as GateAST._Ident).name
 		var mangled: String = _resolve_overload(base, c.args.size())
 		if mangled != "" and _overload_declared_by_chain(base, _cur_class):
-			return "%s(%s)" % [mangled, ", ".join(args)]
+			return "%s(%s)" % [mangled, _arg_list(c, args)]
 	elif c.callee is GateAST._Member:
 		var mem: GateAST._Member = c.callee
 		var mangled2: String = _resolve_overload(mem.name, c.args.size())
@@ -2108,11 +2108,11 @@ func _emit_call(c: GateAST._Call) -> String:
 			var mrecv: String = recv_text if recv_node != null else _postfix_base(mem.target)
 			if mem.target is GateAST._SelfExpr:
 				if _overload_declared_by_chain(mem.name, _cur_class):
-					return "%s.%s(%s)" % [mrecv, mangled2, ", ".join(args)]
-				return "%s.%s(%s)" % [mrecv, mem.name, ", ".join(args)]
+					return "%s.%s(%s)" % [mrecv, mangled2, _arg_list(c, args)]
+				return "%s.%s(%s)" % [mrecv, mem.name, _arg_list(c, args)]
 			var owner: String = _static_type_of(mem.target)
 			if owner != "" and _overload_declared_by_chain(mem.name, owner):
-				return "%s.%s(%s)" % [mrecv, mangled2, ", ".join(args)]
+				return "%s.%s(%s)" % [mrecv, mangled2, _arg_list(c, args)]
 			if owner == "" and (mem.target is GateAST._Ident or mem.target is GateAST._Member):
 				var cref: String = _class_ref_text(mem.target)
 				var tn: String = cref.get_slice(".", cref.get_slice_count(".") - 1)
@@ -2122,14 +2122,14 @@ func _emit_call(c: GateAST._Call) -> String:
 			if owner == "" and mem.target is GateAST._Ident and (mem.target as GateAST._Ident).name == "super":
 				owner = _cur_base
 			if owner != "" and _overload_declared_by(mem.name, owner):
-				return "%s.%s(%s)" % [mrecv, mangled2, ", ".join(args)]
+				return "%s.%s(%s)" % [mrecv, mangled2, _arg_list(c, args)]
 			if owner == "":
 				diagnostics.warn("'%s' is overloaded, and the type of the value it is called on is "
 						% mem.name + "not known here, so this call cannot pick one", c.line, c.col,
 					"GDScript will look for a method named '%s' itself. Give the value a type, or "
 						% mem.name + "call it on one whose type GATE can see")
 			if recv_node != null:
-				return "%s.%s(%s)" % [mrecv, mem.name, ", ".join(args)]
+				return "%s.%s(%s)" % [mrecv, mem.name, _arg_list(c, args)]
 
 	if recv_node != null:
 		var cmm: GateAST._Member = c.callee
@@ -2139,13 +2139,48 @@ func _emit_call(c: GateAST._Call) -> String:
 	if c.callee is GateAST._Ident:
 		var fname: String = (c.callee as GateAST._Ident).name
 		if not _struct_of(fname).is_empty() and _ctor_struct_of(fname).is_empty():
-			return "%s(%s)" % [fname, ", ".join(args)]   # a function, not the other file's struct
+			return "%s(%s)" % [fname, _arg_list(c, args)]   # a function, not the other file's struct
 	_swizzle_exempt = c.callee
 	_bare_shorthand_exempt = c.callee
 	var callee: String = _postfix_base(c.callee, false)
 	_swizzle_exempt = null
 	_bare_shorthand_exempt = null
-	return "%s(%s)" % [callee, ", ".join(args)]
+	return "%s(%s)" % [callee, _arg_list(c, args)]
+func _arg_list(c: GateAST._Call, args: PackedStringArray) -> String:
+	if args.size() != c.args.size() or args.is_empty() or c.end_line <= c.open_line:
+		return ", ".join(args)
+	var lines: PackedInt32Array = PackedInt32Array()
+	for a in c.args:
+		lines.append((a as GateAST._Expr).line)
+	var notes: Dictionary = _bracket_notes(lines, c.end_line, c.open_line)
+	if not bool(notes["any"]):
+		return ", ".join(args)
+	var base: int = _indent + _coll_depth
+	var pad: String = "\t".repeat(base + 1)
+	var out: PackedStringArray = PackedStringArray()
+	var srcs: Array = []
+	out.append(String(notes["open"]))
+	var above: Dictionary = notes["above"]
+	var trail: Dictionary = notes["trail"]
+	for i in args.size():
+		for text in Array(above.get(i, [])):
+			out.append(pad + String(text))
+			srcs.append(lines[i])
+		var body: String = args[i] + ("," if i < args.size() - 1 else ",")
+		var note: String = String(trail.get(i, ""))
+		if note != "":
+			var nl: int = body.find("\n")
+			body = (body + note) if nl < 0 else (body.substr(0, nl) + note + body.substr(nl))
+		out.append(pad + body)
+		srcs.append(lines[i])
+	for text2 in Array(notes["tail"]):
+		out.append(pad + String(text2))
+		srcs.append(lines[lines.size() - 1])
+	out.append("\t".repeat(base))
+	srcs.append(c.end_line)
+	_pending_line_src = srcs
+	return "\n".join(out)
+
 
 
 func _args_first(c: GateAST._Call) -> Array:

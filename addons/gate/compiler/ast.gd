@@ -223,6 +223,8 @@ class _Index extends _Expr:
 
 class _Call extends _Expr:
 	var callee: _Expr = null
+	var open_line: int = 0
+	var end_line: int = 0
 	var args: Array = []               ## Array[_Expr]
 
 

@@ -281,11 +281,11 @@ is still emitted on one line, so nothing is reformatted for a feature you are no
 
 Two cases are dropped, and both are reported here rather than left to be discovered:
 
-- **Inside a call's brackets.** A comment in the middle of a wrapped argument list does
-  not survive. GATE's lexer discards it before a token exists, and a call is rebuilt from
-  the syntax tree onto one line, so there is no line to put it back on. Measured over
-  3,495 real files: of the 764 comments written inside brackets, 614 are carried and the
-  150 that are not are these.
+- **Inside a lambda body, or grouping parentheses.** A comment inside a lambda passed as
+  an argument belongs to statements in that body rather than to the argument list, and one
+  inside grouping parentheses has nothing to attach to, because GATE drops the parentheses
+  and re-emits the expression. Measured over 3,495 real files: of the 764 comments written
+  inside brackets, 626 are carried and the 138 that are not are these.
 - **On a line that became more than one line, or none.** `@rpc func f()` written on a
   single line comes out on two, and a trailing comment on it has no single right home,
   so it is dropped rather than guessed at.
@@ -659,9 +659,10 @@ The type arguments are always written out. They are not inferred from the argume
 copy is emitted per set of type arguments actually used, and a generic function nothing
 calls emits nothing at all.
 
-The call has to be a plain call to a function of the same class: `Helper.box<int>(3)` is
-not a generic call, and means what it means in GDScript, which is a pair of comparisons.
-Calling another class's generic function is not supported.
+Another file's generic function is called through its class name or a preloaded const,
+`Helper.box<int>(3)`, and is monomorphised in the file that declares it, the same as a
+generic class. Only a *function* template may be followed by `(`: `a.b<c>(d)` where `b` is
+not one stays the pair of comparisons GDScript reads it as.
 
 ## Operators and expressions
 

@@ -733,6 +733,41 @@ func _load_saved(root: String) -> void:
 		if settled is Dictionary and (settled as Dictionary).get("world") is Dictionary:
 			_settled_world = (settled["world"] as Dictionary).duplicate(true)
 			_settled_replay = (settled.get("replay", {}) as Dictionary).duplicate(true)
+func _saved_unchecked(gate_path: String, src: String, h: String, out_path: String,
+		map_path: String, deferred) -> bool:
+	var entry: Variant = _saved.get(gate_path)
+	if not (entry is Dictionary):
+		return false
+	var e: Dictionary = entry
+	if not bool(e.get("unchecked", false)) or not (e.get("deps") is Array):
+		return false
+	if (String(e.get("h", "")) != h or String(e.get("src", "")) != src.md5_text()
+				or String(e.get("g", "")) != _outside
+				or _sum_at_start(out_path) != String(e.get("gd", ""))
+				or _sum_at_start(map_path) != String(e.get("map", ""))):
+		return false
+	_saved.erase(gate_path)
+	var said: PackedStringArray = PackedStringArray()
+	if e.get("warnings") is Array:
+		for w in e["warnings"]:
+			said.append(String(w))
+	warnings.append_array(said)
+	hashes[gate_path] = h
+	out_hashes[gate_path] = String(e.get("gd", ""))
+	_proof[gate_path] = {"h": h, "src": String(e["src"]), "g": _outside,
+		"map": String(e["map"]), "gd": String(e.get("gd", "")), "warnings": said}
+	_last_deps[gate_path] = Array(e["deps"])
+	unverified[gate_path] = true
+	if deferred != null:
+		var kept: String = _read_text(out_path)
+		deferred[out_path] = {
+			"gate": gate_path, "source": kept, "deps": _last_deps[gate_path],
+			"prev": kept, "prev_map": _read_text(map_path),
+			"prev_map_existed": true, "map": [], "h": h,
+			"existed": true, "was": 0,
+		}
+	return true
+
 
 
 func _saved_holds(gate_path: String, src: String, h: String, out_path: String, map_path: String) -> bool:
@@ -741,6 +776,8 @@ func _saved_holds(gate_path: String, src: String, h: String, out_path: String, m
 	if not (entry is Dictionary):
 		return false
 	var e: Dictionary = entry
+	if bool(e.get("unchecked", false)):
+		return false
 	if (String(e.get("h", "")) != h or String(e.get("src", "")) != src.md5_text()
 			or String(e.get("g", "")) != _outside or unverified.has(gate_path)
 			or _sum_at_start(out_path) != String(e.get("gd", ""))
@@ -764,7 +801,7 @@ func _save_proof(root: String, gate_files: Array[String]) -> void:
 	for g in gate_files:
 		var proof: Dictionary = _proof.get(g, {})
 		var h: String = String(hashes.get(g, ""))
-		if (proof.is_empty() or h == "" or String(proof["h"]) != h or unverified.has(g)
+		if (proof.is_empty() or h == "" or String(proof["h"]) != h
 				or String(_failed_at.get(g, "")) == h):
 			continue
 		var out_path: String = g.get_basename() + ".gd"
@@ -778,6 +815,12 @@ func _save_proof(root: String, gate_files: Array[String]) -> void:
 		files[g] = {"h": h, "src": proof["src"], "g": proof["g"],
 			"gd": out_sum,
 			"map": map_sum, "warnings": Array(proof["warnings"])}
+		if unverified.has(g):
+			if not _last_deps.has(g):
+				files.erase(g)
+				continue
+			files[g]["unchecked"] = true
+			files[g]["deps"] = _last_deps[g]
 	var data: Dictionary = {"format": CACHE_FORMAT, "env": _cache_env(root), "files": files}
 	if not _settled_world.is_empty():
 		data["settled"] = {"world": _settled_world, "replay": _settled_replay}
@@ -1238,6 +1281,9 @@ func compile_file(gate_path: String, registry = null, deferred = null, reg_sig: 
 				and _file_hash(out_path) == out_hashes.get(gate_path)
 				and _extras_present(gate_path)):
 		return 0
+	if _saved.has(gate_path) and _extras_present(gate_path):
+		if _saved_unchecked(gate_path, src, h, out_path, map_path, deferred):
+			return 0
 	if _saved.has(gate_path) and _saved_holds(gate_path, src, h, out_path, map_path) \
 			and _extras_present(gate_path):
 		return 0

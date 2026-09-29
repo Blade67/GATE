@@ -38,6 +38,7 @@ var _saw_alias: bool = false
 var _saw_gate_type: bool = false
 
 var known_generics: Dictionary = {}
+var known_generic_funcs: Dictionary = {}
 var known_aliases: Dictionary = {}
 var _generic_names: Dictionary = {}
 ## Of those, the ones declared `func NAME<...>` rather than class or struct.
@@ -55,6 +56,7 @@ func _is_generic_name(n: String) -> bool:
 	if not _templates_scanned:
 		_templates_scanned = true
 		_templates = known_generics.duplicate()
+		_generic_func_names.merge(known_generic_funcs)
 		for i in _toks.size() - 2:
 			var t: GateLexer._Token = _toks[i]
 			if t.type == GateLexer._T.KEYWORD and (t.value == "class" or t.value == "struct"
@@ -77,6 +79,7 @@ func _is_generic_name(n: String) -> bool:
 
 func _prescan_names() -> void:
 	_generic_names = known_generics.duplicate()
+	_generic_func_names.merge(known_generic_funcs)
 	var shadows: Dictionary = {}
 	var spans: Dictionary = {}
 	var blocks: Array = []        ## per open block: [inside a function, [[name, from], ...]]

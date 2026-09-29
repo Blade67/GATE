@@ -10,8 +10,10 @@
   nothing.
 
   Type arguments are written out rather than inferred, which is what generic classes
-  already require, and the call must be a plain call to a function of the same class.
-  `Helper.box<int>(3)` is not a generic call and means what GDScript means by it.
+  already require. Another file's generic function is called through its class name or a
+  preloaded const, `Helper.box<int>(3)`, and is monomorphised in the file that declares
+  it. Only a *function* template may be followed by `(`, so `a.b<c>(d)` where `b` is not
+  one stays the pair of comparisons GDScript reads it as.
 
   Almost all of it was already there: the parser mangles `Name<Args>` in expression
   position for `Pool<Bullet>.new()`, so teaching it that `func NAME<` declares a template
@@ -55,9 +57,11 @@
 
 ### Changed
 
-- **Converting a project compiles each file once, not three times.** Pixelorama, 212
-  files, measured before and after on the same tree with the same harness: the first open
-  went from 114 s and 424 compiles to 80 s and 212, which is one per file. Two causes,
+- **Converting a project compiles each file once, not three times, and opening it again
+  compiles nothing.** Pixelorama, 212 files, measured before and after on the same tree,
+  same harness and same machine: the first open went from 147 s and 424 compiles to 106 s
+  and 212, which is one per file, and the second from 68 s and 200 compiles to 31 s and
+  none. The two opens that matter go from 216 s to 137 s. Two causes on the first open,
   both of them GATE reacting to its own output.
 
   The first was deliberate and documented in the builder: a file whose output could not be
@@ -75,9 +79,12 @@
   after the one that wrote the outputs recompiled the whole project for a name it already
   knew by another path. `_name_owners` had skipped outputs for this reason all along.
 
-  What has **not** changed is the second open, still about 60 s on that project: a file
-  that could not be verified is not saved as proved, so the next session compiles it again
-  to check it. The first open is measured, and pinned against regressing.
+  The second open is fixed the same way, across a restart. A file that could not be
+  checked is now saved as built-but-unchecked, with its dependency list, and the next
+  session puts it straight into the verification queue instead of compiling it again. It
+  is still marked unverified, so it really is validated - nothing is trusted that was not
+  checked. On that project the second open went from 68 s and 200 compiles to 31 s and
+  none. Both opens are measured, and pinned against regressing.
 
 ### Added
 

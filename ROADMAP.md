@@ -8,25 +8,12 @@ already released is in [CHANGELOG.md](CHANGELOG.md).
 
 Ordered by how self-contained the work is, not by how much I want it.
 
-- **Carrying a comment written inside a call's brackets.** Array literals, dictionary
-  literals and `enum` bodies carry theirs now; a call does not. Measured over 3,495 real
-  files, that is 150 of the 764 comments written inside brackets. A call is rebuilt from
-  the syntax tree onto one line, so it would need a wrapped form of its own - which would
-  change the shape of far more output than a literal does, for a fifth of the remaining
-  comments.
-- **Calling another class's generic function.** `func first<T>(...)` works, and so does
-  calling it from the class that declares it. `Helper.box<int>(3)` does not: it reads as
-  a comparison, which is what GDScript means by it. A generic class is monomorphised in
-  the file that declares it and reached by name from anywhere; a function has no global
-  name, so the same trick needs the registry to carry the instantiation to the declaring
-  file and the call to resolve to a method on it.
-- **A converted project's second open.** The first open compiles each file once now.
-  The second still recompiles most of them: a file GATE could not verify, because
-  Godot had not registered the classes GATE had just written, is not saved as proved,
-  so the next session builds it again only to check it. Measured on Pixelorama, 212
-  files: 80 s for the first open and about 60 s for the second, where the third is 11 s.
-  The output on disk is already right in every one of those cases, so what is missing
-  is a way to remember "this is built, it just has not been checked" across a restart.
+- **Comments inside a lambda body or grouping parentheses.** Array literals, dictionary
+  literals, `enum` bodies and a call's argument list all carry their comments now:
+  measured over 3,495 real files, 626 of the 764 written inside brackets. Of what is
+  left, a comment inside a lambda body passed as an argument belongs to statements rather
+  than to an argument list, and one inside grouping parentheses has nothing to attach to,
+  since GATE drops the parentheses and re-emits the expression.
 - **Per-member dependency tracking.** A file is rebuilt today when anything it reads
   changes, and a declaration counts as read by every file that reaches it. Adding a
   method to a file most of the project goes through costs about 35 s on a 211-file

@@ -57,12 +57,12 @@ their `.gd` files, so each of those fails to parse once, and GATE says once for 
 it could not check yet: about 1,600 lines for Pixelorama, 200 for GodSVG. Nothing is
 wrong. Close the editor and open it again; the second session is quiet.
 
-On a large project the first two opens are also slow, while GATE builds every file and
-Godot registers the classes it wrote. Pixelorama, 212 files, measured: about 80 s the first
-time and about 60 s the second; after that, opening it unchanged takes about 11 s. The
-first open compiles each file once. The second still recompiles most of them, because a
-file GATE could not verify before Godot registered the classes is not remembered as proved
-and has to be built again to be checked.
+On a large project the first open is slow, while GATE builds every file and Godot
+registers the classes it wrote. Pixelorama, 212 files, measured on one machine: about
+105 s the first time and about 30 s the second; after that, opening it unchanged takes
+about 14 s. Each file is compiled once, on the first open only: a file GATE could not
+check before Godot had registered the classes is remembered as built-but-unchecked, so
+the next session checks it without building it again.
 
 Leave `script_templates/` alone. Godot keeps a `.gdignore` in that folder, and GATE does
 not compile anything under a `.gdignore`, so a template renamed to `.gate` is never turned
@@ -257,8 +257,9 @@ var bullets = Pool<Bullet>.new()
 ```
 
 A function takes type parameters the same way, and one copy is emitted per set of type
-arguments used. They are written out rather than inferred, and the call has to be a plain
-call to a function of the same class.
+arguments used. They are written out rather than inferred. Another file's generic function
+is called through its class name or a preloaded const and monomorphised where it is
+declared, the same as a generic class.
 
 ```gdscript
 func first<T>(xs: T[]) -> T:
@@ -649,13 +650,15 @@ iterate, so it pays off only if you make more than about 1.3 passes per rebuild.
 
 ## Known limitations
 
-- **A comment written inside a call's brackets is dropped.** Comments are carried into
-  the output, `##` docs included, and that now covers one written inside an array
-  literal, a dictionary literal or an `enum` body - such a construct takes its
-  one-per-line form so each comment has a line of its own, and one carrying no comment is
-  emitted exactly as before. A call is the exception: it is rebuilt from the syntax tree
-  onto one line, so there is no line to put a comment back on. Measured over 3,495 real
-  files, 614 of the 764 comments written inside brackets are carried and these 150 are
+- **A comment inside a lambda body or grouping parentheses is dropped.** Comments are
+  carried into the output, `##` docs included, and that covers one written inside an array
+  literal, a dictionary literal, an `enum` body or a call's argument list - such a
+  construct takes its one-per-line form so each comment has a line of its own, and one
+  carrying no comment is emitted exactly as before. Two cases have nowhere to go: a
+  comment inside a lambda passed as an argument belongs to statements in that body rather
+  than to the argument list, and one inside grouping parentheses has nothing to attach to,
+  because GATE drops the parentheses and re-emits the expression. Measured over 3,495 real
+  files, 626 of the 764 comments written inside brackets are carried and these 138 are
   not. A comment written on the end of a line of code is also dropped in the one case
   where that line became more than one line of output, or none: `@rpc func f()` written
   on a single line comes out on two, and there is then no single right place for it.

@@ -194,6 +194,10 @@ func compile(src_in: String, path: String, registry = null, defines = null) -> _
 	if registry != null:
 		for gname in registry.generics:
 			parser.known_generics[gname] = true
+		if "generic_funcs" in registry:
+			for fname in registry.generic_funcs:
+				parser.known_generics[fname] = true
+				parser.known_generic_funcs[fname] = true
 		if "aliases" in registry:
 			for aname in registry.aliases:
 				parser.known_aliases[aname] = true

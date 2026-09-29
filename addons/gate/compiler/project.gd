@@ -13,21 +13,12 @@ class _Registry extends RefCounted:
 	var classes: Dictionary = {}      ## name -> _ClassDecl
 	var namespaces: Dictionary = {}   ## name -> _ClassDecl
 	var generics: Dictionary = {}     ## name -> _ClassDecl (the template)
+	var generic_funcs: Dictionary = {}
 	var enums: Dictionary = {}        ## name -> _EnumDecl, top-level only
-	## name -> Array[path], every file that declares a top-level enum of that
-	## name, for an enum only. `origin` below is shared by every top-level *and
-	## nested* class/struct/namespace across the whole project (`_collect`
-	## writes `registry.origin[cd.name] = path` for a class at any nesting
-	## depth, not only a top-level one), so a nested class sharing an enum's
-	## bare name in a completely unrelated file silently overwrites the enum's
-	## own entry there. This map is written only by the enum branch of
-	## `_index_file`, so no class or struct can collide with it - but the KEY
-	## is still a bare name, and two files can perfectly validly each declare
-	## their own top-level `enum E` (ordinary Godot code: `enum State`, `enum
-	## Mode` and the like are common names). A single path per name would let
-	## whichever file is indexed last silently win, so this holds every origin
-	## that declares the name; `_is_nullable_enum_type` tries each one and
-	## accepts the first that actually matches the qualifier in front of it.
+	## name -> Array[path], every file that declares a top-level enum of that name.
+	## `origin` below is shared by classes at any nesting depth, so an unrelated nested
+	## class of the same bare name would overwrite the enum's entry. An Array, because two
+	## files can each validly declare their own `enum State`.
 	var enum_origin: Dictionary = {}
 	var generic_uses: Array = []   ## Array[_TypeRef]
 	var script_class_names: Dictionary = {}
@@ -214,6 +205,7 @@ func index(root: String = "res://") -> _Registry:
 	var lexed: Array = []
 	var generics: Dictionary = {}
 	var aliases: Dictionary = {}
+	var generic_funcs: Dictionary = {}
 	for path in find_gate_files(root):
 		var f: FileAccess = FileAccess.open(path, FileAccess.READ)
 		if f == null:
@@ -227,6 +219,7 @@ func index(root: String = "res://") -> _Registry:
 		var sum: String = src.md5_text()
 		var kept: Array = _lexed(path, src, sum, diags)
 		generics.merge(kept[3])
+		generic_funcs.merge(kept[6] if kept.size() > 6 else {})
 		aliases.merge(kept[4])
 		lexed.append([path, src, kept[1], diags, sum, kept[5]])
 	var names_key: String = "%s|%s" % [",".join(PackedStringArray(_sorted_keys(generics))),
@@ -239,7 +232,7 @@ func index(root: String = "res://") -> _Registry:
 		var parsed: Array = _parsed_memo.get(entry[0], [])
 		if parsed.is_empty() or String(parsed[0]) != key:
 			GateTypes.shadow_declared(entry[2])
-		_index_file(entry[0], entry[1], entry[2], entry[3], generics, aliases, key)
+		_index_file(entry[0], entry[1], entry[2], entry[3], generics, aliases, key, generic_funcs)
 	GateTypes.shadowed.clear()
 	_resolve_aliases()
 	_index_gd_bases()
@@ -363,6 +356,7 @@ static var _warm_stage: int = 0
 static var _warm_files: Array[String] = []
 static var _warm_at: int = 0
 static var _warm_generics: Dictionary = {}
+static var _warm_generic_funcs: Dictionary = {}
 static var _warm_aliases: Dictionary = {}
 
 
@@ -372,6 +366,7 @@ static func warm_step(root: String, budget_usec: int) -> bool:
 		_warm_files = find_gate_files(root)
 		_warm_at = 0
 		_warm_generics = {}
+		_warm_generic_funcs = {}
 		_warm_aliases = {}
 		_warm_stage = 1
 	while _warm_stage < 3 and Time.get_ticks_usec() < until:
@@ -388,6 +383,7 @@ static func warm_step(root: String, budget_usec: int) -> bool:
 		var kept: Array = _lexed(path, src, sum, GateDiagnostics.new())
 		if _warm_stage == 1:
 			_warm_generics.merge(kept[3])
+			_warm_generic_funcs.merge(kept[6] if kept.size() > 6 else {})
 			_warm_aliases.merge(kept[4])
 			continue
 		GateTypes.shadow_declared(kept[1])
@@ -398,6 +394,7 @@ static func warm_step(root: String, budget_usec: int) -> bool:
 		if parsed.is_empty() or String(parsed[0]) != key:
 			var parser: GateParser = GateParser.new()
 			parser.known_generics = _warm_generics
+			parser.known_generic_funcs = _warm_generic_funcs
 			parser.known_aliases = _warm_aliases
 			_parsed_memo[path] = [key, parser.parse(kept[1], src, GateDiagnostics.new())]
 		GateTypes.shadowed.clear()
@@ -415,7 +412,8 @@ static func _lexed(path: String, src: String, sum: String, diags: GateDiagnostic
 		tokens = GateLexer.new().tokenize(src, diags)
 	var generics: Dictionary = {}
 	var aliases: Dictionary = {}
-	_scan_declared_names(tokens, generics, aliases)
+	var generic_funcs: Dictionary = {}
+	_scan_declared_names(tokens, generics, aliases, generic_funcs)
 	GateTypes.shadow_declared(tokens)
 	var own: Dictionary = {}
 	for n in GateTypes.shadowed:
@@ -423,7 +421,7 @@ static func _lexed(path: String, src: String, sum: String, diags: GateDiagnostic
 	for c in ProjectSettings.get_global_class_list():
 		own.erase(String(c["class"]))
 	GateTypes.shadowed.clear()
-	kept = [sum, tokens, _tokens_hash(tokens), generics, aliases, own]
+	kept = [sum, tokens, _tokens_hash(tokens), generics, aliases, own, generic_funcs]
 	_lexed_memo[path] = kept
 	return kept
 
@@ -464,15 +462,18 @@ func _scope_for(path: String) -> Dictionary:
 	return GateChecker.shadowed(registry.aliases, _file_names.get(path, {}))
 
 
-static func _scan_declared_names(tokens: Array, generics: Dictionary, aliases: Dictionary) -> void:
+static func _scan_declared_names(tokens: Array, generics: Dictionary, aliases: Dictionary,
+		generic_funcs: Dictionary = {}) -> void:
 	var n: int = tokens.size()
 	for i in n - 2:
 		var t: GateLexer._Token = tokens[i]
 		var nx: GateLexer._Token = tokens[i + 1]
 		if nx.type != GateLexer._T.IDENT:
 			continue
-		if (t.is_kw("class") or t.is_kw("struct")) and tokens[i + 2].is_op("<"):
+		if (t.is_kw("class") or t.is_kw("struct") or t.is_kw("func")) and tokens[i + 2].is_op("<"):
 			generics[nx.value] = true
+			if t.is_kw("func"):
+				generic_funcs[nx.value] = true
 		elif t.type == GateLexer._T.IDENT and t.value == "type" and tokens[i + 2].is_op("="):
 			aliases[nx.value] = true
 
@@ -518,7 +519,8 @@ func _resolve_aliases() -> void:
 
 
 func _index_file(path: String, src: String, tokens: Array, diags: GateDiagnostics,
-		generics: Dictionary, aliases: Dictionary, key: String = "") -> void:
+		generics: Dictionary, aliases: Dictionary, key: String = "",
+		generic_funcs: Dictionary = {}) -> void:
 	var mod: GateAST._Module = null
 	var kept: Array = _parsed_memo.get(path, [])
 	if key != "" and not kept.is_empty() and String(kept[0]) == key:
@@ -526,6 +528,7 @@ func _index_file(path: String, src: String, tokens: Array, diags: GateDiagnostic
 	else:
 		var parser: GateParser = GateParser.new()
 		parser.known_generics = generics
+		parser.known_generic_funcs = generic_funcs
 		parser.known_aliases = aliases
 		mod = parser.parse(tokens, src, diags)
 		if key != "":
@@ -595,6 +598,9 @@ func _index_file(path: String, src: String, tokens: Array, diags: GateDiagnostic
 			if not (registry.enum_origin[ed.name] as Array).has(path):
 				(registry.enum_origin[ed.name] as Array).append(path)
 			registry.top_level[ed.name] = true
+	for gm2 in mod.members:
+		if gm2 is GateAST._FuncDecl and not (gm2 as GateAST._FuncDecl).generic_params.is_empty():
+			registry.generic_funcs[(gm2 as GateAST._FuncDecl).name] = gm2
 	_index_trait_text(mod.members, src.split("\n"), src)
 	var own: Dictionary = GateChecker.block_names(mod.members)
 	if mod.class_name_decl != "":

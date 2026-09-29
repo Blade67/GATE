@@ -429,6 +429,8 @@ func _parse_postfix() -> GateAST._Expr:
 			m.target = e
 			if _check(GateLexer._T.IDENT) or _check(GateLexer._T.KEYWORD):
 				m.name = _advance().value
+				if _check_op("<") and _is_generic_name(m.name) and _generic_func_names.has(m.name) and _generic_call_ahead():
+					m.name = _take_generic_call(m.name)
 			e = m
 		elif _check_op("?."):
 			var t2: GateLexer._Token = _advance()
@@ -478,6 +480,7 @@ func _parse_postfix() -> GateAST._Expr:
 			var c: GateAST._Call = GateAST._Call.new()
 			c.at(t5.line, t5.col)
 			c.callee = e
+			c.open_line = t5.line
 			_skip_newlines()
 			while not _at_end() and not _check_op(")"):
 				_skip_newlines()
@@ -487,6 +490,7 @@ func _parse_postfix() -> GateAST._Expr:
 				if not _match_op(","):
 					break
 				_skip_newlines()
+			c.end_line = _cur().line
 			_expect_op(")", "to close the call")
 			e = c
 		elif _check_op("{") and e is GateAST._Ident and _is_type_looking((e as GateAST._Ident).name):
@@ -711,6 +715,25 @@ func _arrow_ahead() -> bool:
 				break
 		i += 1
 	return _peek(i + 1).is_op("=>")
+func _generic_call_ahead() -> bool:
+	var close: int = _generic_span_end(_i, false)
+	return close >= 0 and close + 1 < _toks.size() and _toks[close + 1].is_op("(")
+
+
+func _take_generic_call(base: String) -> String:
+	_split_generic_span(_i)
+	var gtype: GateAST._TypeRef = GateAST._TypeRef.new()
+	gtype.at(_cur().line, _cur().col)
+	gtype.name = base
+	_advance()
+	while not _at_end() and not _check_op(">"):
+		gtype.generic_args.append(_parse_type())
+		if not _match_op(","):
+			break
+	_expect_op(">", "to close generic arguments")
+	_generic_uses.append(gtype)
+	return mangle_generic(gtype)
+
 
 
 func _parse_arrow_lambda() -> GateAST._Expr:
