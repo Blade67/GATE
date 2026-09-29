@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 - 2026-09-29
+
+Comments are carried into the generated `.gd` now, `##` docs included, so a class
+reference survives a rename and the first entry under Known limitations is gone. The rest
+is reach: generic functions, `@global` classes that Godot knows by name, conditional
+compilation with `@if`, arrow lambdas, typed destructuring, and a language server on a
+loopback socket so a `.gate` can be edited in Neovim, Helix, Zed or VS Code. Five of
+GATE's spellings are project settings, two on by default and three off, and writing one
+that is turned off is an error naming the setting.
+
+Converting a project compiles each file once rather than three times, and opening it
+again compiles nothing. On Pixelorama, 212 files, the two opens that matter went from
+216 s to 137 s.
 
 ### Added
 
