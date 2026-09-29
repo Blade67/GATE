@@ -25,11 +25,12 @@
   files and every one is inside a comment or a doc string, so no valid GDScript changes
   meaning.
 
-- **Comments written inside an array literal, a dictionary literal or an `enum` body are
-  carried into the output.** Measured over 3,495 real files: of the 764 comments written
-  inside brackets, 614 now survive where none did. The rest are inside a call's argument
-  list, which is rebuilt from the syntax tree onto one line and so has no line to put one
-  back on.
+- **Comments written inside an array literal, a dictionary literal, an `enum` body or a
+  call's argument list are carried into the output.** Measured over 3,495 real files: of
+  the 764 comments written inside brackets, 626 now survive where none did. The 138 that
+  do not are inside a lambda body passed as an argument, where a comment belongs to the
+  statements in that body rather than to the argument list, or inside grouping
+  parentheses, which GATE drops before re-emitting the expression.
 
   The lexer never makes these tokens - it cannot, because the parser only skips comments
   where an operand may appear and not where an operator may, which is why they were
@@ -54,39 +55,6 @@
   - A construct claims only what was written between its own brackets. Without that
     floor, an inner literal took a comment written above it and the comment descended one
     nesting level on every compile - six files in the corpus, none of them in corpus4.
-
-### Changed
-
-- **Converting a project compiles each file once, not three times, and opening it again
-  compiles nothing.** Pixelorama, 212 files, measured before and after on the same tree,
-  same harness and same machine: the first open went from 147 s and 424 compiles to 106 s
-  and 212, which is one per file, and the second from 68 s and 200 compiles to 31 s and
-  none. The two opens that matter go from 216 s to 137 s. Two causes on the first open,
-  both of them GATE reacting to its own output.
-
-  The first was deliberate and documented in the builder: a file whose output could not be
-  verified yet - because Godot had not registered the classes GATE had just written - was
-  recompiled so that it landed in the deferred set again, which is where verification
-  happens. The output it produced the second time was identical to the first. It now
-  re-enters that set directly, reusing the dependency list it recorded rather than
-  recovering one from the finished text, which the dependency graph explicitly does not do
-  because it misses every relatively-written preload.
-
-  The second was a defect. `gd_class_names` is "the `class_name` a **plain** `.gd`
-  declares", and the index walked every `.gd` in the project, GATE's own outputs included.
-  The moment Godot registered one of them the table gained an entry, that changed the
-  registry signature, and the signature is part of every file's cache key - so the build
-  after the one that wrote the outputs recompiled the whole project for a name it already
-  knew by another path. `_name_owners` had skipped outputs for this reason all along.
-
-  The second open is fixed the same way, across a restart. A file that could not be
-  checked is now saved as built-but-unchecked, with its dependency list, and the next
-  session puts it straight into the verification queue instead of compiling it again. It
-  is still marked unverified, so it really is validated - nothing is trusted that was not
-  checked. On that project the second open went from 68 s and 200 compiles to 31 s and
-  none. Both opens are measured, and pinned against regressing.
-
-### Added
 
 - **Multidimensional arrays, `int[,]`, off by default** (issue #3). Turn on
   `gate/features/multidim_arrays` to use it. `int[,]` is another spelling of `int[][]` and
@@ -327,6 +295,35 @@
   and a multi-line one lands at the top of the body.
 
 ### Changed
+
+- **Converting a project compiles each file once, not three times, and opening it again
+  compiles nothing.** Pixelorama, 212 files, measured before and after on the same tree,
+  same harness and same machine: the first open went from 147 s and 424 compiles to 106 s
+  and 212, which is one per file, and the second from 68 s and 200 compiles to 31 s and
+  none. The two opens that matter go from 216 s to 137 s. Two causes on the first open,
+  both of them GATE reacting to its own output.
+
+  The first was deliberate and documented in the builder: a file whose output could not be
+  verified yet - because Godot had not registered the classes GATE had just written - was
+  recompiled so that it landed in the deferred set again, which is where verification
+  happens. The output it produced the second time was identical to the first. It now
+  re-enters that set directly, reusing the dependency list it recorded rather than
+  recovering one from the finished text, which the dependency graph explicitly does not do
+  because it misses every relatively-written preload.
+
+  The second was a defect. `gd_class_names` is "the `class_name` a **plain** `.gd`
+  declares", and the index walked every `.gd` in the project, GATE's own outputs included.
+  The moment Godot registered one of them the table gained an entry, that changed the
+  registry signature, and the signature is part of every file's cache key - so the build
+  after the one that wrote the outputs recompiled the whole project for a name it already
+  knew by another path. `_name_owners` had skipped outputs for this reason all along.
+
+  The second open is fixed the same way, across a restart. A file that could not be
+  checked is now saved as built-but-unchecked, with its dependency list, and the next
+  session puts it straight into the verification queue instead of compiling it again. It
+  is still marked unverified, so it really is validated - nothing is trusted that was not
+  checked. On that project the second open went from 68 s and 200 compiles to 31 s and
+  none. Both opens are measured, and pinned against regressing.
 
 - **A shorthand type name used as a value is now an error, not silently accepted.**
   `vec2(1, 2)` used to compile as the `Vector2` constructor; `vec2.ZERO`, `vec2i.ONE`,

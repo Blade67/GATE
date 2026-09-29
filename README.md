@@ -29,6 +29,7 @@ Bugs and feature requests go in [issues](https://github.com/Blade67/GATE/issues)
    * [Editor annotations](#editor-annotations)
    * [Conditional compilation](#conditional-compilation)
    * [Expressions](#expressions)
+   * [Feature settings](#feature-settings)
 - [In the editor](#in-the-editor)
 - [Editing a `.gate` in another editor](#editing-a-gate-in-another-editor)
 - [Performance](#performance)
@@ -390,6 +391,7 @@ print("release")
 var name = player?.profile?.name        # safe navigation
 var hp = saved ?? 100                   # null coalescing
 var [x, y] = get_pos()                  # destructuring
+var [int x, int y] = get_pos()          # ...and the names may take types
 var msg = f"{player} scored {pts}"      # f-string
 a, b = b, a                             # swap
 for i, item in enumerate(items):        # index and value
@@ -409,6 +411,30 @@ var shown = raw |> roundi() |> mini(99) # gate/experiments/pipe_operator, = mini
 ```
 
 Writing either with its flag off is an error naming the setting.
+
+### Feature settings
+
+Five of GATE's spellings are switches, under *Project Settings > Gate*. Writing something
+a switch is off for is a compile error that names the setting and the spelling to write
+instead, so nothing fails quietly.
+
+- **Features > Type First**, on. Off, `int hp = 100` is an error and `var hp: int = 100`
+  is the spelling to write. Nothing else goes with it: GATE's types work in a GDScript
+  annotation too, so null tracking, structs, generics and the rest stay reachable. The one
+  thing with no replacement is the shared line, `int a, b`, GDScript having no multi-name
+  declaration.
+- **Features > Shorthand Types**, on. Off, `str`, `vec2`, `f64` and the rest are not type
+  names anywhere, and `String`, `Vector2` and `float` are what to write. A class, struct,
+  enum or const your own project declares with one of those names keeps its meaning either
+  way; the setting only decides whether the shorthand meaning exists.
+- **Features > Type Names As Values**, off. On, a shorthand used as a value means the Godot
+  type, so `vec2.ZERO` is `Vector2.ZERO` and `vec2(1, 2)` is `Vector2(1, 2)`. Off, both are
+  an error. `str(...)` called as a function is GDScript's own builtin either way.
+- **Features > Multidim Arrays**, off. `int[,]`, another spelling of `int[][]`.
+- **Experiments > Pipe Operator**, off. `x |> f()`, another spelling of `f(x)`.
+
+A default is never written into `project.godot`, so a project that leaves these alone
+carries nothing for them.
 
 ## In the editor
 
@@ -750,11 +776,10 @@ iterate, so it pays off only if you make more than about 1.3 passes per rebuild.
 
 ## Verification
 
-GATE is developed against a 24-stage test suite: differential execution against Godot
+GATE is developed against a 26-stage test suite: differential execution against Godot
 itself, a real-world superset corpus, build-pipeline scenarios across editor restarts,
 live editor sessions, sourcemap fidelity, byte-exact output comparison and randomised
-input. That suite is not
-part of this repository; what ships here is the addon.
+input. That suite is not part of this repository; what ships here is the addon.
 
 What it established at `v1.1.0`:
 
@@ -777,8 +802,8 @@ in this project was found that way and none were found any other way.
 
 ## Documentation
 
-The documentation in this repository, meaning this README, `SYNTAX.md` and
-`CHANGELOG.md`, was written by AI and then checked by me before it shipped. Every
+The documentation in this repository, meaning this README, `SYNTAX.md`, `CHANGELOG.md`
+and `ROADMAP.md`, was written by AI and then checked by me before it shipped. Every
 claim about behaviour is one I verified against the test suite or the compiler
 itself, and every number quoted is one that came out of a run rather than an
 estimate. Where it is still wrong, that is a mistake I missed, so please open an
